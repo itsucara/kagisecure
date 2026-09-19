@@ -42,8 +42,8 @@ settings:
     # Cargo.toml (ADR-0028). Both are the same string on purpose: kagisecure ships one artifact
     # per version and has no separate build number to count. Override on the xcodebuild command
     # line if a rebuild of the same version ever has to be distinguishable.
-    MARKETING_VERSION: "0.1.0"
-    CURRENT_PROJECT_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.1.1"
+    CURRENT_PROJECT_VERSION: "0.1.1"
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""

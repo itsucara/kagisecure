@@ -112,15 +112,22 @@ fn extract_entitlements(app: &Path) -> Result<PathBuf> {
             app.display()
         );
     }
-    // `codesign -d` writes its own progress line to stderr, which `capture_all` folds in. Keep
-    // from the first `<?xml` so the file is a plist and nothing else.
+    // `codesign -d` writes its own `Executable=<absolute path>` line to stderr, which
+    // `capture_all` folds in — after the plist, not before it. Keep exactly `<?xml` through
+    // `</plist>`: anything else in this file is signed into the app as part of its entitlements,
+    // and that line would ship the build machine's path inside every release.
     let start = xml
         .find("<?xml")
         .context("codesign printed no plist for the app's entitlements")?;
+    let end = xml[start..]
+        .find("</plist>")
+        .map(|i| start + i + "</plist>".len())
+        .context("codesign printed an unterminated plist for the app's entitlements")?;
     let path = app
         .parent()
         .context("the app bundle has no parent directory")?
         .join("Kagisecure.built.entitlements");
-    std::fs::write(&path, &xml[start..]).with_context(|| format!("writing {}", path.display()))?;
+    std::fs::write(&path, &xml[start..end])
+        .with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
 }

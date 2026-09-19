@@ -1061,7 +1061,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-agent"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "directories",
  "kagisecure-core",
@@ -1074,7 +1074,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1096,7 +1096,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -1117,7 +1117,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-extension-ipc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "interprocess",
  "kagisecure-core",
@@ -1133,7 +1133,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-ffi"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kagisecure-agent",
  "kagisecure-core",
@@ -1147,7 +1147,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-import"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ciborium",
  "csv",
@@ -1165,7 +1165,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-ipc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "directories",
  "interprocess",
@@ -1179,7 +1179,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-mcp"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kagisecure-core",
  "kagisecure-ipc",
@@ -1192,7 +1192,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-nmhost"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "kagisecure-extension-ipc",
  "serde_json",
@@ -2550,7 +2550,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xtask"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "camino",

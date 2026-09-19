@@ -8,6 +8,16 @@ Versions before 1.0.0 may change the vault format. When they do, the change is l
 what it means for a vault written by an earlier build — see
 [docs/vault-format.md](docs/vault-format.md) §9 for the compatibility rules the format follows.
 
+## 0.1.1 — 2026-09-19
+
+### Fixed
+
+- **Release binaries no longer embed build-machine paths.** The 0.1.0 app and Safari extension
+  kept the linker's debug map in their symbol tables, which named the absolute path of every
+  object file on the machine that built the release. Release builds are now stripped, and
+  `cargo xtask dist` refuses to package any Mach-O that contains a `/Users/` path. No change in
+  behaviour; nothing about your vault or your data was involved.
+
 ## 0.1.0 — 2026-09-19
 
 The first release: a macOS app, a CLI, an MCP sidecar and a browser extension, signed with a

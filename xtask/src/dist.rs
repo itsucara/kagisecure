@@ -83,6 +83,7 @@ pub fn dist(root: &Path, options: &Options) -> Result<()> {
     let app = build_app(root, &dist_dir, &staging, &team, arches)?;
 
     assert_no_debug_entitlement(&app)?;
+    assert_no_build_paths(&app)?;
     verify_signature(&app)?;
 
     let profile = std::env::var(PROFILE_ENV).ok().filter(|p| !p.is_empty());
@@ -219,6 +220,14 @@ fn build_app(
         // rejects it at notarization every time. Measured on this project: a Release build with
         // this setting left at its default came out carrying it.
         .arg("CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO")
+        // Strip the debug map out of the shipped executables. Without this, a plain `build`
+        // leaves the linker's STABS entries in the symbol table, and those name every object
+        // file and Swift module by the absolute path it was built at — the release machine's
+        // home directory and checkout layout, in a binary anyone can download.
+        .arg("DEPLOYMENT_POSTPROCESSING=YES")
+        .arg("STRIP_INSTALLED_PRODUCT=YES")
+        .arg("STRIP_STYLE=non-global")
+        .arg("STRIP_SWIFT_SYMBOLS=YES")
         .arg("build"))
     .context("building the app")?;
 
@@ -284,6 +293,43 @@ fn assert_no_debug_entitlement(app: &Path) -> Result<()> {
         );
     }
     println!("dist: no get-task-allow anywhere in the bundle");
+    Ok(())
+}
+
+/// Refuse to ship a binary that names the machine it was built on.
+///
+/// `strings` does not look everywhere by default (it skips the symbol table), so this reads the
+/// raw bytes. Any `/Users/` or the builder's own home directory is a leak of a username and a
+/// directory layout; `--remap-path-prefix` (Rust) and stripping (Swift) exist so there are none.
+fn assert_no_build_paths(app: &Path) -> Result<()> {
+    let mut needles: Vec<Vec<u8>> = vec![b"/Users/".to_vec()];
+    if let Some(home) = std::env::var_os("HOME") {
+        needles.push(home.to_string_lossy().as_bytes().to_vec());
+    }
+    let mut offenders = Vec::new();
+    for binary in mach_o_files(app)? {
+        let bytes =
+            std::fs::read(&binary).with_context(|| format!("reading {}", binary.display()))?;
+        let hits: usize = needles
+            .iter()
+            .map(|n| {
+                bytes
+                    .windows(n.len())
+                    .filter(|w| *w == n.as_slice())
+                    .count()
+            })
+            .sum();
+        if hits > 0 {
+            offenders.push(format!("  {} ({hits} occurrences)", binary.display()));
+        }
+    }
+    if !offenders.is_empty() {
+        bail!(
+            "these binaries embed absolute build paths from this machine:\n{}",
+            offenders.join("\n")
+        );
+    }
+    println!("dist: no build-machine paths in any Mach-O");
     Ok(())
 }
 
