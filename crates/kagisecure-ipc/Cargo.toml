@@ -1,0 +1,28 @@
+[package]
+name = "kagisecure-ipc"
+description = "The local IPC protocol between the kagisecure MCP sidecar and the process that owns the unlocked vault."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# `secret-material` is NOT enabled, and must never be. This crate defines the wire format; if it
+# could name `Secret`, a message carrying one would be a review finding rather than a compile
+# error (ADR-0002 §3, architecture.md §4.3).
+kagisecure-core = { workspace = true, features = ["proto"] }
+directories = "6"
+interprocess = "2.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+
+# Only for `kernel_peer`'s isolated FFI (macOS `LOCAL_PEERPID`/`proc_pidpath`, Linux
+# `SO_PEERCRED`). Not needed on Windows, which has no implementation there yet.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3"

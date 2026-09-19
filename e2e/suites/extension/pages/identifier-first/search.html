@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Search</title>
+<link rel="stylesheet" href="/_style.css" />
+<h1>Search</h1>
+<p class="origin" id="origin"></p>
+<!-- A page with exactly one text box and a button, served from an origin an item *is* saved for.
+     Everything about it is the shape the identifier-first detector looks for, except what the box
+     is: so this is the page that proves the detector refuses rather than the page that proves the
+     origin rule does. -->
+<form id="search" role="search">
+  <label for="q">Search</label>
+  <input id="q" name="q" type="search" placeholder="Search the site" />
+  <button type="submit">Go</button>
+</form>
+<script>
+  document.getElementById("origin").textContent = location.origin;
+  document.getElementById("search").addEventListener("submit", (e) => e.preventDefault());
+</script>

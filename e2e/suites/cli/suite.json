@@ -1,0 +1,18 @@
+{
+  "name": "cli",
+  "title": "Suite C — CLI and vault format",
+  "order": 30,
+  "description": "The command line tool against a scratch vault: creation, recovery, tamper detection, KDF bounds, item lifecycle, the reveal/JSON rules, the generator, TOTP against an independent implementation, and the committed golden vector.",
+  "build": [["cargo", "build", "-p", "kagisecure-cli"]],
+  "timeoutSeconds": 900,
+  "command": [
+    "node",
+    "--test",
+    "--test-timeout=300000",
+    "--test-reporter=junit",
+    "--test-reporter-destination=${E2E_JUNIT}",
+    "--test-reporter=spec",
+    "--test-reporter-destination=stdout",
+    "cli.test.mjs"
+  ]
+}

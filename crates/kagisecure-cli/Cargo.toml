@@ -1,0 +1,39 @@
+[package]
+name = "kagisecure-cli"
+description = "The kagisecure command line interface."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "kagisecure"
+path = "src/main.rs"
+
+[dependencies]
+kagisecure-core = { workspace = true, features = ["secret-material"] }
+kagisecure-import = { workspace = true }
+kagisecure-ipc = { workspace = true }
+kagisecure-agent = { workspace = true }
+clap = { version = "4", features = ["derive", "env"] }
+rpassword = "7"
+directories = "6"
+zeroize = { version = "1.9", features = ["derive"] }
+anyhow = "1"
+serde_json = "1"
+
+[dev-dependencies]
+assert_cmd = "2"
+# The end-to-end tests drive the sidecar twice over: once through a hand-rolled JSON-RPC driver
+# that keeps every byte of stdout (the canary needs a byte-level assertion), and once through the
+# real client API, so that what an actual MCP client sees is what is tested.
+rmcp = { version = "3.2", features = ["client", "transport-child-process"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "time"] }
+predicates = "3"
+serde_json = "1"
+tempfile = "3"
+# Builds a tiny hand-written 1PUX archive in `tests/import.rs`, for the tests that need a source
+# file the importer can actually parse rather than reject. Same version as `kagisecure-import`.
+zip = { version = "8", default-features = false, features = ["deflate"] }

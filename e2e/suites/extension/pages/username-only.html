@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Username only</title>
+<link rel="stylesheet" href="/_style.css" />
+<h1>Who are you?</h1>
+<p class="origin" id="origin"></p>
+<!-- The first half of a two-step sign-in. There is no password field on this page at all, so a
+     fill has to put the username in and stop, rather than refuse for want of somewhere to put a
+     password. -->
+<form id="login">
+  <label for="username">Email</label>
+  <input id="username" name="username" type="email" autocomplete="username" />
+  <button type="submit">Next</button>
+</form>
+<script>
+  document.getElementById("origin").textContent = location.origin;
+  document.getElementById("login").addEventListener("submit", (e) => e.preventDefault());
+</script>

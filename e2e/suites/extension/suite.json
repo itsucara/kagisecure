@@ -1,0 +1,23 @@
+{
+  "name": "extension",
+  "title": "Suite B — browser extension autofill",
+  "order": 20,
+  "description": "A real Chromium-family browser, the real unpacked extension, the real kagisecure-nmhost launched by the browser, a real socket, and the real origin rule. Every state is screenshotted.",
+  "note": "An MV3 extension does not load in a headless Chromium, so this suite needs a real login session with a window server and is local-only. There is no CI (removed 2026-09-19); the headless subset SUITE=mcp,cli is run locally instead. Chrome 137+ removed --load-extension, so the automated browser is Microsoft Edge; Safari cannot be driven by automation at all and its scenarios are reported as skipped with the manual steps printed.",
+  "build": [
+    ["cargo", "build", "-p", "kagisecure-nmhost"],
+    ["cargo", "build", "-p", "kagisecure-agent", "--example", "extension_harness"],
+    ["npm", "install", "--prefix", "extensions/chrome", "--no-audit", "--no-fund"]
+  ],
+  "timeoutSeconds": 1800,
+  "command": [
+    "node",
+    "--test",
+    "--test-timeout=600000",
+    "--test-reporter=junit",
+    "--test-reporter-destination=${E2E_JUNIT}",
+    "--test-reporter=spec",
+    "--test-reporter-destination=stdout",
+    "extension.test.mjs"
+  ]
+}

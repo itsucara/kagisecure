@@ -1,0 +1,16 @@
+/* Shared by every page the extension suite serves. Kept in one file so a screenshot of one page
+   is visually comparable with a screenshot of another. */
+body { font: 15px/1.5 -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+       margin: 40px auto; max-width: 460px; color: #1c1c1e; background: #fbfbfa; }
+h1 { font-size: 20px; margin: 0 0 2px; }
+h2 { font-size: 15px; margin: 24px 0 0; }
+.origin { color: #6b6b70; font-size: 13px; font-family: ui-monospace, Menlo, monospace;
+          margin: 0 0 18px; }
+label { display: block; margin: 12px 0 4px; font-weight: 600; font-size: 13px; }
+input { width: 100%; box-sizing: border-box; padding: 8px 10px; font: inherit;
+        border: 1px solid #d5d5d2; border-radius: 6px; background: #fff; }
+button { margin-top: 14px; padding: 8px 16px; font: inherit; border-radius: 6px;
+         border: 1px solid #d5d5d2; background: #fff; }
+iframe { width: 100%; height: 300px; border: 2px solid #d5d5d2; border-radius: 8px;
+         margin-top: 10px; background: #fff; }
+.frame-label { font-size: 12px; color: #6b6b70; margin: 18px 0 0; font-weight: 600; }

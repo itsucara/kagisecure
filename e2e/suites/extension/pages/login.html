@@ -1,0 +1,20 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Test login</title>
+<link rel="stylesheet" href="/_style.css" />
+<h1>Test login</h1>
+<p class="origin" id="origin"></p>
+<form id="login">
+  <label for="username">Username</label>
+  <input id="username" name="username" type="text" autocomplete="username" />
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" />
+  <button type="submit">Sign in</button>
+</form>
+<h2>Second factor</h2>
+<label for="otp">One-time code</label>
+<input id="otp" name="otp" type="text" autocomplete="one-time-code" />
+<script>
+  document.getElementById("origin").textContent = location.origin;
+  document.getElementById("login").addEventListener("submit", (e) => e.preventDefault());
+</script>

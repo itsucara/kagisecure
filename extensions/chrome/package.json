@@ -1,0 +1,14 @@
+{
+  "name": "kagisecure-extension-tests",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Unit tests for the kagisecure browser extension in ../shared, and the Playwright install the e2e harness resolves out of (see e2e/suites/extension). Plain modern JavaScript: no bundler, no build step. The same ../shared directory is what Chromium loads unpacked and what the Safari app extension embeds.",
+  "license": "MIT OR Apache-2.0",
+  "scripts": {
+    "test": "node --test 'test/**/*.test.js'"
+  },
+  "devDependencies": {
+    "linkedom": "^0.18.5",
+    "playwright": "^1.63.0"
+  }
+}

@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Sign in — step 2</title>
+<link rel="stylesheet" href="/_style.css" />
+<h1>Enter your password</h1>
+<p class="origin" id="origin"></p>
+<!-- Page two, in the same tab and at the same origin. The username is settled and is not an input
+     any more; only the password is asked for. -->
+<form id="login">
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" />
+  <button type="submit">Sign in</button>
+</form>
+<script>
+  document.getElementById("origin").textContent = location.origin;
+  document.getElementById("login").addEventListener("submit", (e) => e.preventDefault());
+</script>

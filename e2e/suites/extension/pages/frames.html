@@ -1,0 +1,24 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Forms in frames</title>
+<link rel="stylesheet" href="/_style.css" />
+<h1>Forms in frames</h1>
+<p class="origin" id="origin"></p>
+
+<!-- The two cases that decide whether an ad on a page you have a password for can harvest it.
+     Both iframes are served by the same test server; they differ only in the host in their src,
+     and the browser's own host resolver maps both to 127.0.0.1. The URL each frame reports is
+     therefore its real origin as far as every check in the extension and the app is concerned. -->
+
+<p class="frame-label">Same origin as this page — the item is saved for it</p>
+<iframe id="same" title="same-origin frame"></iframe>
+
+<p class="frame-label">A different origin, embedded in this one — nothing is saved for it</p>
+<iframe id="cross" title="cross-origin frame"></iframe>
+
+<script>
+  document.getElementById("origin").textContent = "top origin: " + location.origin;
+  const params = new URLSearchParams(location.search);
+  document.getElementById("same").src = "/frame.html";
+  document.getElementById("cross").src = params.get("cross") + "/frame.html";
+</script>

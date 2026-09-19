@@ -1,0 +1,36 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/kagisecure-core",
+    "crates/kagisecure-ipc",
+    "crates/kagisecure-extension-ipc",
+    "crates/kagisecure-agent",
+    "crates/kagisecure-nmhost",
+    "crates/kagisecure-mcp",
+    "crates/kagisecure-import",
+    "crates/kagisecure-cli",
+    "crates/kagisecure-ffi",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/kagisecure/kagisecure"
+authors = ["kagisecure contributors"]
+
+[workspace.dependencies]
+# `default-features = false` at the root so that a member which must never hold plaintext can
+# inherit this entry and add only `features = ["proto"]`; members that do want the vault ask for
+# `features = ["secret-material"]` explicitly. Cargo does not let a member turn a workspace
+# dependency's default features back off, so the safe setting has to be the default one.
+kagisecure-core = { path = "crates/kagisecure-core", version = "0.1.0", default-features = false }
+kagisecure-import = { path = "crates/kagisecure-import", version = "0.1.0" }
+kagisecure-ipc = { path = "crates/kagisecure-ipc", version = "0.1.0" }
+kagisecure-agent = { path = "crates/kagisecure-agent", version = "0.1.0" }
+kagisecure-extension-ipc = { path = "crates/kagisecure-extension-ipc", version = "0.1.0" }
+
+[profile.release]
+panic = "abort"

@@ -1,0 +1,20 @@
+[package]
+name = "kagisecure-nmhost"
+description = "The kagisecure Chrome native-messaging host: a stdio-to-socket forwarder with no vault of its own."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "kagisecure-nmhost"
+path = "src/main.rs"
+
+[dependencies]
+# The *only* kagisecure dependency. `kagisecure-extension-ipc` pulls `kagisecure-core` with
+# `proto` and nothing else, so this binary cannot name `Secret`, cannot open a vault, and has no
+# type a vault key could sit in. It is a pipe.
+kagisecure-extension-ipc = { path = "../kagisecure-extension-ipc", version = "0.1.0" }
+serde_json = "1"

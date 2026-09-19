@@ -1,0 +1,26 @@
+[package]
+name = "kagisecure-mcp"
+description = "The kagisecure MCP stdio sidecar. Lists, describes and injects secrets; never returns one."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "kagisecure-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# `secret-material` is NOT enabled here; `cargo tree -e features` asserts locally that it stays
+# that way (run in CI until CI was removed on 2026-09-19). The `Secret` type
+# is not in this crate's dependency graph, so a tool that returned a secret value would be a
+# compile error rather than a review finding (ADR-0002 §3, architecture.md §2.2).
+kagisecure-core = { workspace = true, features = ["proto"] }
+kagisecure-ipc = { workspace = true }
+rmcp = { version = "3.2", features = ["server", "macros", "transport-io"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-std", "signal"] }

@@ -1,0 +1,40 @@
+[package]
+name = "kagisecure-core"
+description = "Core vault, crypto and injection logic for kagisecure."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["secret-material"]
+# The metadata-only surface. A no-op marker: `proto`, `audit` and `lease` are always compiled.
+# It exists so a crate that must never hold plaintext can say so positively in its manifest
+# (ADR-0002 §3).
+proto = []
+secret-material = ["dep:argon2", "dep:chacha20poly1305", "dep:hkdf", "dep:zeroize", "dep:hmac", "dep:sha1"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+ciborium = "0.2"
+serde_bytes = "0.11"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2"
+rand_core = { version = "0.9", features = ["os_rng"] }
+argon2 = { version = "0.6", optional = true, default-features = false, features = ["alloc"] }
+chacha20poly1305 = { version = "0.11", optional = true }
+hkdf = { version = "0.13", optional = true }
+# TOTP (RFC 6238). Optional, and gated on `secret-material`: a crate that may not hold plaintext
+# must not be able to derive a one-time code either.
+hmac = { version = "0.13", optional = true }
+sha1 = { version = "0.11", optional = true }
+# Not optional: the audit hash chain (vault-format §8) is metadata-only and must be verifiable
+# without the `secret-material` feature. SHA-256 is not key material.
+sha2 = "0.11"
+zeroize = { version = "1.9", optional = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"

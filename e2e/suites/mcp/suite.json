@@ -1,0 +1,22 @@
+{
+  "name": "mcp",
+  "title": "Suite A — MCP agent flow",
+  "order": 10,
+  "description": "A real kagisecure-mcp sidecar, spoken to as an MCP client over stdio, against a real kagisecure daemon over a real unix socket. Three processes, no mocks below the human.",
+  "note": "The daemon is the headless host. The app-hosted listener is the same kagisecure-agent library behind a SwiftUI approval sheet and a biometric gate; phase 2 drives it through XCUITest. See docs/e2e-harness.md §5.",
+  "build": [
+    ["cargo", "build", "-p", "kagisecure-cli"],
+    ["cargo", "build", "-p", "kagisecure-mcp"]
+  ],
+  "timeoutSeconds": 1200,
+  "command": [
+    "node",
+    "--test",
+    "--test-timeout=300000",
+    "--test-reporter=junit",
+    "--test-reporter-destination=${E2E_JUNIT}",
+    "--test-reporter=spec",
+    "--test-reporter-destination=stdout",
+    "mcp.test.mjs"
+  ]
+}

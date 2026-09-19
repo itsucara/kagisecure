@@ -1,0 +1,74 @@
+# cargo-deny: what this project will and will not depend on.
+#
+#     cargo deny check          # everything below
+#     cargo deny check licenses
+#     cargo deny check advisories
+#
+# Run locally (`make deny` / `cargo deny check`) and by `cargo xtask dist` before a release; it
+# ran in CI on every push until CI was removed on 2026-09-19. A secrets manager's
+# dependency tree is part of its threat model: an advisory in a crate that touches key material is
+# a vulnerability in kagisecure, and a license nobody read is a legal problem shipped to users.
+
+[graph]
+# The platforms kagisecure is actually built for. Without this, `cargo deny` walks Windows and
+# Linux-only dependency edges that nothing here compiles, and reports on crates that are never in
+# a shipped binary. Linux and Windows stay in the list because the core crate is meant to build and
+# test on both, even though only macOS is released.
+targets = [
+    { triple = "aarch64-apple-darwin" },
+    { triple = "x86_64-apple-darwin" },
+    { triple = "x86_64-unknown-linux-gnu" },
+    { triple = "x86_64-pc-windows-msvc" },
+]
+all-features = true
+
+[advisories]
+# RustSec. `deny` for anything with a patched version available; the exceptions below are
+# individually justified, and an empty list is the goal.
+version = 2
+yanked = "deny"
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses only, and no copyleft. kagisecure is MIT OR Apache-2.0 and is linked
+# statically into a distributed application; a GPL or LGPL dependency would change what the
+# project can be, which is a decision for a human and not for a lockfile update.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    # BSD Zero Clause: MIT without the attribution requirement, i.e. strictly more permissive than
+    # everything else on this list. Reached through `interprocess` (`recvmsg`) and `rmcp`
+    # (`doctest-file`).
+    "0BSD",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+    "MPL-2.0",
+    "CC0-1.0",
+    "Unlicense",
+]
+# A crate whose license text differs slightly from the SPDX canonical wording still counts, as
+# long as the match is this close. Below this and a human should read the file.
+confidence-threshold = 0.8
+exceptions = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# Nothing is banned outright yet. The entry exists so that the first ban has an obvious home and
+# a comment saying why, rather than appearing as a bare line in a diff.
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+# crates.io and nothing else. A git dependency in a project that ships signed binaries is a
+# supply-chain input with no version, no checksum in the registry and no audit trail.
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "Kagisecure",
+  "version": "0.1.0",
+  "description": "Fill logins from your Kagisecure vault. Values never leave the app until you approve a fill.",
+  "minimum_chrome_version": "116",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp7KKom4ywUXzpuW55TKkN8X5f4YwIImI01amFsqcGVyUzaFS3kIzgbQRVhLRp/OOI50ZVMjE7VvPleHZD0Ggh0nTnHdRORnYY6GEzLCxvp/L8KOxfsgAt2wu9R7mEjydat85SCp4P0IqxB0XqnWBGCYCjdg6F+9wYpYuxLEEl9BCIsEFjBcMuI3xccHeBsAZ53VigG4JMfTMoWfDYfSQJJwgs4pScXmesOAh16Gdzn54M6alIJD1lzudxXJRQX4Z07WSbnQBbTdpA2o/X5ofME4HlZViwLkQroas2U5IKKu7ACYQLSoU9JoHVnvda1E608+hpJtdelkrlqk8Ga5Q+wIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "activeTab"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "js": [
+        "origin.js",
+        "forms.js",
+        "content.js"
+      ]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Kagisecure"
+  }
+}

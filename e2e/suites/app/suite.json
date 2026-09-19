@@ -1,0 +1,14 @@
+{
+  "name": "app",
+  "title": "Suite D — the macOS app",
+  "order": 40,
+  "description": "The real app, driven through its accessibility tree by XCUITest: first run and the recovery code, the lock screen, every sidebar section, the item lifecycle across all twelve categories, search, the generator, TOTP checked against the CLI, Quick Access, Settings, Agent access, the menu-bar item, dark mode — and the approval sheet, raised by a real kagisecure-mcp over a real socket.",
+  "note": "Needs a real login session with a window server, and a one-time macOS authorization for UI testing (system.privilege.taskport). Without it every scenario reports skipped, with the command that grants it — the suite will not change the security posture of the machine it is measuring. The biometric gate is replaced by a test double injected through a #if DEBUG launch argument, which is the one thing here that is not the shipped path; everything below it, including ApprovalQueue::ask and the lease store, is.",
+  "build": [
+    ["cargo", "build", "-p", "kagisecure-cli"],
+    ["cargo", "build", "-p", "kagisecure-mcp"],
+    ["make", "macos"]
+  ],
+  "timeoutSeconds": 2400,
+  "command": ["node", "run-xcuitest.mjs"]
+}

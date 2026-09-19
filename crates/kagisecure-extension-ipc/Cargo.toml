@@ -1,0 +1,30 @@
+[package]
+name = "kagisecure-extension-ipc"
+description = "The browser-extension channel: native-messaging framing, the app socket protocol, and origin matching."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# `proto` only, never `secret-material`. This crate defines a protocol that *does* carry one
+# value — the deliberate difference from `kagisecure-ipc` (ADR-0018) — but it carries it in its
+# own `FillValue`, not in `kagisecure_core::Secret`. Not enabling the feature keeps the vault out
+# of `kagisecure-nmhost`, which links this crate and must never be able to open one.
+kagisecure-core = { workspace = true, features = ["proto"] }
+# For `Endpoint`, so the extension socket lands beside the agent socket under the same `0700`
+# directory, and for `executable_for_pid`/`kernel_peer`, so both channels identify a peer the
+# same way. No protocol type is imported: the two wire formats share nothing (ADR-0019).
+kagisecure-ipc = { workspace = true }
+interprocess = "2.4"
+psl = "2.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+url = "2"
+zeroize = { version = "1.9", features = ["zeroize_derive"] }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the three helper binaries bundled in Contents/MacOS: kagisecure-mcp,
+  kagisecure-nmhost and the kagisecure CLI (ADR-0026).
+
+  They are deliberately as close to empty as a file can be. Each helper is signed under the
+  Hardened Runtime, and none of them needs a single one of the exceptions the Hardened Runtime
+  exists to grant: no JIT, no writable+executable memory, no unsigned or dynamically loaded
+  libraries, no DYLD environment variables, no disabled library validation. Every dependency is
+  statically linked into the binary.
+
+  App Sandbox is stated rather than omitted, for the same reason ADR-0010 states it on the app: a
+  reader should see a decision, not an oversight. The sidecar talks to the app over a Unix-domain
+  socket at a documented path outside any container, and `kagisecure run` spawns a program the
+  user names — neither is something a sandboxed process does.
+
+  What is NOT here matters as much as what is:
+
+  * `com.apple.security.get-task-allow` — Apple rejects it at notarization. A Debug build carries
+    it automatically, which is why the release pipeline builds Release and asserts its absence
+    from every Mach-O before it submits anything (`cargo xtask dist`).
+  * `keychain-access-groups` — a restricted entitlement AMFI validates against a provisioning
+    profile at every exec, so a binary carrying it without one is SIGKILLed before main. See
+    ADR-0011 and ADR-0025. No helper needs the keychain.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+</dict>
+</plist>

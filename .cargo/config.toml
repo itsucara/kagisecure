@@ -1,0 +1,5 @@
+# `cargo xtask <task>` is the repository's task runner (architecture.md §7). The alias is what
+# makes that spelling work; without it the invocation is `cargo run -p xtask -- <task>`, and the
+# docs, the Makefile and CI would all have to say so.
+[alias]
+xtask = "run --quiet --package xtask --"

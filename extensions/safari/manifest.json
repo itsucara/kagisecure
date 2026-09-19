@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "Kagisecure",
+  "version": "0.1.0",
+  "description": "Fill logins from your Kagisecure vault. Values never leave the app until you approve a fill.",
+  "permissions": [
+    "nativeMessaging",
+    "activeTab"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle",
+      "js": [
+        "origin.js",
+        "forms.js",
+        "content.js"
+      ]
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Kagisecure"
+  }
+}

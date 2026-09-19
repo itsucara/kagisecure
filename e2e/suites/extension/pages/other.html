@@ -1,0 +1,13 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>A site nothing is saved for</title>
+<link rel="stylesheet" href="/_style.css" />
+<h1>Somewhere else</h1>
+<p class="origin" id="origin"></p>
+<form id="login">
+  <label for="username">Username</label>
+  <input id="username" name="username" type="text" autocomplete="username" />
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" />
+</form>
+<script>document.getElementById("origin").textContent = location.origin;</script>

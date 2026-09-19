@@ -1,0 +1,17 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Sign in — step 1</title>
+<link rel="stylesheet" href="/_style.css" />
+<h1>Sign in</h1>
+<p class="origin" id="origin"></p>
+<!-- Page one of an identifier-first sign-in, shaped like Google's and Microsoft's: one email box,
+     one Next button, and no password field anywhere on the page. The only thing that can be
+     written here is the username. -->
+<form id="identifier" action="step2.html" method="get">
+  <label for="username">Email</label>
+  <input id="username" name="username" type="email" autocomplete="username" />
+  <button type="submit">Next</button>
+</form>
+<script>
+  document.getElementById("origin").textContent = location.origin;
+</script>

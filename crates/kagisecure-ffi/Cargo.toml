@@ -1,0 +1,33 @@
+[package]
+name = "kagisecure-ffi"
+description = "The UniFFI surface of kagisecure-core, for the native apps."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+# `staticlib` is what the macOS app links (architecture.md §2.4); `cdylib` exists so the same
+# surface can be loaded dynamically by a binding generator or a test harness. `lib` stays on so
+# that `cargo test -p kagisecure-ffi` can `use kagisecure_ffi::…` like any other crate.
+crate-type = ["lib", "staticlib", "cdylib"]
+name = "kagisecure_ffi"
+
+[dependencies]
+kagisecure-core = { workspace = true, features = ["secret-material"] }
+kagisecure-agent = { workspace = true }
+# The importers (import.md, ADR-0031). The parser dependencies — zip, csv, serde_json — stay in
+# that crate's subtree rather than in core's, and the FFI layer is one of the two consumers ADR
+# allows to link it (the CLI is the other).
+kagisecure-import = { workspace = true }
+# For the pinned extension id and the native host name the setup screen shows. No protocol type
+# is used here: the app never speaks the extension wire format, the agent library does.
+kagisecure-extension-ipc = { workspace = true }
+uniffi = "0.32"
+thiserror = "2"
+zeroize = "1.9"
+
+[dev-dependencies]
+tempfile = "3"
