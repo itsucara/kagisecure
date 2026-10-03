@@ -16,10 +16,12 @@ Two things on your explicit action, and one on an agent's request that you appro
   **⌘\\**. The app raises its approval sheet and asks for Touch ID (or your login password, or an
   Apple Watch); the username and password are written into the form. If you chose **Allow for
   this session**, the same fill on the same site in the next few minutes skips the sheet — but
-  not, by itself, the Touch ID check: every fill that carries a password or a one-time code asks
-  for it ([ADR-0037](decisions/0037-every-fill-needs-a-fresh-presence-proof.md)), unless a fill on
-  the same exact site passed it in the last ten minutes (the presence grace window,
-  [amendment of 2026-09-27](decisions/0037-every-fill-needs-a-fresh-presence-proof.md#amendment-2026-09-27-presence-grace-window); a lock ends it).
+  not, by itself, the Touch ID check: a fill that carries a password or a one-time code asks for
+  it ([ADR-0037](decisions/0037-every-fill-needs-a-fresh-presence-proof.md)) unless the app-wide
+  grace window is open. Any successful Touch ID check in the app opens that window, every use
+  extends it, and by default it lasts until the vault locks (10 minutes, 30 minutes or 1 hour in
+  **Settings › Security & Unlock**;
+  [amendment of 2026-10-03](decisions/0037-every-fill-needs-a-fresh-presence-proof.md#amendment-2026-10-03-app-wide-sliding-grace-window)).
 - **Fill the username on an identifier-first page.** Google, Microsoft and Okta ask for the
   username on one page and the password on the next. The icon appears in that first page's
   username box too, and the click writes **the username and nothing else** — which carries no
@@ -30,24 +32,27 @@ Two things on your explicit action, and one on an agent's request that you appro
   into the fill.
 
 - **Fill a login an agent asked for** ([ADR-0036](decisions/0036-agent-requested-browser-fill.md),
-  Chromium only, off by default). An agent driving your browser calls `request_fill` with an item
-  and the origin it believes it is on. The app asks every connected browser for **the tab in
-  front** — the active tab of the last-focused window, top frame only, visible — and goes ahead only
-  if exactly one such tab, across all browsers, is at that exact origin, is a site saved for the
-  item, and has the login fields. Then it raises its **own sheet** naming the agent, the site and
-  the item, with Touch ID unless a fill on that exact site passed it in the last ten minutes;
-  there is no "for this session". The value is typed into that
+  Chromium only, on by default; turn it off in **Settings › AI Agents**). An agent driving your
+  browser calls `request_fill` with an item and the origin it believes it is on. The app asks every
+  connected browser for a tab at that origin — the tab in front if it matches, otherwise a
+  background tab on that site (top frame only) — and goes ahead only if the tab is a site saved for
+  the item and has the login fields. While the grace window is open, the fill goes through with
+  **no sheet and no Touch ID**
+  ([ADR-0036 amendment of 2026-10-03](decisions/0036-agent-requested-browser-fill.md#amendment-2026-10-03-agents-fill-without-prompts-during-grace));
+  outside it, the app raises its **own sheet** naming the agent, the site and the item, with Touch
+  ID. "Always show the sheet for agent fills" (Settings › Security & Unlock › Advanced, or
+  Settings › AI Agents) restores the sheet for every agent fill. The value is typed into that
   tab by the extension, exactly as for your own fill; the agent is told only which fields were
   written. An agent that can run script in the page can read what is typed there — the sheet says
   so. A look-alike site raises no sheet at all: it is refused by the origin rule and audited as
   `AGENT_FILL_ORIGIN_MISMATCH`. An identifier-first sign-in is one sheet for both pages: the
   username now, and the password on the next page of the same tab when the agent asks for it,
-  without another sheet. A one-time code is always its own request, with its own sheet, and is
-  written only into the page's code box — never copied to the clipboard.
+  without another sheet. A one-time code is always its own request (with its own sheet when one is
+  shown), and is written only into the page's code box — never copied to the clipboard.
 
 There is **no autofill on page load**, ever. Not as a default, not as a setting. An agent's request
-is not a page load: it fills nothing until a human has approved it in the app, with a biometric,
-for that page.
+is not a page load — but it is honest to say that, inside the grace window, an agent's fill is
+approved by the Touch ID you gave earlier, not by a new one for that page.
 
 **Page two continues where page one left off.** Having picked an item on the identifier page, the
 extension remembers *which item* for that tab — an id and an origin, in memory, for **60 seconds**
@@ -371,10 +376,10 @@ a time.
    entry, never a prompt — there is nothing for a human to weigh about a fill the rule refused.
 5. **The human, on every fill that crosses a secret.** A password or a one-time code crosses only
    from a granted approval, and the app grants nothing without a LocalAuthentication check
-   ([ADR-0037](decisions/0037-every-fill-needs-a-fresh-presence-proof.md)) — on macOS, one that
-   passed for a fill on the same exact origin in the last ten minutes counts, and a presence-only
-   request for the same item inside that window is granted with no prompt at all (the presence
-   grace window, [ADR-0037's amendment](decisions/0037-every-fill-needs-a-fresh-presence-proof.md#amendment-2026-09-27-presence-grace-window)). The first fill of an
+   ([ADR-0037](decisions/0037-every-fill-needs-a-fresh-presence-proof.md)) — on macOS, any check
+   that passed while the app-wide grace window is open counts, and a presence-only request inside
+   that window is granted with no prompt at all (the grace window,
+   [ADR-0037's amendment of 2026-10-03](decisions/0037-every-fill-needs-a-fresh-presence-proof.md#amendment-2026-10-03-app-wide-sliding-grace-window)). The first fill of an
    (origin, item, fields) triple gets the full sheet plus the check. After **Allow for this
    session**, a repeat of that exact triple from the top frame of the same origin gets the check
    alone — a *presence-only* request. A repeat from a sub-frame, or from a page whose top frame the
@@ -425,9 +430,10 @@ Fill leases appear in **Agent access → Leases**, under "Browser fills", with t
 **Agent-requested fills** ([ADR-0036](decisions/0036-agent-requested-browser-fill.md)) share the
 queue, the 60-second timeout and the biometric gate, and share nothing else:
 
-- **Their own sheet, every time.** `ApprovalKind::AgentFill`, never presence-only, never "for this
-  session" — the queue clamps whatever a UI answers to once. The sheet's Allow asks for Touch ID
-  unless the presence grace window for that exact origin is open.
+- **Their own sheet, outside the grace window.** `ApprovalKind::AgentFill`, never "for this
+  session" — the queue clamps whatever a UI answers to once. Inside the app-wide grace window an
+  agent fill is granted with no sheet and no Touch ID, unless "Always show the sheet for agent
+  fills" is on (ADR-0036 amendment of 2026-10-03).
 - **A grant, not a lease.** An approval issues one single-use grant, held by the app and bound to
   the sidecar process that asked (its kernel pid, executable and start time, so a later sidecar
   handed the same pid cannot redeem it), the item, the exact fields, the
@@ -438,12 +444,12 @@ queue, the 60-second timeout and the biometric gate, and share nothing else:
   transaction; a reload, a navigation, another tab or another sidecar process refuses it.
 - **Leases do not cross.** A live fill lease never excuses an agent's sheet, and an agent's
   approval never mints a fill lease or an env lease.
-- **One at a time, and budgeted.** While one agent fill is in progress, another is refused at once
-  (`RATE_LIMITED`, with its own sentence) rather than queued. Each agent — keyed on the sidecar's
-  kernel-resolved parent executable — gets three sheets per ten minutes, then ten minutes of
-  `RATE_LIMITED`; a denial (or a timeout) answers the identical request `USER_DENIED` without a
-  sheet for ten minutes; *Deny and block* blocks the agent for thirty; a second origin mismatch in
-  one unlock session blocks it until the human unblocks it. Blocks survive a lock (ADR-0036 §9).
+- **One at a time.** While one agent fill is in progress, another is refused at once
+  (`RATE_LIMITED`, with its own sentence) rather than queued. *Deny and block* blocks the agent for
+  thirty minutes, and blocks survive a lock. The approval-fatigue limits that used to sit here — a
+  per-agent sheet budget, sticky denials, and a block after a second origin mismatch — were
+  removed in 0.1.3 (ADR-0036 amendment of 2026-10-03); a mismatch is still refused, audited and
+  noticed.
 
 Their audit entries are the agent's: tool `request_fill`, actor
 `mcp "<name>" [...] pid N <exe> via <browser> (extension "<id>")`, the field names, and the
@@ -627,12 +633,13 @@ the form fills (`FILL_CONFIRMED`).
 
 **The same pass for an agent-requested fill** (ADR-0036), which nobody has run yet either. Steps 1
 and 2 are unchanged except that the item and its vault must be visible to agents (`kagisecure env
-agent-access --allow --logical-vault Personal`, then `--allow --item Demo`). In the app, turn on
-Agent access → "Let agents ask to fill logins in your browser" (it asks for Touch ID), point an MCP
-client at the app ([mcp-server.md](mcp-server.md) §9), open the page in the browser so it is the
-tab in front, and ask the agent to call `request_fill` with the item's id and
-`http://localhost:8788`. Expect: the agent-fill sheet leading with the site, its "Fill on …"
-button held for 1.5 seconds, Touch ID, the form filled, the agent told only the field names, and a
+agent-access --allow --logical-vault Personal`, then `--allow --item Demo`). In the app, make sure
+Settings › AI Agents → "Let agents fill logins in your browser" is on (the default), and — to see
+the sheet rather than a silent fill inside the grace window — turn on "Always show the sheet for
+agent fills". Point an MCP client at the app ([mcp-server.md](mcp-server.md) §9), open the page in
+the browser, and ask the agent to call `request_fill` with the item's id and
+`http://localhost:8788`. Expect: the agent-fill sheet leading with the site, Touch ID (unless the
+grace window is open), the form filled, the agent told only the field names, and a
 `request_fill` entry `AGENT_FILL_APPROVED` whose actor starts with `mcp`. Then ask again from a
 page on `127.0.0.1:8788`: no sheet, `NO_MATCHING_TAB`, an `AGENT_FILL_ORIGIN_MISMATCH` entry and a
 notice in Agent access.

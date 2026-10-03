@@ -540,6 +540,16 @@ app restart clear every window; a framed fill neither opens nor rides one. So M-
 value with no person present, and the audit log does not distinguish that fill from a touched one
 (threat-model-browser-extension.md R-15). Windows is unchanged and still asks every time.
 
+**Relaxed further 2026-10-03 — known limitation.** [ADR-0037's amendment of 2026-10-03](decisions/0037-every-fill-needs-a-fresh-presence-proof.md#amendment-2026-10-03-app-wide-sliding-grace-window) replaces the per-origin,
+ten-minute window with **one app-wide sliding window**: any successful presence check in the app
+(a fill, an agent fill, an in-app reveal, copy, Quick Access or one-time code) opens it, every use
+— including a fill that rode it — extends it, framed fills are covered, and by default it lasts
+**until the vault locks** (10 minutes, 30 minutes or 1 hour are settings). Inside it, agent fills
+and presence-only fills are granted with no sheet and no prompt ([ADR-0036](decisions/0036-agent-requested-browser-fill.md#amendment-2026-10-03-agents-fill-without-prompts-during-grace)).
+It is still cleared by every lock, including sleep, screen lock and idle lock, and by a restart. So
+after one Touch ID, an agent or automation on this Mac can obtain fills on any covered site with
+no person present until the vault locks.
+
 **M-21 — Import parses untrusted input with no intermediate plaintext, bounded limits, and
 fail-closed concealment.** An import source (`.1pux`, `.csv`) is the largest piece of attacker-
 shaped data kagisecure reads, and it arrives as somebody's entire password manager in the clear.
@@ -769,7 +779,11 @@ hidden and absent items answer identically (M-8). **This is the one tool with a 
 exception to M-7 that M-7's own reasoning allows: here the counter bounds the human's attention,
 which no lease protects, rather than access, which the biometric already bounds — one sheet at a
 time, three per agent per ten minutes, sticky denials, a block button, and escalation after an origin
-mismatch. Those limits are built in the broker (keyed on the sidecar's kernel-resolved parent
+mismatch. *(Amended 2026-10-03 — [ADR-0036's amendment of 2026-10-03](decisions/0036-agent-requested-browser-fill.md#amendment-2026-10-03-agents-fill-without-prompts-during-grace): inside the app-wide grace window an
+agent fill needs no sheet and no biometric; the three-per-ten-minutes budget, sticky denials and
+mismatch escalation are removed, leaving one fill at a time and the block button; the switch is
+on by default and asks nothing to flip; and a background tab at the claimed origin may be filled
+when the tab in front does not match. The rest of this paragraph describes the original design.)* Those limits are built in the broker (keyed on the sidecar's kernel-resolved parent
 executable and surviving a vault lock) and tested by counting the sheets shown; the app's side of
 them — the block button, the blocks list and the notices — and the switch that turns the feature
 on, off by default and asking for a presence check to turn on, are built in the macOS app, whose

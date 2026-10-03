@@ -6,7 +6,7 @@ and are exercised end to end by `crates/kagisecure-cli/tests/mcp.rs` (against th
 other end of the IPC socket is now the native app, with a Touch ID approval sheet — see §11.
 `request_fill` (§2.10) is the newest: the macOS app serves it
 ([ADR-0036](decisions/0036-agent-requested-browser-fill.md) Phases 1–3, Chromium-family browsers),
-behind a switch in Agent access that is off by default; `kagisecure daemon` never serves it, and
+behind a switch in Settings › AI Agents that is on by default since 0.1.3; `kagisecure daemon` never serves it, and
 neither does the Windows app. The
 terminal daemon is retained as the headless channel and is a thin wrapper over the same library
 ([ADR-0013](decisions/0013-agent-library-split.md)).
@@ -56,7 +56,7 @@ the characters.
 | `write_env_file` | **injection** | yes (biometric) | path + var names + lease id |
 | `run_with_env` | **injection** | yes (biometric) | exit code, stdout/stderr masked by default (`output`) |
 | `revoke_env_file` | cleanup | no | shredded paths |
-| `request_fill` | **fill into a browser tab** | yes, a sheet every time (biometric unless one passed for a fill on that exact origin in the last ten minutes) | the field **names** written |
+| `request_fill` | **fill into a browser tab** | outside the app-wide grace window, a sheet and biometric; inside it, none (unless "Always show the sheet for agent fills" is on) | the field **names** written |
 
 All ten are implemented — `request_fill` as §2.10 describes — and since M4 both of the behaviours this paragraph used to defer are
 real: the approval is a Touch ID (or login-password) gate in the app's own sheet, and
@@ -624,9 +624,19 @@ refused, not ignored.
 
 **Status: served by the macOS app, Phases 1–3.** Username and password on a single page,
 identifier-first sign-ins across two pages, and one-time codes, in a Chromium-family browser with
-the extension, under the approval-fatigue limits of ADR-0036 §9 (below). The switch, "Let agents
-ask to fill logins in your browser" in Agent access, is off by default and asks for Touch ID (or
-the login password) to turn on; while it is off every call is `FILL_UNAVAILABLE`. A Safari session
+the extension. The switch, "Let agents fill logins in your browser" in Settings › AI Agents, is on
+by default and asks for no presence check either way; while it is off every call is
+`FILL_UNAVAILABLE`.
+
+> **Changed in 0.1.3** ([ADR-0036 amendment of 2026-10-03](decisions/0036-agent-requested-browser-fill.md#amendment-2026-10-03-agents-fill-without-prompts-during-grace)).
+> While the app-wide grace window is open — opened by any successful Touch ID check in the app,
+> extended by every use, and by default lasting until the vault locks — an agent fill (login,
+> two-page sign-in or one-time code) is granted with **no sheet and no biometric**. "Always show
+> the sheet for agent fills" (Settings › Security & Unlock › Advanced) restores the sheet. The sheet
+> budget, sticky denials and the block after a second origin mismatch are gone: a mismatch is
+> still refused, audited and noticed, and *Deny and block* and the one-fill-at-a-time rule remain.
+> The tab no longer has to be in front: a background tab at `origin` is used when the tab in front
+> does not match. Where the text below describes a sheet, it means a fill outside the grace window. A Safari session
 never declares the capability, so a user whose only connected browser is Safari gets
 `FILL_UNAVAILABLE` too (ADR-0036 §12). `kagisecure daemon` has no browser extension to ask and
 never will, and the Windows app does not offer agent fills at all: every call there is
@@ -648,8 +658,8 @@ sheet of its own. So is a call for another item, from another agent, after the 6
 after a lock. If the password step never comes, the log records that the username was written and
 the password never was.
 
-**One-time codes** (ADR-0036 §7.4). `["one_time_code"]` is its own request with its own sheet and
-biometric, every time: approving a password never approves a code, and a pending identifier-first
+**One-time codes** (ADR-0036 §7.4). `["one_time_code"]` is its own request, with its own sheet and
+biometric outside the grace window: approving a password never approves a code, and a pending identifier-first
 step does not either. The tab in front must have a one-time-code field; the code is written there
 or nowhere — never onto the clipboard, which every process the user runs can read. The code is
 audited like every one-time code the browser receives, under the tool name `totp_code`, before it
@@ -661,11 +671,10 @@ run script in the page can read it there.
 1. **Enabled, and not blocked or limited.** Off — or no kernel-established sidecar process (and
    parent) to bind the grant and the limits to — is `FILL_UNAVAILABLE`, before the vault's lock
    state and before the item, so it is the same for every item id, real, hidden or made up. Then,
-   in this order and still before the item: an agent the user blocked is `USER_DENIED`; a request
-   the user denied, or let time out, in the last ten minutes — same agent, item and origin — is
-   `USER_DENIED`; an agent that has had three sheets in ten minutes is `RATE_LIMITED` for the next
-   ten; and while another agent fill is in progress the request is `RATE_LIMITED` with a sentence
-   of its own: one at a time, never a queue of sheets. None of these raises a sheet. "The agent"
+   in this order and still before the item: an agent the user blocked is `USER_DENIED`; and while
+   another agent fill is in progress the request is `RATE_LIMITED` with a sentence of its own: one
+   at a time, never a queue of sheets. (The ten-minute sticky denial and the three-sheet budget
+   were removed in 0.1.3.) None of these raises a sheet. "The agent"
    is the sidecar's parent program as the kernel reports it, never the name the client reports.
    Then the arguments (`INVALID_ARGUMENT`; an `origin` that is not an http(s) origin is one too).
 2. **Vault unlocked**: `VAULT_LOCKED`; a vault file that no longer continues the session:
@@ -683,15 +692,14 @@ run script in the page can read it there.
    (above). Otherwise `NO_MATCHING_TAB` — one code, one message, whatever
    the reason, so it is not an oracle for an item's websites. A tab in front on a site the item is
    not saved for (a look-alike) is also reported to the user when it can be the agent's own — the
-   only tab in front, or at exactly `origin` — and a second one in the same unlock session blocks
-   the agent until the user unblocks it.
+   only tab in front, or at exactly `origin`. (Since 0.1.3 a second one no longer blocks the agent,
+   and a background tab at `origin` is used when the tab in front does not match.)
 7. **Audit pre-flight**: `AUDIT_UNAVAILABLE`. Asked before check 5, not after 6: it does not
    depend on the tab, and answered after a tab was chosen it would say one had been. For the same
    reason a lock while the browsers are being asked is `VAULT_LOCKED` right after they have
    answered, before the tab is chosen (ADR-0036, implementation decision 36).
 8. **The user**: `USER_DENIED` or `APPROVAL_TIMEOUT`. The user may also deny and block the agent
-   for thirty minutes. A denial or a timeout answers the identical request for ten minutes (gate 1),
-   so retrying a timed-out `request_fill` at once gets `USER_DENIED`.
+   for thirty minutes. Inside the grace window there is no sheet, and this check is skipped.
 9. **Delivery**: the extension redeems a single-use, 30-second grant bound to this sidecar process,
    the tab, the document and the origin; any change is `NO_MATCHING_TAB`, and an audit entry that
    cannot be written is `AUDIT_UNAVAILABLE` — in both cases nothing was typed. Each page of an
@@ -907,7 +915,7 @@ message is written for the *model*, so it should say what to do next.
 | --- | --- | --- |
 | `APP_NOT_RUNNING` | The native app is not running or not reachable over IPC | Tell the user to open kagisecure. Do not retry in a loop. |
 | `VAULT_LOCKED` | App is running, vault is locked | Tell the user to unlock. |
-| `USER_DENIED` | The user declined the approval — for `request_fill` also: the user blocked this agent, or already declined (or let time out) the identical request in the last ten minutes | Stop. Do not re-request the same thing. |
+| `USER_DENIED` | The user declined the approval — for `request_fill` also: the user blocked this agent | Stop. Do not re-request the same thing. |
 | `APPROVAL_TIMEOUT` | No response in 60 s | May retry once, after telling the user. |
 | `NOT_FOUND` | Unknown vault/item/environment id, **or** one the user has not made visible to agents | Re-list. |
 | `INVALID_PATH` | Path not absolute, not a directory, or refused by policy | Fix the path. |
@@ -918,7 +926,7 @@ message is written for the *model*, so it should say what to do next.
 | `FILL_UNAVAILABLE` | `request_fill` cannot be served at all: agent fills are turned off, or no browser with the kagisecure extension is connected. Answered before the item is looked up | Tell the user. Do not retry. |
 | `NOTHING_TO_FILL` | `request_fill` named a field the item has no value for, or an archived item | Check `describe_item`. |
 | `NO_MATCHING_TAB` | `request_fill` found no tab to fill: the tab in front is not at `origin`, is not a sign-in page kagisecure recognizes (for a one-time code: has no code field), is not visible, is not a site saved for this item, or changed before the fill; or more than one browser has such a tab in front; or page two of an identifier-first sign-in is not the same sign-in in the same tab | Bring the right tab to the front; retry at most once. |
-| `RATE_LIMITED` | `request_fill` was refused without asking: this agent has had three approval sheets in ten minutes and is refused for the next ten (the user has been told), or — with its own sentence — another agent fill is in progress and they are asked one at a time. Answered before the item is looked up | Stop. Do not retry — unless the message says another fill is in progress, then retry once after it finishes. |
+| `RATE_LIMITED` | `request_fill` was refused without asking because another agent fill is in progress and they are served one at a time. Answered before the item is looked up | Retry once after it finishes. |
 | `AUDIT_UNAVAILABLE` | `write_env_file` or `run_with_env` was about to release values, and the audit entry that must be written first could not be (a full disk, a broken or conflicting vault file, another process holding the write lock); **nothing was released** — no file written, no command run | Tell the user the vault cannot be written right now. Do not retry in a loop. |
 | `NOT_GRANTED` | Only on the unattended socket (§5.1): the request is not covered by a standing grant of the calling run's job, or does not come from a run kagisecure started. One message for every reason; a request no grant covers has suspended every grant of the job and ended the run | Stop. Do not retry or try variations; the owner has been told. |
 | `UNATTENDED_PAUSED` | Only on the unattended socket (§5.1): unattended jobs are not armed, so nothing is released | Tell the user unattended jobs are paused; do not retry. |
@@ -985,6 +993,11 @@ over (decision 80).
 there is a browser to ask". When the switch is off it is answered before the vault's lock state and
 before the item, so it cannot vary with either. `NOTHING_TO_FILL` and `NO_MATCHING_TAB` are gates 4,
 6 and 9. All three arrived with protocol version 2, alongside the request and reply they belong to.
+
+> **Changed in 0.1.3.** The per-agent sheet budget and the sticky denial described in this
+> paragraph were removed (ADR-0036 amendment of 2026-10-03). `RATE_LIMITED` is now produced only
+> while another agent fill is in progress. The paragraph is kept as the record of the original
+> design.
 
 `RATE_LIMITED` is back, scoped to `request_fill` (ADR-0036 §9.1), because there a counter bounds
 something no lease protects: **the human's attention**. Every agent fill still needs its own sheet

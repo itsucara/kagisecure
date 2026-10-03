@@ -704,7 +704,8 @@ three-column detail width of about 460 pt, and must keep doing so. Two lists:
            saved for it. Nothing was filled.
   ```
 
-  - **The switch** is off by default, stored in the app's defaults and pushed to Rust's in-memory
+  - **The switch** *(as originally built; since 2026-10-03 it is on by default and flipping it asks
+    nothing — see the Settings note above)* is off by default, stored in the app's defaults and pushed to Rust's in-memory
     flag (`agentFillSetEnabled`) at launch and again on every unlock, before the agent listener
     starts. Turning it **on** asks for Touch ID or the login password through the app's one
     presence slot (`PresenceCoordinator`); cancelled, impossible, or refused because another prompt

@@ -8,72 +8,97 @@ they should never *read* them. kagisecure gives agents a Model Context Protocol 
 that can **list**, **describe**, and **inject** secrets, while the secret values themselves stay
 inside a local encrypted vault and never enter the model's context window.
 
-> **Status: M6 complete (core + CLI + MCP sidecar + macOS app + browser autofill in Chromium
-> *and* Safari, wired together); M7 (release engineering) next.** An agent can discover and
-> inject secrets without ever seeing one, and the thing that approves it is now the app:
-> `kagisecure-mcp` implements the MCP tools, and the macOS app owns the unlocked vault, runs
-> the IPC listener, and raises a native approval sheet — caller identity with a code-signature
-> verdict, the canonical directory, the variable **names**, a `.gitignore` warning, an editable
-> lease TTL, and a Touch ID gate before anything is granted. `kagisecure daemon` is retained as
-> the headless channel for CI and SSH sessions and now runs the same library rather than a second
-> implementation. A `⇧⌘G` sheet generates passwords and passphrases, Login items can carry a TOTP
-> field with a live countdown ring, and `⇧⌘Space` opens a Quick Access panel for copying a
+> **Status: 0.1.3, a signed and notarized macOS release.** Core, CLI, MCP sidecar, the macOS
+> app, browser autofill in Chromium and Safari, system-wide AutoFill, shared vaults and unattended
+> jobs all ship. An agent can discover and inject secrets without ever seeing one, and the thing
+> that approves it is the app: `kagisecure-mcp` implements the MCP tools, and the macOS app owns
+> the unlocked vault, runs the IPC listener, and raises a native approval sheet — caller identity
+> with a code-signature verdict, the canonical directory, the variable **names**, a `.gitignore`
+> warning and an editable lease TTL. `kagisecure daemon` is retained as the headless channel for CI
+> and SSH sessions and runs the same library rather than a second implementation. A `⇧⌘G` sheet
+> generates passwords and passphrases, Login items can carry a TOTP field with a live countdown
+> ring, and `⇧⌘Space` opens a Quick Access panel (arrow keys move the highlight) for copying a
 > password, username or one-time code without leaving whatever app you were in.
 >
-> **M6 adds autofill in the browser**, on a second channel that — unlike everything else here —
+> **One Touch ID, then no more prompts until you lock.** Any successful Touch ID confirmation —
+> for a fill, a reveal or a copy — opens one app-wide grace window. Fills, agent fills, reveals and
+> copies inside it ask nothing, and every use extends it. By default it lasts until the vault
+> locks; **Settings › Security & Unlock** can shorten it to 10 minutes, 30 minutes or 1 hour. Every
+> lock ends it, including sleep, screen lock and idle lock
+> ([ADR-0037](docs/decisions/0037-every-fill-needs-a-fresh-presence-proof.md#amendment-2026-10-03-app-wide-sliding-grace-window)).
+> This is a deliberate choice of convenience over strictness, and the threat model says what it
+> costs: while the window is open, anything on this Mac that can drive the app or the browser can
+> get a fill with no person present.
+>
+> **Autofill in the browser** runs on a second channel that — unlike everything else here —
 > deliberately carries one value. Click the key icon in a matched site's password field, or press
-> `⌘\`; the app raises the same approval sheet, checks the origin against the item's saved
-> websites (eTLD+1 under the Public Suffix List, exact scheme and port), and the password crosses
-> once, for that fill. There is **no autofill on page load**, ever. The extension stores nothing:
-> no values, no URLs, not even a match result. A one-time code is a separate, second click. See
+> `⌘\`; the app checks the origin against the item's saved websites (eTLD+1 under the Public
+> Suffix List, exact scheme and port), and the password crosses once, for that fill. There is
+> **no autofill on page load**, ever. The extension stores nothing: no values, no URLs, not even a
+> match result. A one-time code is a separate, second click. See
 > [docs/browser-extension.md](docs/browser-extension.md) and the
 > [threat-model addendum](docs/threat-model-browser-extension.md), which is where the cost of that
-> value crossing is written down rather than glossed.
+> value crossing is written down rather than glossed. After you unlock, the app offers to connect
+> any installed browser that is not connected yet.
 >
-> **Safari is supported too, since M6b**, from the same extension source and over the same
-> protocol. It needs none of Chromium's plumbing — no helper binary, no manifest file, no id to
-> check — because the extension is an app extension inside `Kagisecure.app` itself, talking to the
-> app over a socket in an App Group only the two of them share
+> **Safari is supported too**, from the same extension source and over the same protocol. It needs
+> none of Chromium's plumbing — no helper binary, no manifest file, no id to check — because the
+> extension is an app extension inside `Kagisecure.app` itself, talking to the app over a socket in
+> an App Group only the two of them share
 > ([ADR-0024](docs/decisions/0024-safari-app-group-socket.md)). It is also the one path where the
 > approval sheet's identity check can read *verified*: the only process on that socket is code we
 > signed, where on Chrome our own native messaging helper is the half that cannot be attributed.
-> Enable it in Safari → Settings → Extensions. It needs a signed build —
+> Enable it in Safari → Settings → Extensions. It needs a signed build — the release DMG, or
 > `make macos SIGN=developer-id` ([ADR-0025](docs/decisions/0025-developer-id-for-local-builds.md)).
 >
-> **Native apps and QuickType, through system-wide AutoFill**
-> ([ADR-0045](docs/decisions/0045-system-wide-autofill-credential-provider.md)). Enable
-> **Kagisecure** under **System Settings › General › AutoFill & Passwords**. After one Touch ID in
-> the app, suggested logins fill in any app until the vault locks. Needs a build signed with the
-> AutoFill provisioning profile (see the ADR's "Owner steps").
+> **Native apps and QuickType, through system-wide AutoFill, since 0.1.3**
+> ([ADR-0045](docs/decisions/0045-system-wide-autofill-credential-provider.md)). Turn on
+> **Kagisecure** under **System Settings › General › AutoFill & Passwords** (Settings › AutoFill in
+> the app has a button that opens it). Suggested logins then fill in any app, under the same grace
+> window. The release build carries the AutoFill entitlement; a build from source does not, so
+> this needs the DMG or a build signed with the project's provisioning profile (see the ADR).
 >
-> **An agent driving your browser can ask for a login to be filled, since M9**
+> **An agent driving your browser can ask for a login to be filled**
 > ([ADR-0036](docs/decisions/0036-agent-requested-browser-fill.md)). It calls `request_fill` with
-> an item and the site it believes it is on; the browser, not the agent, says which tab is in front
-> and where it really is; a look-alike site is refused before you are asked; and the app raises its
-> own sheet for every fill, with Touch ID unless a fill on that exact site passed it in the last ten
-> minutes — one approval covers both pages of a sign-in that asks
-> for the username first, and a one-time code always needs its own. The agent is told which fields
-> were filled, never a value — but an agent that can run script in the page can read what was
-> typed there, and the sheet says so. Off by default (Agent access → "Let agents ask to fill logins
-> in your browser"), macOS and Chromium-family browsers only: not in Safari yet, and never on
-> Windows. **Not yet seen working end to end**: the Rust and extension halves are tested
-> headlessly, and the browser scenarios are written but have not been run with a real browser and
-> the real app.
+> an item and the site it believes it is on; the browser, not the agent, says where its tabs really
+> are — the tab in front, or a background tab on that site; a look-alike site is refused, audited
+> and reported to you. Inside the grace window the fill goes through with **no sheet and no Touch
+> ID**; outside it, the app raises its own sheet and asks for Touch ID. One approval covers both
+> pages of a sign-in that asks for the username first, and a one-time code is always its own
+> request. The agent is told which fields were filled, never a value — but an agent that can run
+> script in the page can read what was typed there. **On by default** (Settings › AI Agents). If you
+> want a person in the loop every time, turn on "Always show the sheet for agent fills" under
+> Settings › Security & Unlock › Advanced. macOS and Chromium-family browsers only: not in Safari
+> yet, and not on Windows. **Not yet seen working end to end**: the Rust and extension halves are
+> tested headlessly, and the browser scenarios are written but have not been run with a real
+> browser and the real app.
 >
-> Two honest caveats, and one thing not yet seen working. Touch ID for *unlock* still falls back to
-> the master password: `keychain-access-groups` is a restricted entitlement that AMFI validates
-> against a provisioning profile at every exec, and a Developer ID signature does **not** satisfy
-> it — measured in M6b, and the process is killed before `main`
-> ([ADR-0011](docs/decisions/0011-secure-enclave-under-ad-hoc-signing.md)). Touch ID for *approval*
-> works on every build, because it needs no entitlement. A caller's code signature reads
-> "unverified" on an ad-hoc build and on every Chromium fill
-> ([ADR-0015](docs/decisions/0015-peer-code-signature-verification.md)). And **no fill has yet been
-> performed in real Safari by a human** — everything below Safari is tested, including across a
-> real App Sandbox boundary, but the last hop is not
+> **Touch ID unlock works in the release build and is on by default.** After a master-password
+> unlock the app enrols Touch ID on its own, or offers to if you turned it off earlier
+> ([ADR-0004 addendum](docs/decisions/0004-biometric-key-wrapping.md),
+> [ADR-0011 amendment](docs/decisions/0011-secure-enclave-under-ad-hoc-signing.md)). After you
+> lock by hand, it waits for you instead of raising Touch ID on its own. A build from source is
+> ad-hoc signed, cannot own the Secure Enclave key, and still falls back to the master password.
+>
+> **Settings were redesigned** as a System Settings-style window — General, Security & Unlock,
+> AutoFill, AI Agents, Vault, Updates, About — with in-app choices for appearance (System, Light,
+> Dark) and language. The app and the browser extension are available in **English and Japanese**.
+>
+> **New items are visible to agents by default** (since 0.1.3, and also for imports): an agent sees
+> their titles, categories, tags and field names — never a value — so it can find a login without
+> you turning each one on. Turn this off with **Show new items to agents** in Settings › AI Agents,
+> and show or hide many items at once from the item list, a tag or a category
+> ([ADR-0007 amendment](docs/decisions/0007-m2-daemon-and-ipc-deviations.md)). The vault-level
+> agent switch is still off until you turn it on.
+>
+> Honest caveats. A caller's code signature reads "unverified" on an ad-hoc build and on every
+> Chromium fill ([ADR-0015](docs/decisions/0015-peer-code-signature-verification.md)). And **no
+> fill has yet been performed in real Safari by a human** — everything below Safari is tested,
+> including across a real App Sandbox boundary, but the last hop is not
 > ([docs/browser-extension.md](docs/browser-extension.md) §8).
 >
 > The vault format is not frozen and interfaces will still change. See
-> [docs/roadmap.md](docs/roadmap.md).
+> [CHANGELOG.md](CHANGELOG.md) and [docs/roadmap.md](docs/roadmap.md).
 
 ## The problem
 
@@ -309,7 +334,9 @@ $ kagisecure import ~/Downloads/export.1pux --report ./import-report.md
 Imported 412 items into "Personal".
 ```
 
-Everything arrives with `agent_visible = false`, so no agent sees any of it until you say so. The
+Imported items follow the vault's **Show new items to agents** setting, which is on by default:
+agents can then see their titles and field names (never a value) once the vault itself is visible
+to agents. Turn the setting off before importing if you would rather show items one at a time. The
 report lists every item, every preserved field and every drop — **names and counts only, never
 values**. Your 1Password password history comes across too, held as `Secret` like any live
 password: never visible to an agent, never searchable, and never printed. Re-running the same
@@ -412,7 +439,8 @@ come out of Rust.
 
 What works:
 
-- Unlock with the master password or the one-time recovery code; a lock screen that is a root-view
+- Unlock with Touch ID (on by default in the release build), the master password or the one-time
+  recovery code; a lock screen that is a root-view
   swap, not an overlay, because a locked vault has no key and therefore nothing to render.
 - Sidebar sections: All Items, Favorites, every category (shown even at zero), Tags, Archive,
   Trash, and an **Agent access** section — Environments (with the editor where you type the value
@@ -420,10 +448,13 @@ What works:
   Revoke, Audit with filters, and Set up your agent.
 - Item detail with concealed fields masked at a fixed width, per-field reveal and copy-without-
   reveal, edit mode, favorites, archive, trash and permanent delete.
-- The per-item and per-field **"Visible to agents"** toggles, off by default on every new item.
+- The per-item and per-field **"Visible to agents"** toggles — on by default for new items (Settings ›
+  AI Agents › Show new items to agents) — plus bulk Show to Agents / Hide from Agents for a
+  selection, a tag or a category.
 - Auto-lock on idle, sleep and screen lock; locking drops the vault key, stops serving agents, and
   kills every lease it had granted.
-- The **approval sheet**, gated by `LAContext` (Touch ID, falling back to the login password), and
+- The **approval sheet**, gated by `LAContext` (Touch ID, falling back to the login password) and the
+  app-wide grace window, and
   a menu-bar item showing lock state, a badge when something is waiting, and Revoke All / Lock Now.
 - A **password generator** sheet (`+` menu, ⇧⌘G, or the die button on any concealed field):
   random-character or word-based (memorable) passwords, every knob live-previewed, a five-level
@@ -434,7 +465,10 @@ What works:
   Codes are recomputed from the wall clock every tick, not decremented, so they cannot drift.
 - **Quick Access** (`⇧⌘Space`, or the menu-bar item): a floating panel, independent of the main
   window's search and selection, for finding an item and copying its password (⏎), username
-  (⌘⏎) or current one-time code (⌥⏎) without switching apps.
+  (⌘⏎) or current one-time code (⌥⏎) without switching apps; the arrow keys move the highlight.
+- **Settings** (⌘,) laid out like System Settings, with appearance and language (English or
+  Japanese) in General, and the grace window, Touch ID and auto-lock in Security & Unlock.
+- **System-wide AutoFill** for native apps and QuickType (Settings › AutoFill).
 
 What is not there yet: QR-code scanning for TOTP setup (paste-URI and manual entry are built),
 attachments, and the one-click "Add to `.gitignore`" button on the approval sheet. Menu entries
