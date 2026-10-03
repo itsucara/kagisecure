@@ -34,7 +34,7 @@ What changed for you:
 - **Items are visible to agents by default.** New and imported items now start visible to agents,
   with all their fields, so an agent can find a login without you turning it on first. Agents
   still see only titles, categories, tags and field names — never a value, and every value still
-  needs your approval. Turn this off in **Settings ▸ Vault ▸ Show new items to agents**. Items you
+  needs your approval. Turn this off in **Settings ▸ AI Agents ▸ Show new items to agents**. Items you
   already have are not changed; use **Show All Items to Agents…** there to show them all at once.
 - **Show or hide many items at once.** Select several items in the list (⌘-click, ⇧-click, ⌘A)
   and choose **Show to Agents** or **Hide from Agents**, from the right-click menu or the **Item**
