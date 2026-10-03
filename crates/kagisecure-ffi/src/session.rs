@@ -27,7 +27,9 @@ use kagisecure_core::crypto::kdf::KdfParams;
 use kagisecure_core::model::{Environment, Field, Item, VarSource, VaultId};
 use kagisecure_core::proto::{Category, Outcome, VarName};
 
-use kagisecure_core::vault::{CreateOptions, FileConflict, Tx, UnlockedBy, Vault};
+use kagisecure_core::vault::{
+    AgentVisibilityScope, CreateOptions, FileConflict, Tx, UnlockedBy, Vault,
+};
 use kagisecure_core::{RecoveryCode, unix_now};
 use zeroize::Zeroizing;
 
@@ -37,9 +39,9 @@ use crate::import::{
 };
 use crate::presence::Presence;
 use crate::types::{
-    EnvironmentView, FieldView, ItemDraft, ItemFilter, ItemSort, ItemView, KeepAppVersionOutcome,
-    SidebarCounts, TagCount, UnlockKind, VaultConflictDetailsView, VaultConflictKindView,
-    VaultView, field_value,
+    AgentVisibilityScopeView, BulkVisibilityView, EnvironmentView, FieldView, ItemDraft,
+    ItemFilter, ItemSort, ItemView, KeepAppVersionOutcome, SidebarCounts, TagCount, UnlockKind,
+    VaultConflictDetailsView, VaultConflictKindView, VaultView, field_value,
 };
 use crate::{FfiError, FfiResult};
 use kagisecure_core::model::SecretText;
@@ -667,6 +669,7 @@ impl VaultSession {
                     name: s.name.clone(),
                     item_count: u32::try_from(s.item_count).unwrap_or(u32::MAX),
                     agent_visible: s.agent_visible,
+                    new_items_agent_visible: vault.new_items_agent_visible(s.id),
                 })
                 .collect()
         })
@@ -685,6 +688,68 @@ impl VaultSession {
         self.transact(|tx| {
             let id = tx.find_vault(&vault_id)?;
             Ok(tx.set_vault_agent_visible(id, visible))
+        })
+    }
+
+    /// Set a logical vault's "Show new items to agents" setting (ADR-0007 amendment
+    /// 2026-10-04). Existing items keep their visibility; [`VaultSession::set_agent_visible_bulk`]
+    /// changes those. Returns whether the vault was found.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::NotPresent`] if there is no such logical vault; I/O failures.
+    pub fn set_new_items_agent_visible(&self, vault_id: String, visible: bool) -> FfiResult<bool> {
+        self.transact(|tx| {
+            let id = tx.find_vault(&vault_id)?;
+            let found = tx.set_new_items_agent_visible(id, visible);
+            tx.append_audit(AuditDraft {
+                actor: "app".to_owned(),
+                tool: "set_new_items_agent_visible".to_owned(),
+                vault_id: Some(id),
+                outcome: Outcome::Allowed,
+                detail: Some(format!(
+                    "new_items_agent_visible={}",
+                    if visible { "on" } else { "off" }
+                )),
+                ..AuditDraft::default()
+            });
+            Ok(found)
+        })
+    }
+
+    /// Show every item in `scope` to agents with all its fields, or hide each one and all its
+    /// fields — a multi-selection, a tag, a category, or everything — in **one** transaction with
+    /// **one** audit entry recording the scope kind and counts, never a tag, a title or a value.
+    ///
+    /// An item id in [`AgentVisibilityScopeView::Items`] that is not canonical or names no item
+    /// is ignored, so a selection that went stale while the list was open changes what is left.
+    ///
+    /// # Errors
+    ///
+    /// I/O failures; nothing changes on any error.
+    pub fn set_agent_visible_bulk(
+        &self,
+        scope: AgentVisibilityScopeView,
+        visible: bool,
+    ) -> FfiResult<BulkVisibilityView> {
+        let scope = match scope {
+            AgentVisibilityScopeView::Items { item_ids } => AgentVisibilityScope::Items(
+                item_ids
+                    .iter()
+                    .filter_map(|id| kagisecure_core::model::ItemId::parse_canonical(id))
+                    .collect(),
+            ),
+            AgentVisibilityScopeView::Tag { tag } => AgentVisibilityScope::Tag(tag),
+            AgentVisibilityScopeView::Category { category } => {
+                let Ok(category) = category.parse::<Category>();
+                AgentVisibilityScope::Category(category)
+            }
+            AgentVisibilityScopeView::All => AgentVisibilityScope::All,
+        };
+        let result = self.transact(|tx| Ok(tx.set_agent_visible_bulk(&scope, visible, "app")))?;
+        Ok(BulkVisibilityView {
+            matched: u32::try_from(result.matched).unwrap_or(u32::MAX),
+            changed: u32::try_from(result.changed).unwrap_or(u32::MAX),
         })
     }
 
@@ -796,7 +861,8 @@ impl VaultSession {
     /// Create an item pre-populated with its category's default fields (vault-format.md §5.4).
     ///
     /// The item is saved immediately, so the list can select it and the detail pane can open it
-    /// in edit mode. `agent_visible` is `false`, as it is on every new item.
+    /// in edit mode. It is visible to agents, with every field, exactly when its logical vault's
+    /// "Show new items to agents" setting is on ([`Tx::add_new_item`]).
     ///
     /// # Errors
     ///
@@ -815,7 +881,7 @@ impl VaultSession {
             let category: Category = category.parse().unwrap_or(Category::Login);
             let item = Item::from_template(target, category, title);
             let id = item.id.to_string();
-            tx.add_item(item);
+            tx.add_new_item(item);
             Ok(self.view(tx.find_item(&id)?))
         })
     }
@@ -3246,5 +3312,168 @@ mod tests {
             VaultSession::unlock_with_vault_key(path, vec![0; 32]),
             Err(FfiError::WrongCredential)
         ));
+    }
+}
+
+#[cfg(test)]
+mod agent_visibility_tests {
+    use super::*;
+    use crate::types::FieldDraft;
+
+    fn session() -> (tempfile::TempDir, Arc<VaultSession>) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("v.kagivault").display().to_string();
+        let session = VaultSession::create(
+            path,
+            "pw".to_owned(),
+            "Personal".to_owned(),
+            Some(64),
+            Some(1),
+        )
+        .expect("create");
+        (dir, session)
+    }
+
+    fn vault_id(session: &VaultSession) -> String {
+        session.vaults().first().expect("a vault").id.clone()
+    }
+
+    fn tagged(session: &VaultSession, title: &str, tag: &str) -> ItemView {
+        let item = session
+            .create_item(None, "login".to_owned(), title.to_owned())
+            .expect("item");
+        session
+            .save_item(ItemDraft {
+                id: item.id.clone(),
+                category: item.category.clone(),
+                title: item.title.clone(),
+                fields: item
+                    .fields
+                    .iter()
+                    .map(|f| FieldDraft {
+                        id: Some(f.id.clone()),
+                        label: f.label.clone(),
+                        kind: f.kind,
+                        concealed: f.concealed,
+                        value: None,
+                        section: f.section.clone(),
+                        agent_visible: f.agent_visible,
+                    })
+                    .collect(),
+                tags: vec![tag.to_owned()],
+                urls: Vec::new(),
+                notes: None,
+                revision: item.revision.clone(),
+            })
+            .expect("save")
+    }
+
+    fn all_items(session: &VaultSession) -> Vec<ItemView> {
+        session.list_items(ItemFilter::All, None, ItemSort::Title)
+    }
+
+    #[test]
+    fn a_new_item_is_visible_with_every_field_and_the_setting_is_on() {
+        let (_dir, session) = session();
+        assert!(session.vaults()[0].new_items_agent_visible);
+        let item = session
+            .create_item(None, "login".to_owned(), "A".to_owned())
+            .expect("item");
+        assert!(item.agent_visible);
+        assert!(item.fields.iter().all(|f| f.agent_visible));
+    }
+
+    #[test]
+    fn with_the_setting_off_a_new_item_stays_hidden() {
+        let (_dir, session) = session();
+        assert!(
+            session
+                .set_new_items_agent_visible(vault_id(&session), false)
+                .expect("set")
+        );
+        assert!(!session.vaults()[0].new_items_agent_visible);
+        let item = session
+            .create_item(None, "login".to_owned(), "A".to_owned())
+            .expect("item");
+        assert!(!item.agent_visible);
+        assert!(item.fields.iter().all(|f| !f.agent_visible));
+    }
+
+    #[test]
+    fn bulk_by_tag_and_by_selection_write_one_count_only_audit_entry_each() {
+        let (_dir, session) = session();
+        session
+            .set_new_items_agent_visible(vault_id(&session), false)
+            .expect("set");
+        let a = tagged(&session, "A", "imported:chromium");
+        let b = tagged(&session, "B", "imported:chromium");
+        let c = tagged(&session, "C", "work");
+        let before = session.audit_count();
+
+        let result = session
+            .set_agent_visible_bulk(
+                AgentVisibilityScopeView::Tag {
+                    tag: "imported:chromium".to_owned(),
+                },
+                true,
+            )
+            .expect("bulk");
+        assert_eq!(
+            result,
+            BulkVisibilityView {
+                matched: 2,
+                changed: 2
+            }
+        );
+        assert_eq!(session.audit_count(), before + 1);
+        let row = &session.audit_page(1, 0)[0];
+        assert_eq!(row.tool, "set_agent_visible_bulk");
+        assert_eq!(
+            row.detail.as_deref(),
+            Some("scope=tag visible=on matched=2 changed=2")
+        );
+        for item in all_items(&session) {
+            let expected = item.id != c.id;
+            assert_eq!(item.agent_visible, expected);
+            assert!(item.fields.iter().all(|f| f.agent_visible == expected));
+        }
+
+        let hidden = session
+            .set_agent_visible_bulk(
+                AgentVisibilityScopeView::Items {
+                    item_ids: vec![a.id.clone(), c.id.clone(), "not-an-id".to_owned()],
+                },
+                false,
+            )
+            .expect("bulk");
+        assert_eq!(
+            hidden,
+            BulkVisibilityView {
+                matched: 2,
+                changed: 1
+            }
+        );
+        assert_eq!(session.audit_count(), before + 2);
+        let visible: Vec<String> = all_items(&session)
+            .into_iter()
+            .filter(|i| i.agent_visible)
+            .map(|i| i.id)
+            .collect();
+        assert_eq!(visible, vec![b.id]);
+    }
+
+    #[test]
+    fn show_all_reaches_every_live_item() {
+        let (_dir, session) = session();
+        session
+            .set_new_items_agent_visible(vault_id(&session), false)
+            .expect("set");
+        tagged(&session, "A", "x");
+        tagged(&session, "B", "y");
+        let result = session
+            .set_agent_visible_bulk(AgentVisibilityScopeView::All, true)
+            .expect("bulk");
+        assert_eq!(result.matched, 2);
+        assert!(all_items(&session).iter().all(|i| i.agent_visible));
     }
 }

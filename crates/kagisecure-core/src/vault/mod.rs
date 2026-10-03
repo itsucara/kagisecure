@@ -144,7 +144,7 @@ use crate::crypto::wrap::{self, WrappedKey};
 use crate::crypto::{self, KEY_LEN, Key, aead};
 use crate::error::{Error, Result};
 use crate::model::{Environment, FieldKind, Item, VaultMeta};
-use crate::proto::{EnvironmentSummary, ItemId, ItemSummary, VaultId, VaultSummary};
+use crate::proto::{Category, EnvironmentSummary, ItemId, ItemSummary, VaultId, VaultSummary};
 use crate::recovery::RecoveryCode;
 use atomic::{read_bounded, write_atomically, write_new_file};
 use device::DEVICE_KEY_ID_LEN;
@@ -260,6 +260,55 @@ impl Body {
             unknown: BTreeMap::new(),
         }
     }
+}
+
+/// The `tool` of the audit entry [`Tx::set_agent_visible_bulk`] records.
+pub const TOOL_SET_AGENT_VISIBLE_BULK: &str = "set_agent_visible_bulk";
+
+/// Which items a bulk agent-visibility change ([`Tx::set_agent_visible_bulk`]) applies to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AgentVisibilityScope {
+    /// Exactly these items, by id — a multi-selection in the app. Ids that name no item are
+    /// ignored. An item in the trash is included if it is named: the person chose it.
+    Items(Vec<ItemId>),
+    /// Every item, not in the trash, carrying this tag (exact match).
+    Tag(String),
+    /// Every item, not in the trash, of this category.
+    Category(Category),
+    /// Every item not in the trash: the one-time "Show all items to agents" action.
+    All,
+}
+
+impl AgentVisibilityScope {
+    /// The short machine-readable name the audit entry records. Never the tag itself, nor any
+    /// title: the entry records the kind of scope and counts, nothing a person typed.
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Items(_) => "items",
+            Self::Tag(_) => "tag",
+            Self::Category(_) => "category",
+            Self::All => "all",
+        }
+    }
+
+    fn matches(&self, item: &Item) -> bool {
+        match self {
+            Self::Items(ids) => ids.contains(&item.id),
+            Self::Tag(tag) => !item.is_trashed() && item.tags.iter().any(|t| t == tag),
+            Self::Category(category) => !item.is_trashed() && &item.category == category,
+            Self::All => !item.is_trashed(),
+        }
+    }
+}
+
+/// What [`Tx::set_agent_visible_bulk`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BulkVisibility {
+    /// Items the scope matched.
+    pub matched: usize,
+    /// Of those, items whose item or field flags actually changed.
+    pub changed: usize,
 }
 
 /// How a vault was unlocked. Recorded so callers can require a fresh master password after a
@@ -2296,6 +2345,18 @@ impl Vault {
             .ok_or_else(|| Error::BodyDecode("vault body has no logical vaults".to_owned()))
     }
 
+    /// Whether a new item in logical vault `vault_id` starts out visible to agents with all its
+    /// fields ([`VaultMeta::new_items_agent_visible`]). `true` for a vault id this file does not
+    /// have, the setting's default.
+    #[must_use]
+    pub fn new_items_agent_visible(&self, vault_id: VaultId) -> bool {
+        self.body
+            .vaults
+            .iter()
+            .find(|v| v.id == vault_id)
+            .is_none_or(|v| v.new_items_agent_visible)
+    }
+
     /// Metadata for every logical vault.
     #[must_use]
     pub fn vault_summaries(&self) -> Vec<VaultSummary> {
@@ -2883,6 +2944,75 @@ impl<'v> Tx<'v> {
             }
             None => false,
         }
+    }
+
+    /// Set a logical vault's "Show new items to agents" setting
+    /// ([`VaultMeta::new_items_agent_visible`]), reporting whether the vault was found. Existing
+    /// items are not touched; [`Tx::set_agent_visible_bulk`] is how those change.
+    pub fn set_new_items_agent_visible(&mut self, id: VaultId, visible: bool) -> bool {
+        match self.vault.body.vaults.iter_mut().find(|v| v.id == id) {
+            Some(v) => {
+                v.new_items_agent_visible = visible;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Add a newly created item, applying its logical vault's "Show new items to agents" setting
+    /// ([`Vault::new_items_agent_visible`]): with it on, the item and every field start visible.
+    /// With it off the item is added exactly as given. Every place that creates an item for a
+    /// person — the app, the CLI, an import — goes through this rather than [`Tx::add_item`].
+    pub fn add_new_item(&mut self, mut item: Item) {
+        if self.vault.new_items_agent_visible(item.vault_id) {
+            item.set_agent_visible_all(true);
+        }
+        self.add_item(item);
+    }
+
+    /// Show every item `scope` matches to agents, with all its fields, or hide each one and all
+    /// its fields, and append **one** audit entry for the whole change.
+    ///
+    /// The entry's `detail` is `scope=<kind> visible=<on|off> matched=<n> changed=<n>`: the kind
+    /// of scope and counts only — never a tag, a title, a field name or a value. One transaction,
+    /// so either every item changes or none does. The entry is recorded even when nothing
+    /// changed, so the attempt itself is on record.
+    pub fn set_agent_visible_bulk(
+        &mut self,
+        scope: &AgentVisibilityScope,
+        visible: bool,
+        actor: &str,
+    ) -> BulkVisibility {
+        let mut result = BulkVisibility {
+            matched: 0,
+            changed: 0,
+        };
+        for item in self
+            .vault
+            .body
+            .items
+            .iter_mut()
+            .filter(|i| scope.matches(i))
+        {
+            result.matched += 1;
+            if item.set_agent_visible_all(visible) {
+                result.changed += 1;
+            }
+        }
+        self.append_audit(AuditDraft {
+            actor: actor.to_owned(),
+            tool: TOOL_SET_AGENT_VISIBLE_BULK.to_owned(),
+            outcome: crate::proto::Outcome::Allowed,
+            detail: Some(format!(
+                "scope={} visible={} matched={} changed={}",
+                scope.kind(),
+                if visible { "on" } else { "off" },
+                result.matched,
+                result.changed
+            )),
+            ..AuditDraft::default()
+        });
+        result
     }
 
     /// Add a logical vault, returning its id.

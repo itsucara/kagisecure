@@ -46,10 +46,16 @@ fn dispatch(args: &Cli) -> anyhow::Result<u8> {
     match &args.command {
         Command::Vault(VaultCommand::Init(a)) => commands::vault::init(&path, a, &mut input)?,
         Command::Vault(VaultCommand::Unlock) => commands::vault::unlock(&path, &mut input)?,
+        Command::Vault(VaultCommand::NewItemsAgentVisible(a)) => {
+            commands::vault::new_items_agent_visible(&path, a, &mut input)?;
+        }
         Command::Item(ItemCommand::Add(a)) => commands::item::add(&path, a, &mut input)?,
         Command::Item(ItemCommand::List(a)) => commands::item::list(&path, a, &mut input)?,
         Command::Item(ItemCommand::Show(a)) => commands::item::show(&path, a, &mut input)?,
         Command::Item(ItemCommand::Rm(a)) => commands::item::rm(&path, a, &mut input)?,
+        Command::Item(ItemCommand::AgentVisible(a)) => {
+            commands::item::agent_visible(&path, a, &mut input)?;
+        }
         Command::Recover(a) => commands::recover::recover(&path, a, &mut input)?,
         Command::Env(EnvCommand::Create(a)) => commands::env::create(&path, a, &mut input)?,
         Command::Env(EnvCommand::List(a)) => commands::env::list(&path, a, &mut input)?,

@@ -97,6 +97,14 @@ Result:
 
 Only vaults with `agent_visible = true` appear. See threat-model M-9.
 
+Inside a visible vault, an item appears in `list_items` and `describe_item` when its own
+`agent_visible` is set. Since 2026-10-04 that is the default for every item created or imported
+while the logical vault's "Show new items to agents" setting is on (the default), with all its
+fields; people show or hide existing items in bulk by selection, tag or category, one audit entry
+(`set_agent_visible_bulk`, counts only) per change
+([ADR-0007](decisions/0007-m2-daemon-and-ipc-deviations.md) amendment, threat-model M-9). Nothing
+about values changes: §1's invariant holds whatever is visible.
+
 **Shared vaults** ([ADR-0035](decisions/0035-shared-vaults.md) §14; addendum, decisions 88–93)
 are listed with `shared: true` beside the personal vault's logical vaults, and every tool reads
 them the same way: `list_items`, `list_environments` and `describe_item` include what is in them,

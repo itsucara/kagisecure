@@ -175,7 +175,15 @@ button that opens the agent-setup screen (architecture.md §8) showing the bundl
   running in the detail pane, in which case the running code is copied with no new prompt.
 - **Category filter chips** appear above the list when "All Items" is selected and more than one
   category is present, letting the user narrow without leaving All Items.
-- Multi-select (⌘-click, ⇧-click) enables batch actions: add tag, move to archive, delete.
+- Multi-select (⌘-click, ⇧-click, ⌘A) selects several items (`VaultStore.multiSelection`; one
+  selected item stays the ordinary single selection). With two or more selected, the detail pane
+  shows "N items selected" (`ks.multiSelection.count`) with **Show to Agents** and **Hide from
+  Agents** (`ks.multiSelection.showToAgents`, `ks.multiSelection.hideFromAgents`); the same two
+  actions are in each row's context menu (`ks.itemList.showToAgents`, `ks.itemList.hideFromAgents`
+  — on the whole selection when the row is part of it, else on that row) and in the **Item** menu.
+  Personal vault only. One transaction and one audit entry per action, counts only
+  ([ADR-0007](decisions/0007-m2-daemon-and-ipc-deviations.md) amendment 2026-10-04). Other batch
+  actions (add tag, move to archive, delete) are not built yet.
 
 ## 4. Item detail pane
 
@@ -274,9 +282,15 @@ first").
 A dedicated section at the bottom of every item's detail view, kagisecure-specific (no 1Password
 analog):
 
-- **"Visible to agents" toggle** — bound to `Item.agent_visible` (vault-format.md, default
-  `false`). Off by default on every item, including newly created ones and imports
-  (roadmap M5-optional acceptance criterion). Toggling it on shows a one-line explainer: "Agents
+- **"Visible to agents" toggle** — bound to `Item.agent_visible`. A newly created or imported
+  item starts **on**, with every field on, while its logical vault's **"Show new items to
+  agents"** setting is on — the default (Settings ▸ AI Agents ▸ Item visibility,
+  `ks.settings.newItemsAgentVisible`; [ADR-0007](decisions/0007-m2-daemon-and-ipc-deviations.md)
+  amendment 2026-10-04, superseding the roadmap M5-optional "off by default" criterion). The same
+  section has **Show All Items to Agents…** (`ks.settings.showAllToAgents`, confirmed) for items
+  that existed before. Tag and category rows in the sidebar have **Show All in "<name>" to
+  Agents** / **Hide All in "<name>" from Agents** in their context menu. Toggling it on shows a
+  one-line explainer: "Agents
   can see this item's title, category, tags, and field *names* — never values — via MCP, and can
   request approved actions (like writing a `.env`) using it."
 - **Per-field override** — when the item is agent-visible, each field row gets a small toggle
@@ -338,6 +352,12 @@ if a platform-wrapped key slot exists for this device, per vault-format.md §3.1
 master-password field as fallback, and a "Use recovery code instead" link (vault-format.md §3.2).
 Touch ID failure (not cancellation) after 3 attempts forces password fallback, matching macOS
 system conventions.
+
+*(As built, 2026-10-04: Touch ID unlock is on by default. After a master-password or recovery-code
+unlock with Touch ID available and no platform slot, the app enrols silently; if the person turned
+Touch ID off in Settings, or silent enrolment failed, a small sheet asks "Turn on Touch ID unlock?"
+with Turn On / Not Now and a "Don't show this again" checkbox. Turning it on in Settings clears
+the turned-off mark. ADR-0004 addendum 2026-10-04.)*
 
 ### 6.2 Auto-lock
 
@@ -430,6 +450,35 @@ something they just did:
     and returns to the unlock card bound to the same path; unlocking always reads the file fresh, so
     this is the actual recovery. Once the next unlock succeeds, the app records the recovery in the
     audit log, best-effort, the same way a reveal is (§4.2) — never blocking getting back in.
+
+### 6.5 "Connect your browsers" prompt
+
+After an unlock (never over the lock screen), the app checks which browsers on this Mac it cannot
+fill in yet and, at most once per launch, offers to connect them in a sheet titled **"Fill
+passwords in your browsers"**. The sheet is queued behind every other sheet (recovery code, Touch
+ID offer, approvals, "While you were away", generator, import) and appears when they close. It is
+not shown to the UI-test suite.
+
+- **Which browsers.** The Chromium-family browsers the core knows (`ExtensionSetupView.manifests`:
+  Chrome, Edge, Arc, Brave, Chromium) whose app is installed, plus Safari when this build can serve
+  it (Safari appex embedded and an App Group). A Chromium browser counts as **connected** when its
+  native-messaging manifest is written *and* one of its profiles' `Preferences` / `Secure
+  Preferences` names the extension (the unpacked id or Web Store item
+  `aacppfmljihmjacphgpkbmanhbhphjgl`); Safari when `SFSafariExtensionManager` reports the extension
+  enabled. Connected, silenced and snoozed browsers are not offered (`BrowserConnectPrompt`).
+- **Rows.** The browser's real app icon (`NSWorkspace.icon(forFile:)`), its name, a **Connect**
+  button and a **"Don't ask about this browser again"** checkbox (checking it disables Connect).
+  Connect writes the manifest if missing and opens the Chrome Web Store listing *in that browser*;
+  for Safari it opens Safari's Extensions settings. While the sheet is open the state is re-read
+  every 2 s and a row flips to a green **"Connected"** with "Ready to fill".
+- **Footer.** "More setup options…" (dismisses and opens Browser extension in the main window),
+  and **Later** (Esc) — **Done** once every row is connected. Dismissing persists the checked
+  browsers as silenced and snoozes the rest for 7 days.
+- **Persistence** (`AppDefaults`): `browserPrompt.silenced` (array of ids such as `googlechrome`,
+  `safari`) and `browserPrompt.snoozedUntil` (`[id: seconds since 1970]`).
+- **Settings › AutoFill › Browsers on this Mac** lists each installed browser with a
+  Connected / Not connected badge and, when not connected, an **"Ask to connect"** checkbox
+  (unchecked = silenced). **Reset "Don't Ask Again"** clears every silence and snooze.
 
 ## 7. Quick Access
 
@@ -621,7 +670,7 @@ three-column detail width of about 460 pt, and must keep doing so. Two lists:
   directory, variables, remaining TTL (live countdown), remaining uses, and a Revoke button per
   row plus a "Revoke all" action. This list is the only place leases are visible; they are never
   written to disk (memory-only, per ADR-0004).
-- **Settings › Security › Confirmation** (2026-10-03, ADR-0037 amendment) — "Don't ask again for":
+- **Settings › Security & Unlock › Confirmation** (2026-10-03, ADR-0037 amendment) — "Don't ask again for":
   10 minutes / 30 minutes / 1 hour / Until locked (default; `presenceGraceDuration`), and the toggle
   "Always show the sheet for agent fills" (`agentFillRequiresSheet`, off). One successful check opens
   an app-wide window that every use extends and every lock ends.
@@ -844,7 +893,7 @@ login, now. Same queue and 60-second countdown as §10.1–§10.3; its own layou
   caption says it is coming. It stops a click already in flight; it does nothing against an agent
   that synthesizes a click and waits, which is what the next point is for.
 - **No sheet at all inside the grace window** (ADR-0036 amendment of 2026-10-03): an agent fill is
-  granted at once unless Settings › Security › "Always show the sheet for agent fills" is on.
+  granted at once unless Settings › Security & Unlock › Advanced (or AI Agents) › "Always show the sheet for agent fills" is on.
 - **Allow is Touch ID (or the login password)**, outside the app-wide presence grace window
   (ADR-0037's amendment of 2026-10-03; the sheet says when it is open), through `AgentService.allow` →
   `PresenceCoordinator`, one prompt app-wide, and is sent to Rust as **Allow once** whatever the
@@ -934,7 +983,7 @@ username · first website — with logins for the requested site first, **Cancel
 "Kagisecure is locked or not running. Unlock it, then click Try Again.", the app comes forward, and
 **Try Again** appears. A one-time-code request shows only logins with a code.
 
-**Settings › Security › Confirmation:** "Always show the AutoFill sheet in other apps"
+**Settings › Security & Unlock › Confirmation:** "Always show the AutoFill sheet in other apps"
 (`ks.settings.nativeAutofillRequiresConfirmation`, `nativeAutofillRequiresConfirmation`, off).
 
 ## 11. Keyboard shortcuts
@@ -1130,12 +1179,17 @@ a separate thing and is unaffected by any of this.
 
 **Item list (§3)**
 
+- `ks.itemList.hideFromAgents`
 - `ks.itemList.list`
 - `ks.itemList.rowCopySubtitle`
 - `ks.itemList.rowCopyTotp`
 - `ks.itemList.rowFavorite`
 - `ks.itemList.rowSubtitle`
 - `ks.itemList.rowTitle`
+- `ks.itemList.showToAgents`
+- `ks.multiSelection.count`
+- `ks.multiSelection.hideFromAgents`
+- `ks.multiSelection.showToAgents`
 
 **Item detail (§4)**
 
@@ -1274,15 +1328,30 @@ a separate thing and is unaffected by any of this.
 - `ks.quickAccess.search`
 - `ks.quickAccess.toast`
 
-**Settings (§6.2, §6.3, §7)**
+**Settings (§17)**
 
+- `ks.settings.advanced`
+- `ks.settings.agentFillRequiresSheet`
+- `ks.settings.agentFillSwitch`
+- `ks.settings.agentListenerState`
+- `ks.browserPrompt`, `ks.browserPrompt.title`, `ks.browserPrompt.later`, `ks.browserPrompt.done`, `ks.browserPrompt.moreOptions`
+- `ks.browserPrompt.connect.<id>`, `ks.browserPrompt.connected.<id>`, `ks.browserPrompt.dontAsk.<id>`
+- `ks.settings.browserRow.<id>`, `ks.settings.browserPrompt.ask.<id>`, `ks.settings.browserPrompt.reset`
 - `ks.settings.auditState`
+- `ks.settings.browserExtensionState`
+- `ks.settings.graceDuration`
+- `ks.settings.nativeAutofillRequiresConfirmation`
+- `ks.settings.nativeAutofillState`
+- `ks.settings.openAutoFillSettings`
+- `ks.settings.pane.<general|security|autofill|agents|vault|updates|about>`
+- `ks.settings.version`
 - `ks.settings.autoLockInterval`
 - `ks.settings.clipboardInterval`
+- `ks.settings.newItemsAgentVisible`
 - `ks.settings.quickAccessError`
 - `ks.settings.quickAccessShortcut`
-- `ks.settings.tab.security`
-- `ks.settings.tab.vault`
+- `ks.settings.showAllResult`
+- `ks.settings.showAllToAgents`
 - `ks.settings.touchIdToggle`
 - `ks.settings.touchIdUnavailable`
 - `ks.settings.vaultPath`
@@ -1728,3 +1797,31 @@ when there are none yet. What differs, all of it the item rules of §16.6 applie
 Locking the personal vault closes every shared vault with it: their device keys and decrypted items
 go (a lock hook in `kagisecure-ffi`), their folder watchers stop, and every shown value is hidden,
 as for personal items.
+
+## 17. Settings window
+
+*(2026-10-04.)* ⌘, opens a System Settings–style window: a sidebar of panes, each a white SF
+Symbol on a colored rounded square, and a grouped form per pane that starts with a large tile, the
+pane's name and a one-line summary. The last pane shown is remembered (`settings.selectedPane`).
+Default size 800×600, minimum 760×520; light and dark follow the system.
+
+**Rule.** Everything a person *chooses* is here. Screens that show live state they work with —
+Environments, Leases, Unattended jobs, Audit, Set up your agent, the browser-extension installer —
+stay in the main window's sidebar, and the pane owning the topic links to them (a row with an
+↗ icon that brings the main window forward on that screen; disabled while locked).
+
+| Pane | Group | Contents |
+|---|---|---|
+| General | gray, gear | Quick Access shortcut (⇧⌘Space as key caps, or why it is unavailable); clipboard clear interval; appearance (System / Light / Dark, applied app-wide at once through `NSApp.appearance`, so the main window, Quick Access panel and sheets follow) and language (System default plus every localisation in the bundle, each named in itself; stored as the per-app `AppleLanguages` default, removed for System default; takes effect on relaunch, so a changed choice shows a "Restart Kagisecure to apply" notice with a Relaunch button that locks the vault, opens a new instance and quits). System Settings › Language & Region stays as a secondary link in the footer |
+| Security & Unlock | red, Touch ID | Touch ID unlock toggle (needs an unlocked vault); "Don't ask again for" (grace, default Until locked); "Lock when idle for" (default 10 min); **Advanced** disclosure "Stricter confirmation" with an "Off"/"N on" badge holding "Always show the sheet for agent fills" and "Always show the AutoFill sheet in other apps" (both off) |
+| AutoFill | blue, key | Passwords AutoFill status badge (On/Off from `ASCredentialIdentityStore.state().isEnabled`, refreshed when the app becomes active), "Ask before each fill" (same preference as the Advanced toggle), "Open AutoFill Settings…" (`x-apple.systempreferences:com.apple.Passwords-Settings.extension`); browser extension status badge (N connected / Waiting for a browser / Vault locked) and a link to the installer; **Browsers on this Mac** (per-browser status and "Ask to connect", §6.5) |
+| AI Agents | purple, sparkles | MCP listener badge (Listening / N waiting / Stopped), link to Set up your agent; the agent-fill switch (same `AgentFillService.setEnabled`, Touch ID to turn on) and its strict toggle; Item visibility ("Show new items to agents", default on, and "Show All Items to Agents…"); links to Environments (blocked agents and notices), Leases, Unattended jobs, Audit log with counts |
+| Vault | orange, drive | Vault file (path with ~, Show in Finder), Locked/Unlocked badge, backup note; Import from a File… (opens the main window and the import flow); audit-chain state and word list |
+| Updates | green | Automatic checks, Check Now, last check, current version |
+| About | indigo | Icon, version (build), links to kagisecure.com, GitHub, issues; licence MIT or Apache-2.0 |
+
+There is no export or backup command and no in-app language picker; the vault pane says the file is
+backed up like any other file. Status-to-badge logic is `SettingsStatus` (unit-tested in
+`SettingsTests`). `SettingsTests.testRenderSettingsPanes` renders every pane in English and
+Japanese, light and dark, to PNG when `KS_SETTINGS_SHOTS` names a directory
+(`TEST_RUNNER_KS_SETTINGS_SHOTS=… xcodebuild … -only-testing:KagisecureTests/SettingsTests test`).

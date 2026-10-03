@@ -99,7 +99,7 @@ fn item_by_id(vault: &Vault, id: ItemId) -> &Item {
 // ---------------------------------------------------------------------------------------------
 
 #[test]
-fn a_first_import_creates_everything_and_nothing_is_agent_visible() {
+fn a_first_import_creates_everything_visible_to_agents_by_default() {
     let (_dir, mut vault) = new_vault();
     let outcome = commit(
         &mut vault,
@@ -113,10 +113,11 @@ fn a_first_import_creates_everything_and_nothing_is_agent_visible() {
     assert_eq!(outcome.skipped, 0);
     assert_eq!(vault.items().len(), 1);
 
-    // Threat-model M-9. An import is a bulk operation over data nobody has looked at yet.
+    // ADR-0007 amendment 2026-10-04: "Show new items to agents" is on by default, and an
+    // imported item is a new item. Metadata only; values still need an approval.
     let item = &vault.items()[0];
-    assert!(!item.agent_visible);
-    assert!(item.fields.iter().all(|f| !f.agent_visible));
+    assert!(item.agent_visible);
+    assert!(item.fields.iter().all(|f| f.agent_visible));
     assert_eq!(item.vault_id, vault.default_vault_id().unwrap());
     assert_eq!(
         item.extra.get(ForeignId::ONEPASSWORD_UUID),
@@ -137,6 +138,27 @@ fn a_first_import_creates_everything_and_nothing_is_agent_visible() {
     assert!(!rendered.contains("hunter2"), "{rendered}");
     assert!(!rendered.contains("Downloads"), "{rendered}");
     vault.verify_audit().unwrap();
+}
+
+#[test]
+fn an_import_into_a_vault_with_the_setting_off_stays_hidden_from_agents() {
+    let (_dir, mut vault) = new_vault();
+    let vault_id = vault.default_vault_id().unwrap();
+    vault
+        .transact(|tx| {
+            tx.set_new_items_agent_visible(vault_id, false);
+            Ok(())
+        })
+        .unwrap();
+    commit(
+        &mut vault,
+        plan_of(vec![acme("hunter2")]),
+        DuplicatePolicy::Skip,
+    )
+    .unwrap();
+    let item = &vault.items()[0];
+    assert!(!item.agent_visible);
+    assert!(item.fields.iter().all(|f| !f.agent_visible));
 }
 
 #[test]

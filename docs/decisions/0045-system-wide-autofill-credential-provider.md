@@ -67,5 +67,12 @@ AutoFill & Passwords.
    create a **Developer ID** provisioning profile for it.
 2. Build that target with `CODE_SIGN_ENTITLEMENTS=Signing/CredentialProvider.Provisioned.entitlements`
    and the profile (`PROVISIONING_PROFILE_SPECIFIER`), Developer ID signed.
-3. Install the app, open it once, then enable **Kagisecure** under System Settings › General ›
+3. **Also enable AutoFill Credential Provider on the app's own App ID `com.kagisecure.app`** and
+   create a Developer ID profile for it named `Kagisecure App Developer ID`; the app is signed
+   with `Signing/App.Provisioned.entitlements`. Amendment 2026-10-04: macOS lists the extension
+   only when the containing app carries the entitlement too. SafariFoundation's
+   `SFCredentialProviderExtensionManager` filters discovered extensions through
+   `extensionAndContainingAppHaveDeveloperEntitlement`; with the entitlement on the extension
+   alone, pluginkit showed it registered and enabled but Settings listed only Apple Passwords.
+4. Install the app, open it once, then enable **Kagisecure** under System Settings › General ›
    AutoFill & Passwords.

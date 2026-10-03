@@ -49,6 +49,11 @@ struct QuickAccessView: View {
             }
             return .handled
         }
+        // The search field holds focus and swallows ↑/↓ itself, so the list never sees them.
+        .onKeyPress(keys: [.upArrow, .downArrow], phases: [.down, .repeat]) { press in
+            model.moveSelection(by: press.key == .upArrow ? -1 : 1)
+            return .handled
+        }
         .onAppear {
             model.reload()
             searchFocused = true
@@ -133,16 +138,20 @@ struct QuickAccessView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .accessibilityIdentifier("ks.quickAccess.empty")
         } else {
-            // A `List` with a bound selection is what gives ↑/↓ for free: the field keeps focus
-            // for typing, and the arrow keys move the highlight because the list is the only
-            // other thing in the responder chain that wants them.
-            List(model.results, id: \.id, selection: $model.selection) { item in
-                QuickAccessRow(item: item, isSelected: model.selection == item.id)
-                    .tag(item.id)
+            // ↑/↓ arrive through the panel's `onKeyPress` (the search field keeps focus for
+            // typing); the reader keeps the moved highlight on screen.
+            ScrollViewReader { proxy in
+                List(model.results, id: \.id, selection: $model.selection) { item in
+                    QuickAccessRow(item: item, isSelected: model.selection == item.id)
+                        .tag(item.id)
+                }
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .accessibilityIdentifier("ks.quickAccess.list")
+                .onChange(of: model.selection) { _, id in
+                    if let id { proxy.scrollTo(id) }
+                }
             }
-            .listStyle(.inset)
-            .scrollContentBackground(.hidden)
-            .accessibilityIdentifier("ks.quickAccess.list")
         }
     }
 

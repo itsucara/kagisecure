@@ -1,4 +1,4 @@
-//! `kagisecure item add | list | show | rm`.
+//! `kagisecure item add | list | show | rm | agent-visible`.
 
 use std::path::Path;
 
@@ -7,7 +7,9 @@ use kagisecure_core::Vault;
 use kagisecure_core::audit::AuditDraft;
 use kagisecure_core::model::{Category, Field, FieldValue, Item, Secret, SecretText};
 
-use crate::cli::{AddArgs, ListArgs, RmArgs, ShowArgs};
+use kagisecure_core::vault::AgentVisibilityScope;
+
+use crate::cli::{AddArgs, AgentVisibleArgs, ListArgs, RmArgs, ShowArgs};
 use crate::commands::{cli_draft, record_audit_best_effort, transact_patiently, ymd};
 use crate::prompt::SecretInput;
 
@@ -88,7 +90,8 @@ pub fn add(path: &Path, args: &AddArgs, input: &mut SecretInput) -> Result<()> {
         item.urls.clone_from(&args.urls);
         item.notes = note.clone().map(SecretText::new);
         let id = item.id;
-        tx.add_item(item);
+        // Honours the logical vault's "Show new items to agents" setting.
+        tx.add_new_item(item);
         tx.append_audit(AuditDraft {
             item_id: Some(id),
             ..cli_draft("item add")
@@ -260,6 +263,41 @@ pub fn rm(path: &Path, args: &RmArgs, input: &mut SecretInput) -> Result<()> {
         Ok((id, title))
     })?;
     println!("Removed {id} ({title})");
+    Ok(())
+}
+
+/// Show items to agents, or hide them, in bulk (ADR-0007 amendment 2026-10-04): one
+/// transaction, one audit entry carrying the scope kind and counts, never a tag or a title.
+///
+/// # Errors
+///
+/// If the vault cannot be opened or a named `--item` does not resolve (nothing changes then).
+pub fn agent_visible(path: &Path, args: &AgentVisibleArgs, input: &mut SecretInput) -> Result<()> {
+    let mut vault = open(path, input)?;
+    let visible = args.state.is_on();
+    let result = transact_patiently(&mut vault, |tx| {
+        let scope = if let Some(tag) = &args.tag {
+            AgentVisibilityScope::Tag(tag.clone())
+        } else if let Some(category) = &args.category {
+            let Ok(category) = category.parse::<Category>();
+            AgentVisibilityScope::Category(category)
+        } else if args.all {
+            AgentVisibilityScope::All
+        } else {
+            let mut ids = Vec::with_capacity(args.items.len());
+            for reference in &args.items {
+                ids.push(tx.find_item(reference)?.id);
+            }
+            AgentVisibilityScope::Items(ids)
+        };
+        Ok(tx.set_agent_visible_bulk(&scope, visible, "cli"))
+    })?;
+    println!(
+        "{} {} item(s) to agents ({} changed)",
+        if visible { "Showed" } else { "Hid" },
+        result.matched,
+        result.changed
+    );
     Ok(())
 }
 

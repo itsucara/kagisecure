@@ -37,9 +37,13 @@ Five properties hold for every source, and each is a test, not a convention:
    `commit` runs as the closure of a `Vault::transact`, which writes atomically and `0600`
    ([ADR-0039](decisions/0039-transactional-vault-writes-and-the-lock-file.md)). A failure
    mid-apply leaves the vault file untouched, and `--dry-run` never reaches `commit` at all.
-4. **Everything lands invisible to agents.** Every imported item gets `agent_visible = false`
-   ([threat-model.md](threat-model.md) M-9). The post-import screen shows a count and a one-click
-   "make this vault visible to agents"; nothing happens until a human presses it. Imported password
+4. **Imported items follow "Show new items to agents".** A newly imported item gets its logical
+   vault's setting — on by default, so it lands visible to agents with all its fields
+   ([threat-model.md](threat-model.md) M-9 as amended 2026-10-04,
+   [ADR-0007](decisions/0007-m2-daemon-and-ipc-deviations.md) amendment). An update of an existing
+   item never changes its visibility, and a source's own sharing flags are ignored. Turn the
+   setting off before importing to land everything hidden; hide or show them afterwards in bulk
+   by the import tag (`imported:<source>`). Imported password
    history is stronger still: it is never agent-visible, whatever that flag later says (§2.7).
 5. **Parsing is bounded before it is trusted.** Hard limits (§2.2) are checked from the zip's
    central directory *before* any entry is read, so a zip bomb is refused rather than survived.

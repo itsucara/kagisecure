@@ -54,6 +54,9 @@ final class AppModel {
     private(set) var hasPlatformSlot = false
     private(set) var platformAvailability: PlatformKeyAvailability = .unknown
 
+    /// Set to show "Turn on Touch ID unlock?" after an unlock (ADR-0004 amendment 2026-10-04).
+    var showTouchIDOffer = false
+
     /// A one-time recovery code waiting to be shown. Non-nil exactly once, right after a vault is
     /// created, and cleared as soon as the user acknowledges it (vault-format.md §3.2).
     var pendingRecoveryCode: String?
@@ -93,6 +96,8 @@ final class AppModel {
     /// `agent` already polls, so there is one sheet, one timeout and one biometric gate. What this
     /// owns is the channel and its own lease store.
     let browserExtension = ExtensionService()
+    /// "Connect your browsers" (ui-spec.md §6.5), offered once per launch after an unlock.
+    let browserPrompt = BrowserConnectModel()
 
     /// System-wide password AutoFill (ADR-0045): the socket the credential provider extension
     /// asks, and the identity store QuickType reads.
@@ -181,6 +186,7 @@ final class AppModel {
         // One ticker for both panes, so a lease countdown and a fill-lease countdown cannot
         // disagree about what time it is.
         agent.extensionService = browserExtension
+        browserPrompt.bind(browserExtension)
         // Agent-fill notices are drained on the same tick (ADR-0036 implementation decision 11).
         agent.agentFill = agentFill
         // The switch the user chose, pushed to Rust's in-memory flag (off in every new process)
@@ -211,6 +217,9 @@ final class AppModel {
             // forward to be unlocked (ADR-0045).
             credentialProvider.start()
         }
+        // The light/dark choice from Settings › General. Before the test hook below, so a test
+        // that pins the appearance still wins.
+        AppAppearance.applyStoredAtLaunch()
         #if DEBUG
             // The XCUITest suite's only channel into this process is the command line it was
             // started with (`UITestSupport`). Applied last, so nothing above can be surprised by
@@ -259,10 +268,12 @@ final class AppModel {
 
     func unlock(password: String) {
         perform { self.adopt(try VaultSession.unlockWithPassword(path: self.vaultPath, masterPassword: password)) }
+        offerTouchIDAfterUnlock()
     }
 
     func unlock(recoveryCode: String) {
         perform { self.adopt(try VaultSession.unlockWithRecoveryCode(path: self.vaultPath, code: recoveryCode)) }
+        offerTouchIDAfterUnlock()
     }
 
     /// The Touch ID path (ADR-0004): read the wrapped key, have the Secure Enclave decrypt it,
@@ -337,6 +348,7 @@ final class AppModel {
         // loop is now draining — a fill that arrived before that loop existed would sit unanswered
         // until it timed out.
         browserExtension.start(session: session)
+        browserPrompt.vaultUnlocked(ext: browserExtension)
         // After the agent: the machine vault's environments are served on its socket too, and
         // "While you were away" is read from the machine log. The shared vaults open now are the
         // store's, for copies of their environments (ADR-0042 §13).
@@ -387,6 +399,7 @@ final class AppModel {
         presence.cancelInFlight()
         agent.stop()
         browserExtension.stop()
+        browserPrompt.vaultLocked()
         // The recent agent-fill notices name items; they go with the key. Blocks stay (Rust's).
         agentFill.vaultLocked()
         // What was read from the machine vault goes with the key; armed jobs keep running.
@@ -395,6 +408,7 @@ final class AppModel {
         self.store = nil
         pendingRecoveryCode = nil
         showGenerator = false
+        showTouchIDOffer = false
         // A preview of someone's 1Password export must not outlive the vault it was going to be
         // imported into: the sheet holds a plan full of parsed values, and closing it drops it.
         closeImport()
@@ -416,10 +430,19 @@ final class AppModel {
     /// is running is refused, not raised beside a sheet the person is already looking at, and this
     /// itself is refused, not queued, if something else holds the slot first.
     func enrollTouchID() {
-        guard let store else { return }
+        AppDefaults.shared.removeObject(forKey: TouchIDOffer.explicitlyOffKey)
+        _ = enrollTouchID(quietly: false)
+    }
+
+    /// - Parameter quietly: an automatic enrolment reports nothing on failure; the caller falls
+    ///   back to asking instead.
+    /// - Returns: whether a platform slot was installed.
+    @discardableResult
+    private func enrollTouchID(quietly: Bool) -> Bool {
+        guard let store else { return false }
         guard let ticket = presence.begin(.enrolment) else {
-            errorMessage = String(localized: "Another confirmation is in progress.")
-            return
+            if !quietly { errorMessage = String(localized: "Another confirmation is in progress.") }
+            return false
         }
         let context = LAContext()
         enrollmentContext = context
@@ -427,17 +450,45 @@ final class AppModel {
             enrollmentContext = nil
             presence.end(ticket)
         }
-        perform {
+        do {
             var key = store.session.exportVaultKeyForPlatformWrapping()
             defer { key.resetBytes(in: 0..<key.count) }
             let enrolled = try self.platformKey.enroll(vaultKey: key, context: context)
             try store.session.installPlatformSlot(
                 slotId: enrolled.slotId, label: "Touch ID on this Mac", wrappedKey: enrolled.wrappedKey)
             self.hasPlatformSlot = true
+            return true
+        } catch {
+            if !quietly { errorMessage = message(for: error) }
+            return false
         }
     }
 
+    /// Touch ID is on by default (ADR-0004 amendment 2026-10-04): after a master-password or
+    /// recovery-code unlock, enrol silently unless the person turned it off; otherwise, or if
+    /// that fails, offer it once per unlock unless they asked not to be asked.
+    private func offerTouchIDAfterUnlock() {
+        guard store != nil else { return }
+        let defaults = AppDefaults.shared
+        var offer = TouchIDOffer.decide(
+            available: platformAvailability.isAvailable, hasPlatformSlot: hasPlatformSlot,
+            defaults: defaults)
+        if offer == .autoEnrol, !enrollTouchID(quietly: true) {
+            offer = TouchIDOffer.afterFailedAutoEnrol(
+                dontAskAgain: defaults.bool(forKey: TouchIDOffer.dontAskAgainKey))
+        }
+        showTouchIDOffer = offer == .prompt
+    }
+
+    /// The offer sheet's answer.
+    func answerTouchIDOffer(turnOn: Bool, dontAskAgain: Bool) {
+        showTouchIDOffer = false
+        if dontAskAgain { AppDefaults.shared.set(true, forKey: TouchIDOffer.dontAskAgainKey) }
+        if turnOn { enrollTouchID() }
+    }
+
     func disableTouchID() {
+        AppDefaults.shared.set(true, forKey: TouchIDOffer.explicitlyOffKey)
         guard let store else { return }
         perform {
             _ = try store.session.removePlatformSlot()
@@ -484,6 +535,13 @@ final class AppModel {
     /// notices and the blocks list are (ui-spec.md §10.4).
     func showAgentFillNotices() {
         store?.selection = .agentEnvironments
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Settings' links into the main window: bring it forward on one of its screens. With the
+    /// vault locked there is nothing to select, and the window shows the lock screen.
+    func show(_ selection: SidebarSelection) {
+        store?.selection = selection
         NSApp.activate(ignoringOtherApps: true)
     }
 

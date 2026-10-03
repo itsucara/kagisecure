@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Default (ad-hoc / no-profile) entitlements for the main app. A Developer ID release uses
+  App.Provisioned.entitlements instead (adds the AutoFill entitlement; ADR-0045).
+
+  Sandbox off (ADR-0010). `keychain-access-groups` — which the Secure Enclave key needs —
+  is a *restricted* entitlement whose mere presence makes Xcode demand a provisioning
+  profile, so a clean checkout could not build (nor could CI, before it was removed on
+  2026-09-19). It lives in
+  Signing/Provisioned.entitlements instead, for builds that have a team; see ADR-0011.
+  The App Group the Safari extension reaches this app through (ADR-0024). Unlike
+  `keychain-access-groups` this is **not** restricted: a Developer ID signature carries it
+  with no provisioning profile, which is what makes the Safari front end shippable while
+  the Secure Enclave path is still blocked. `$(AppIdentifierPrefix)` expands to the team
+  identifier plus a dot, so a fork with its own team gets its own group with no edit here;
+  under ad-hoc signing there is no team, the group is meaningless, and the app says so on
+  the Browser extension screen rather than pretending to serve Safari.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.kagisecure</string>
+	</array>
+</dict>
+</plist>

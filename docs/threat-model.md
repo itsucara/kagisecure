@@ -371,6 +371,19 @@ imported items: **not** visible, opt-in per vault.
 > of a personal 1Password account does not instantly expose 800 item names to a model. Owner
 > should confirm this default.
 
+> **Amended 2026-10-04 (owner decision, [ADR-0007](decisions/0007-m2-daemon-and-ipc-deviations.md)
+> amendment): the owner did not confirm it.** Each logical vault now has "Show new items to
+> agents", **on by default**: items created in the app, by the CLI or by an import start visible
+> with all their fields. This is a deliberate loosening. Once the vault's own `agent_visible` gate
+> is on (still default off), a model — including one under prompt injection (T-2) — can list the
+> titles, categories, tags and field names of every new or imported item; an import of 800 logins
+> does expose 800 item names. What does **not** change: no value ever crosses to an agent (M-1,
+> ADR-0002), every release still needs an approval and presence proof, password history is never
+> visible, and existing items are not flipped without a person asking. Mitigations are the
+> per-vault switch (turn it off), bulk hide by selection, tag or category, and one audit entry per
+> bulk change recording counts only. Residual risk accepted by the owner: metadata of a large
+> vault is enumerable by default.
+
 **M-10 — Minimal plaintext lifetime.** Secrets are decrypted at the moment of use and zeroized
 immediately after. The app does not keep a decrypted item cache. `Zeroizing<...>` on every
 intermediate buffer; `zeroize` 1.9.0. Caveat: this covers what kagisecure holds in its own memory,
@@ -551,7 +564,8 @@ Three properties bound it, all in `kagisecure-import`
   `password` designation, or a secret-word match on the label — including for field types it does
   not recognize. `Item.extra` and `Field.extra` are not `Secret`, so nothing carrying a hint is
   allowed to land there. Imported password history is `Secret`-typed, never agent-visible and
-  excluded from search. Every imported item is `agent_visible = false` (M-9).
+  excluded from search. Every imported item follows its logical vault's "Show new items to agents" setting, on by default
+  (M-9 as amended 2026-10-04); a source's own sharing flags are ignored.
 
 The parsers are the subject of the fuzzing bullet in §8, and the crate is kept out of
 `kagisecure-mcp`'s and `kagisecure-ipc`'s dependency graphs by the same dependency-graph test

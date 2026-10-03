@@ -29,6 +29,13 @@ pub struct VaultMeta {
     /// Whether agents may see this vault at all. Default-deny (threat-model M-9).
     #[serde(default)]
     pub agent_visible: bool,
+    /// Whether items created in this logical vault — by the app, the CLI or an import — start out
+    /// visible to agents, with all their fields ("Show new items to agents", ADR-0007 amendment
+    /// 2026-10-04). On by default, including for a vault written before this key existed: the
+    /// owner chose convenience over default-deny for item metadata. Values are never exposed by
+    /// this; every value release still needs its own approval.
+    #[serde(default = "default_true")]
+    pub new_items_agent_visible: bool,
     /// Unix seconds.
     #[serde(default)]
     pub created_at: u64,
@@ -45,6 +52,7 @@ impl VaultMeta {
             id: VaultId::new(),
             name: name.into(),
             agent_visible: false,
+            new_items_agent_visible: true,
             created_at: crate::unix_now(),
             unknown: BTreeMap::new(),
         }
@@ -62,6 +70,11 @@ impl VaultMeta {
             shared: false,
         }
     }
+}
+
+/// The serde default of [`VaultMeta::new_items_agent_visible`].
+const fn default_true() -> bool {
+    true
 }
 
 /// The value a field holds.
@@ -451,6 +464,21 @@ impl Item {
             extra: BTreeMap::new(),
             unknown: BTreeMap::new(),
         }
+    }
+
+    /// Show this item, and every one of its fields, to agents — or hide it and every field.
+    ///
+    /// The one switch bulk visibility changes and the "Show new items to agents" default use.
+    /// Returns whether anything changed. Hiding clears the field flags too, so a later re-show
+    /// does not bring back grants nobody remembers making (the single-item toggle's rule).
+    pub fn set_agent_visible_all(&mut self, visible: bool) -> bool {
+        let mut changed = self.agent_visible != visible;
+        self.agent_visible = visible;
+        for field in &mut self.fields {
+            changed |= field.agent_visible != visible;
+            field.agent_visible = visible;
+        }
+        changed
     }
 
     /// The item's primary secret ([`Item::primary_secret`]): the field "Copy password", a browser

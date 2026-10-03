@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the main app in a Developer ID build with a provisioning profile (ADR-0045).
+
+  macOS lists a credential provider extension under System Settings > General > AutoFill &
+  Passwords > "AutoFill from" (and offers it in Safari) only when BOTH the extension AND its
+  containing app carry `com.apple.developer.authentication-services.autofill-credential-provider`.
+  Measured on macOS 27 (26A428): SafariFoundation's SFCredentialProviderExtensionManager filters
+  every discovered extension through `extensionAndContainingAppHaveDeveloperEntitlement`, which
+  reads the entitlement from the extension's plug-in record and from the containing app's
+  LSBundleRecord. With the entitlement on the extension only, pluginkit reports it registered and
+  enabled, yet Settings shows only Apple Passwords.
+
+  The entitlement is restricted, so the app then needs its own Developer ID provisioning profile:
+  App ID com.kagisecure.app with the "AutoFill Credential Provider" capability. Otherwise this file
+  matches Signing/App.entitlements (sandbox off, the App Group).
+
+  The application-identifier, team-identifier and keychain-access-groups keys (all permitted by the
+  profile) let the app own Secure Enclave keychain items, which live in the data-protection
+  keychain: without them SecItemAdd fails with errSecMissingEntitlement and Touch ID unlock is
+  unavailable (ADR-0011, amended 2026-10-04).
+  `make macos SIGN=developer-id` and `cargo xtask dist` select it through KAGI_APP_ENTITLEMENTS
+  and KAGI_APP_PROFILE (APP_PROFILE / KAGISECURE_APP_PROFILE to use another profile name).
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<false/>
+	<key>com.apple.security.application-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.kagisecure</string>
+	</array>
+	<key>com.apple.application-identifier</key>
+	<string>$(AppIdentifierPrefix)com.kagisecure.app</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>4CZNJKU58K</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.kagisecure.app</string>
+	</array>
+	<key>com.apple.developer.authentication-services.autofill-credential-provider</key>
+	<true/>
+</dict>
+</plist>

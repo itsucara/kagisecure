@@ -42,6 +42,15 @@ impl Fixture {
         String::from_utf8(out.get_output().stdout.clone()).unwrap()
     }
 
+    /// Turn "Show new items to agents" off, for tests that need an item to start hidden.
+    fn hide_new_items(&self) {
+        self.cmd()
+            .args(["vault", "new-items-agent-visible", "off"])
+            .write_stdin(format!("{PASSWORD}\n"))
+            .assert()
+            .success();
+    }
+
     fn add_sample(&self) {
         self.cmd()
             .args([
@@ -1050,6 +1059,8 @@ fn a_file_that_is_not_a_vault_is_still_an_ordinary_error() {
 fn agent_access_reports_nothing_that_did_not_commit() {
     let fx = Fixture::new();
     fx.init();
+    // Start from a hidden item: this test is about turning access on.
+    fx.hide_new_items();
     fx.add_sample();
 
     let out = fx
@@ -1099,6 +1110,8 @@ fn agent_access_reports_nothing_that_did_not_commit() {
 fn agent_access_can_target_one_field() {
     let fx = Fixture::new();
     fx.init();
+    // Start from a hidden item: this test is about turning access on.
+    fx.hide_new_items();
     fx.add_sample();
 
     {
@@ -1302,4 +1315,102 @@ fn env_add_var_refuses_a_name_that_is_not_an_identifier() {
             .code(2)
             .stderr(contains("not a usable variable name"));
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// "Show new items to agents" and bulk agent visibility (ADR-0007 amendment 2026-10-04)
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn item_add_follows_the_show_new_items_setting() {
+    let fx = Fixture::new();
+    fx.init();
+    fx.add_sample();
+    let vault = Vault::open_with_password(&fx.vault, PASSWORD.as_bytes()).unwrap();
+    let item = vault.find_item("Acme staging").unwrap();
+    assert!(item.agent_visible && item.fields.iter().all(|f| f.agent_visible));
+    drop(vault);
+
+    fx.cmd()
+        .args(["vault", "new-items-agent-visible", "off"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success()
+        .stdout(contains("not be shown"));
+    fx.cmd()
+        .args(["item", "add", "--title", "Later"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success();
+    let vault = Vault::open_with_password(&fx.vault, PASSWORD.as_bytes()).unwrap();
+    assert!(!vault.find_item("Later").unwrap().agent_visible);
+    assert!(!vault.new_items_agent_visible(vault.default_vault_id().unwrap()));
+}
+
+#[test]
+fn item_agent_visible_by_tag_changes_every_tagged_item_with_one_audit_entry() {
+    let fx = Fixture::new();
+    fx.init();
+    fx.hide_new_items();
+    for title in ["One", "Two"] {
+        fx.cmd()
+            .args([
+                "item",
+                "add",
+                "--title",
+                title,
+                "--tag",
+                "imported:chromium",
+            ])
+            .write_stdin(format!("{PASSWORD}\n"))
+            .assert()
+            .success();
+    }
+    fx.add_sample();
+    let before = Vault::open_with_password(&fx.vault, PASSWORD.as_bytes())
+        .unwrap()
+        .audit_entries()
+        .len();
+
+    fx.cmd()
+        .args(["item", "agent-visible", "on", "--tag", "imported:chromium"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success()
+        .stdout(contains("Showed 2 item(s)"));
+
+    let vault = Vault::open_with_password(&fx.vault, PASSWORD.as_bytes()).unwrap();
+    assert!(vault.find_item("One").unwrap().agent_visible);
+    assert!(vault.find_item("Two").unwrap().agent_visible);
+    assert!(!vault.find_item("Acme staging").unwrap().agent_visible);
+    let new_entries = &vault.audit_entries()[before..];
+    assert_eq!(new_entries.len(), 1);
+    assert_eq!(new_entries[0].tool, "set_agent_visible_bulk");
+    assert_eq!(new_entries[0].actor, "cli");
+    let detail = new_entries[0].detail.as_deref().unwrap();
+    assert!(
+        !detail.contains("chromium") && !detail.contains(TOKEN),
+        "{detail}"
+    );
+    drop(vault);
+
+    fx.cmd()
+        .args(["item", "agent-visible", "off", "--item", "One"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success();
+    let vault = Vault::open_with_password(&fx.vault, PASSWORD.as_bytes()).unwrap();
+    assert!(!vault.find_item("One").unwrap().agent_visible);
+    assert!(vault.find_item("Two").unwrap().agent_visible);
+}
+
+#[test]
+fn item_agent_visible_needs_a_scope() {
+    let fx = Fixture::new();
+    fx.init();
+    fx.cmd()
+        .args(["item", "agent-visible", "on"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .failure();
 }

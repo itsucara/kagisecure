@@ -52,6 +52,21 @@
 "use strict";
 
 (function (root) {
+
+  /**
+   * A UI string in the browser's language (`_locales/<lang>/messages.json`). `fallback` is the
+   * English text, used where `chrome.i18n` is absent (the unit tests) and kept identical to
+   * `_locales/en` by `test/i18n.test.js`. `$1`… are filled from `subs` either way.
+   */
+  function localized(key, fallback, ...subs) {
+    try {
+      const text = globalThis.chrome && chrome.i18n && chrome.i18n.getMessage(key, subs.map(String));
+      if (text) return text;
+    } catch {
+      // No i18n here; the English fallback below is the answer.
+    }
+    return subs.reduce((t, v, i) => t.split(`$${i + 1}`).join(String(v)), fallback);
+  }
   /** Matches `kagisecure_extension_ipc::PROTOCOL_VERSION`. */
   const PROTOCOL_VERSION = 1;
 
@@ -127,7 +142,7 @@
    *
    * @type {{ status: string, detail: string, evidence: string[] }}
    */
-  let state = { status: "disconnected", detail: "Not connected yet.", evidence: [] };
+  let state = { status: "disconnected", detail: localized("detailNotConnectedYet", "Not connected yet."), evidence: [] };
 
   /** The live native port, for the Chromium transport only. */
   let port = null;
@@ -258,7 +273,7 @@
       dropPort(`Could not start the kagisecure helper: ${e && e.message ? e.message : e}`);
       return null;
     }
-    state = { status: "connecting", detail: "Connecting…", evidence: [] };
+    state = { status: "connecting", detail: localized("detailConnecting", "Connecting…"), evidence: [] };
 
     port.onMessage.addListener((message) => {
       if (!message || typeof message !== "object") return;
@@ -289,8 +304,8 @@
       const error = chrome.runtime.lastError;
       dropPort(
         error && error.message
-          ? `The kagisecure helper disconnected: ${error.message}`
-          : "The kagisecure helper disconnected.",
+          ? localized("detailHelperDisconnectedWith", "The kagisecure helper disconnected: $1", error.message)
+          : localized("detailHelperDisconnected", "The kagisecure helper disconnected."),
       );
     });
 
@@ -307,7 +322,7 @@
       const id = newId();
       const timer = setTimeout(() => {
         pending.delete(id);
-        resolve(errorReply("APPROVAL_TIMEOUT", "kagisecure did not answer in time."));
+        resolve(errorReply("APPROVAL_TIMEOUT", localized("detailTimeout", "kagisecure did not answer in time.")));
       }, REQUEST_TIMEOUT_MS);
       pending.set(id, { resolve, timer });
       try {
@@ -315,7 +330,7 @@
       } catch (e) {
         pending.delete(id);
         clearTimeout(timer);
-        dropPort(`Could not reach kagisecure: ${e && e.message ? e.message : e}`);
+        dropPort(localized("detailCouldNotReach", "Could not reach kagisecure: $1", e && e.message ? e.message : e));
         resolve(errorReply("VAULT_LOCKED", state.detail));
       }
     });
@@ -346,7 +361,7 @@
         resolve(reply);
       };
       const timer = setTimeout(
-        () => finish(errorReply("APPROVAL_TIMEOUT", "kagisecure did not answer in time.")),
+        () => finish(errorReply("APPROVAL_TIMEOUT", localized("detailTimeout", "kagisecure did not answer in time."))),
         REQUEST_TIMEOUT_MS,
       );
       const done = (reply) => {
@@ -355,8 +370,8 @@
         if (failed || !reply) {
           const detail =
             failed && failed.message
-              ? `Could not reach kagisecure: ${failed.message}`
-              : "Kagisecure is not running, or its Safari extension is not connected.";
+              ? localized("detailCouldNotReach", "Could not reach kagisecure: $1", failed.message)
+              : localized("detailSafariNotConnected", "Kagisecure is not running, or its Safari extension is not connected.");
           state = { status: "disconnected", detail, evidence: [] };
           finish(errorReply("VAULT_LOCKED", detail));
           return;
@@ -374,7 +389,7 @@
         if (returned && typeof returned.then === "function") returned.then(done, () => done(null));
       } catch (e) {
         clearTimeout(timer);
-        const detail = `Could not reach kagisecure: ${e && e.message ? e.message : e}`;
+        const detail = localized("detailCouldNotReach", "Could not reach kagisecure: $1", e && e.message ? e.message : e);
         state = { status: "disconnected", detail, evidence: [] };
         finish(errorReply("VAULT_LOCKED", detail));
       }
@@ -417,13 +432,13 @@
       stopReconnecting();
       state = {
         status: reply.unlocked ? "ready" : "locked",
-        detail: reply.unlocked ? "Connected." : "The vault is locked.",
+        detail: reply.unlocked ? localized("detailConnected", "Connected.") : localized("detailVaultLocked", "The vault is locked."),
         evidence: Array.isArray(reply.host_evidence) ? reply.host_evidence : [],
       };
     } else {
       state = {
         status: "error",
-        detail: (reply && reply.message) || "kagisecure refused the connection.",
+        detail: (reply && reply.message) || localized("detailRefused", "kagisecure refused the connection."),
         evidence: [],
       };
     }
@@ -437,7 +452,7 @@
    * it, and re-handshaking before each one would be a round trip per keystroke. But the cache
    * survives a lock — the app keeps its listener up while locked and answers `VAULT_LOCKED`, so
    * the port never drops and nothing invalidates a `ready` — and the popup was therefore showing
-   * a green dot and "Connected." over a vault the user had just locked. A password manager that
+   * a green dot and localized("detailConnected", "Connected.") over a vault the user had just locked. A password manager that
    * says it is unlocked when it is not is telling the one lie it must never tell.
    *
    * So the popup asks. `status` is a request the protocol already has for exactly this, and it is
@@ -452,19 +467,19 @@
     if (reply && reply.reply === "status") {
       state = {
         status: reply.unlocked ? "ready" : "locked",
-        detail: reply.unlocked ? "Connected." : "The vault is locked.",
+        detail: reply.unlocked ? localized("detailConnected", "Connected.") : localized("detailVaultLocked", "The vault is locked."),
         evidence: state.evidence,
       };
     } else if (reply && reply.code === "VAULT_LOCKED") {
       state = {
         status: "locked",
-        detail: "The vault is locked.",
+        detail: localized("detailVaultLocked", "The vault is locked."),
         evidence: state.evidence,
       };
     } else if (reply && reply.reply === "error") {
       state = {
         status: "error",
-        detail: reply.message || "kagisecure refused the connection.",
+        detail: reply.message || localized("detailRefused", "kagisecure refused the connection."),
         evidence: state.evidence,
       };
     }

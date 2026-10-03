@@ -1,0 +1,214 @@
+{
+  "extName": {
+    "message": "Kagisecure",
+    "description": "Extension name."
+  },
+  "extDescription": {
+    "message": "Fill saved logins from the Kagisecure Mac app into web pages. Requires the Kagisecure app for macOS; does nothing on its own.",
+    "description": "Chrome manifest description."
+  },
+  "extDescriptionSafari": {
+    "message": "Fill logins from your Kagisecure vault. Values never leave the app until you approve a fill.",
+    "description": "Safari manifest description."
+  },
+  "popupChecking": {
+    "message": "Checking…",
+    "description": "Popup status before the first answer."
+  },
+  "popupForget": {
+    "message": "Forget",
+    "description": "Button that forgets the item chosen for this tab."
+  },
+  "popupOpenApp": {
+    "message": "Open Kagisecure",
+    "description": "Popup button."
+  },
+  "appNotReachable": {
+    "message": "kagisecure is not reachable."
+  },
+  "statusConnected": {
+    "message": "Connected",
+    "description": "Popup heading."
+  },
+  "statusLocked": {
+    "message": "Vault locked",
+    "description": "Popup heading."
+  },
+  "statusNotConnected": {
+    "message": "Not connected",
+    "description": "Popup heading."
+  },
+  "continuingAs": {
+    "message": "Continuing as $arg1$",
+    "description": "$1 is a username or item title.",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  },
+  "continuingSaved": {
+    "message": "Continuing with a saved login"
+  },
+  "continuingFor": {
+    "message": "for $arg1$",
+    "description": "$1 is a site origin.",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  },
+  "emptyOpenAndUnlock": {
+    "message": "Open Kagisecure and unlock your vault."
+  },
+  "emptyUnlockToSee": {
+    "message": "Unlock Kagisecure to see what applies to this page."
+  },
+  "emptyRunSetup": {
+    "message": "Run “Browser extension” setup in Kagisecure."
+  },
+  "autofillNotOnPage": {
+    "message": "Autofill does not run on this page."
+  },
+  "noItemForOrigin": {
+    "message": "No item is saved for $arg1$.",
+    "description": "$1 is a site origin.",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  },
+  "noItemForPage": {
+    "message": "No item is saved for this page."
+  },
+  "fillItem": {
+    "message": "Fill “$arg1$”",
+    "description": "$1 is an item title.",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  },
+  "fillFailed": {
+    "message": "Kagisecure could not fill this page."
+  },
+  "copyOneTimeCode": {
+    "message": "Copy one-time code"
+  },
+  "totpApplied": {
+    "message": "One-time code applied. It expires in under a minute."
+  },
+  "declined": {
+    "message": "Kagisecure declined."
+  },
+  "alreadyConnected": {
+    "message": "Kagisecure is already connected."
+  },
+  "openFromApplications": {
+    "message": "Open Kagisecure from your Applications folder or the menu bar, and unlock it."
+  },
+  "fillWithKagisecure": {
+    "message": "Fill with Kagisecure",
+    "description": "Accessible label of the in-page icon."
+  },
+  "fillWithKagisecureShortcut": {
+    "message": "Fill with Kagisecure (⌘\\)",
+    "description": "Tooltip of the in-page icon."
+  },
+  "noItemForSite": {
+    "message": "No kagisecure item is saved for this site."
+  },
+  "totpCopied": {
+    "message": "One-time code copied. It expires in under a minute."
+  },
+  "totpCopyFailed": {
+    "message": "Could not copy the code. Open Kagisecure and copy it there."
+  },
+  "errLocked": {
+    "message": "Kagisecure is locked. Unlock it and try again."
+  },
+  "errDenied": {
+    "message": "You declined this fill."
+  },
+  "errTimeout": {
+    "message": "Nobody answered the approval in Kagisecure."
+  },
+  "errOriginMismatch": {
+    "message": "That item is not saved for this site, so kagisecure refused to fill it."
+  },
+  "errNoMatch": {
+    "message": "No kagisecure item applies here."
+  },
+  "errUnknownConnection": {
+    "message": "Kagisecure does not recognize this browser connection. Re-run setup in the app."
+  },
+  "errAuditUnavailable": {
+    "message": "Kagisecure could not save this fill to its audit log, so nothing was filled. Open Kagisecure to see why, then try again."
+  },
+  "errConflict": {
+    "message": "Kagisecure needs your attention to continue. Open Kagisecure to resolve it."
+  },
+  "errGeneric": {
+    "message": "Kagisecure could not complete that."
+  },
+  "noUsableOrigin": {
+    "message": "This page has no usable origin."
+  },
+  "unknownRequest": {
+    "message": "Unknown request."
+  },
+  "noAnswer": {
+    "message": "No answer from kagisecure."
+  },
+  "noActiveTab": {
+    "message": "No active tab."
+  },
+  "noFillWaiting": {
+    "message": "No fill is waiting here."
+  },
+  "detailNotConnectedYet": {
+    "message": "Not connected yet."
+  },
+  "detailConnecting": {
+    "message": "Connecting…"
+  },
+  "detailConnected": {
+    "message": "Connected."
+  },
+  "detailVaultLocked": {
+    "message": "The vault is locked."
+  },
+  "detailRefused": {
+    "message": "kagisecure refused the connection."
+  },
+  "detailTimeout": {
+    "message": "kagisecure did not answer in time."
+  },
+  "detailCouldNotReach": {
+    "message": "Could not reach kagisecure: $arg1$",
+    "description": "$1 is a browser error message.",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  },
+  "detailSafariNotConnected": {
+    "message": "Kagisecure is not running, or its Safari extension is not connected."
+  },
+  "detailHelperDisconnected": {
+    "message": "The kagisecure helper disconnected."
+  },
+  "detailHelperDisconnectedWith": {
+    "message": "The kagisecure helper disconnected: $arg1$",
+    "description": "$1 is a browser error message.",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  }
+}

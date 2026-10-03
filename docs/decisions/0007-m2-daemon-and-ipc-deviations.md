@@ -171,3 +171,42 @@ stream. A second test repeats the same sweep through `rmcp`'s real client over
   every stdio client does today, always settles on the newest *legacy* version, **2025-11-25**.
   The sidecar advertises what rmcp supports and negotiates down; nothing in the tool surface
   depends on the difference. Revisit when clients adopt `discover`.
+
+## Amendment 2026-10-04 — items are visible to agents by default, and visibility changes in bulk
+
+**Status:** Accepted by the project owner, 2026-10-04. Amends §6 for **items** only.
+
+The owner imported 583 logins and found turning them on one at a time unusable. The product's
+direction is "one Touch ID fills everywhere, AI included; restrictions come after", with
+convenience ahead of a stricter default. So:
+
+1. **"Show new items to agents"** is a setting on each logical vault
+   (`VaultMeta::new_items_agent_visible`, stored in the encrypted body). It is **on by default**,
+   also for a vault written before the key existed (serde default `true`; no migration).
+2. With it on, every item **created** — by the app, by `kagisecure item add`, or by an import
+   (create and keep-both; an *update* never changes an existing item's visibility) — starts
+   `agent_visible = true` with **every field** visible too. All three go through one core call,
+   `Tx::add_new_item`. With it off, a new item is hidden, as before.
+3. **Existing items are not flipped silently.** They change only when a person asks: Settings ▸
+   Vault ▸ "Show All Items to Agents…" (confirmed), or a bulk action.
+4. **Bulk on/off**: `Tx::set_agent_visible_bulk` over a multi-selection, a tag, a category or every
+   item not in the Trash, shows each item *and all its fields*, or hides each one and clears its
+   field flags. One transaction, **one** audit entry, tool `set_agent_visible_bulk`, detail
+   `scope=<items|tag|category|all> visible=<on|off> matched=<n> changed=<n>` — the kind of scope
+   and counts, never the tag, a title, a field name or a value. Reached from the app (list
+   multi-select context menu, Item menu, tag/category sidebar menus), the FFI
+   (`VaultSession::set_agent_visible_bulk`) and the CLI (`kagisecure item agent-visible <on|off>
+   --tag|--category|--item|--all`); the setting itself through
+   `VaultSession::set_new_items_agent_visible` and `kagisecure vault new-items-agent-visible`.
+
+Unchanged: the logical vault's own `agent_visible` gate (still default off, still the outermost
+switch), environments (still default-deny, §6 as written), shared vaults (per-device local state,
+item by item), password history (never agent-visible) and ADR-0002 — an agent never receives a
+value; visibility discloses titles, categories, tags, URLs-as-metadata where already listed, and
+field names, and lets an agent *request* approved actions. Every value release still needs its own
+approval and presence proof.
+
+**Consequence, recorded honestly:** once the vault gate is on, a model can enumerate the metadata
+of every item created or imported after this change without a further step. The threat-model's M-9
+assumption ("an import does not instantly expose 800 item names") no longer holds by default; see
+threat-model M-9's amendment.

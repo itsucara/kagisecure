@@ -1,6 +1,56 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Turn on Touch ID unlock?": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID でのロック解除をオンにしますか？"
+          }
+        }
+      }
+    },
+    "Unlock kagisecure with your fingerprint instead of typing your master password.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "マスターパスワードを入力する代わりに、指紋で kagisecure のロックを解除できます。"
+          }
+        }
+      }
+    },
+    "Don't show this again": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "今後表示しない"
+          }
+        }
+      }
+    },
+    "Not Now": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "後で"
+          }
+        }
+      }
+    },
+    "Turn On": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "オンにする"
+          }
+        }
+      }
+    },
     "%.1f hours": {
       "localizations": {
         "ja": {
@@ -537,6 +587,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "読み込む項目: %lld 件"
+          }
+        }
+      }
+    },
+    "%lld items now shown": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 件の項目を表示しました"
+          }
+        }
+      }
+    },
+    "%lld items selected": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 件の項目を選択中"
           }
         }
       }
@@ -1291,6 +1361,16 @@
         }
       }
     },
+    "Agents": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェント"
+          }
+        }
+      }
+    },
     "Agents (mcp)": {
       "localizations": {
         "ja": {
@@ -1337,6 +1417,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "共有されていない保管庫の内容はエージェントから一切見えません"
+          }
+        }
+      }
+    },
+    "Agents see titles, categories, tags and field names. Values still need your approval.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントに見えるのはタイトル、カテゴリ、タグ、フィールド名だけです。値を使うには引き続きあなたの承認が必要です。"
           }
         }
       }
@@ -1471,7 +1561,16 @@
         }
       }
     },
-    "An agent asks to sign in to ": {},
+    "An agent asks to sign in to ": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントがサインインを求めています: "
+          }
+        }
+      }
+    },
     "An agent asks to sign in to %@ with “%@”": {
       "localizations": {
         "ja": {
@@ -3087,7 +3186,7 @@
         "ja": {
           "stringUnit": {
             "state": "translated",
-            "value": "EFF long list — %u 語"
+            "value": "EFF ロングリスト — %u 語"
           }
         }
       }
@@ -3252,12 +3351,32 @@
         }
       }
     },
+    "Every item not in the Trash becomes visible to agents, with all its fields. You can hide items again from the item list or the sidebar.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ゴミ箱にないすべての項目が、すべてのフィールドを含めてエージェントに表示されます。項目リストやサイドバーから、いつでも再び隠せます。"
+          }
+        }
+      }
+    },
     "Everyone": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
             "value": "すべて"
+          }
+        }
+      }
+    },
+    "Existing items": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "既存の項目"
           }
         }
       }
@@ -3641,6 +3760,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "エージェントからは完全に隠されており、存在すら見えません。"
+          }
+        }
+      }
+    },
+    "Hide All in “%@” from Agents": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「%@」のすべてをエージェントから隠す"
+          }
+        }
+      }
+    },
+    "Hide from Agents": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントから隠す"
           }
         }
       }
@@ -4732,6 +4871,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "新規共有保管庫…"
+          }
+        }
+      }
+    },
+    "New and imported items start visible to agents, with all their fields. Agents see titles, categories, tags and field names, never values: each value still needs your approval.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新しく作成した項目と読み込んだ項目は、すべてのフィールドを含めて最初からエージェントに表示されます。エージェントに見えるのはタイトル、カテゴリ、タグ、フィールド名だけで、値は見えません。値を使うたびに、引き続きあなたの承認が必要です。"
           }
         }
       }
@@ -6557,6 +6706,36 @@
         }
       }
     },
+    "Show All Items": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべての項目を表示"
+          }
+        }
+      }
+    },
+    "Show All Items to Agents…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべての項目をエージェントに表示…"
+          }
+        }
+      }
+    },
+    "Show All in “%@” to Agents": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「%@」のすべてをエージェントに表示"
+          }
+        }
+      }
+    },
     "Show File in Finder": {
       "localizations": {
         "ja": {
@@ -6587,12 +6766,32 @@
         }
       }
     },
+    "Show every item to agents?": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべての項目をエージェントに表示しますか？"
+          }
+        }
+      }
+    },
     "Show in Finder": {
       "localizations": {
         "ja": {
           "stringUnit": {
             "state": "translated",
             "value": "Finder で表示"
+          }
+        }
+      }
+    },
+    "Show new items to agents": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新しい項目をエージェントに表示"
           }
         }
       }
@@ -6633,6 +6832,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "ワンタイムパスワードを表示"
+          }
+        }
+      }
+    },
+    "Show to Agents": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントに表示"
           }
         }
       }
@@ -9654,6 +9863,966 @@
           "stringUnit": {
             "state": "translated",
             "value": "他のアプリでは常に自動入力シートを表示"
+          }
+        }
+      }
+    },
+    "General": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一般"
+          }
+        }
+      }
+    },
+    "Security & Unlock": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "セキュリティとロック解除"
+          }
+        }
+      }
+    },
+    "AutoFill": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自動入力"
+          }
+        }
+      }
+    },
+    "AI Agents": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AIエージェント"
+          }
+        }
+      }
+    },
+    "About": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "情報"
+          }
+        }
+      }
+    },
+    "Quick Access, the clipboard and language.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "クイックアクセス、クリップボード、言語。"
+          }
+        }
+      }
+    },
+    "Touch ID, how long one confirmation lasts, and auto-lock.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID、1回の確認が有効な期間、自動ロック。"
+          }
+        }
+      }
+    },
+    "Fill passwords in Safari, Chrome and other apps.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Safari、Chrome、その他のアプリでパスワードを自動入力します。"
+          }
+        }
+      }
+    },
+    "Let AI agents use your logins without seeing them.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "AIエージェントに、中身を見せずにログイン情報を使わせます。"
+          }
+        }
+      }
+    },
+    "Where your vault lives, and bringing items in.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保管庫の保存場所と、項目の読み込み。"
+          }
+        }
+      }
+    },
+    "Keep Kagisecure up to date.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kagisecure を最新の状態に保ちます。"
+          }
+        }
+      }
+    },
+    "Version, licence and source code.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "バージョン、ライセンス、ソースコード。"
+          }
+        }
+      }
+    },
+    "On": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "オン"
+          }
+        }
+      }
+    },
+    "Off": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "オフ"
+          }
+        }
+      }
+    },
+    "Checking…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "確認中…"
+          }
+        }
+      }
+    },
+    "%lld connected": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 件接続中"
+          }
+        }
+      }
+    },
+    "Waiting for a browser": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ブラウザの接続待ち"
+          }
+        }
+      }
+    },
+    "%lld waiting": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 件待機中"
+          }
+        }
+      }
+    },
+    "Listening": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "待ち受け中"
+          }
+        }
+      }
+    },
+    "Stopped": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "停止中"
+          }
+        }
+      }
+    },
+    "%lld on": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 件オン"
+          }
+        }
+      }
+    },
+    "Unlock the vault to change these.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "変更するには保管庫のロックを解除してください。"
+          }
+        }
+      }
+    },
+    "Shift Command Space": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Shift Command Space"
+          }
+        }
+      }
+    },
+    "Search and copy from anywhere. No Accessibility or Input Monitoring permission is needed: the system only tells Kagisecure the shortcut was pressed.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "どこからでも検索してコピーできます。アクセシビリティや入力監視の許可は不要です。システムが Kagisecure に伝えるのは、ショートカットが押されたことだけです。"
+          }
+        }
+      }
+    },
+    "Applies to every copy. Only Kagisecure's own copy is removed — anything you copied since is left alone.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "すべてのコピーに適用されます。消去するのは Kagisecure がコピーした内容だけで、その後にコピーしたものはそのまま残ります。"
+          }
+        }
+      }
+    },
+    "Language": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "言語"
+          }
+        }
+      }
+    },
+    "Appearance": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "外観"
+          }
+        }
+      }
+    },
+    "Language & Appearance": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "言語と外観"
+          }
+        }
+      }
+    },
+    "Confirm once with Touch ID or your login password, and reveals, copies, browser fills, AutoFill and agent fills go through without asking again. Each use extends the period; locking the vault always ends it.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Touch ID またはログインパスワードで一度確認すれば、表示・コピー・ブラウザでの入力・自動入力・エージェントによる入力は再確認なしで行えます。使うたびに期間が延長され、保管庫をロックすると必ず終了します。"
+          }
+        }
+      }
+    },
+    "The vault always locks when the Mac sleeps, the screen locks, or you quit.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Mac のスリープ、画面ロック、アプリの終了時には、常に保管庫がロックされます。"
+          }
+        }
+      }
+    },
+    "Every agent fill waits for you, even inside the confirmation period.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "確認の有効期間中でも、エージェントによる入力のたびに承認を待ちます。"
+          }
+        }
+      }
+    },
+    "Every password AutoFill puts into another app asks first.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "他のアプリへパスワードを自動入力するたびに、先に確認します。"
+          }
+        }
+      }
+    },
+    "Stricter confirmation": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "より厳格な確認"
+          }
+        }
+      }
+    },
+    "Advanced": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "詳細"
+          }
+        }
+      }
+    },
+    "Off by default. Turn these on when you want a sheet every time, not just once.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "初期設定ではオフです。一度だけでなく毎回確認したいときにオンにしてください。"
+          }
+        }
+      }
+    },
+    "Your vault key is wrapped by a key in this Mac's Secure Enclave. Changing your fingerprints asks for the master password once more.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保管庫の鍵は、この Mac の Secure Enclave にある鍵で保護されます。指紋を変更すると、もう一度マスターパスワードの入力を求められます。"
+          }
+        }
+      }
+    },
+    "Passwords AutoFill": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パスワードの自動入力"
+          }
+        }
+      }
+    },
+    "Ask before each fill": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "入力のたびに確認"
+          }
+        }
+      }
+    },
+    "Open AutoFill Settings…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自動入力の設定を開く…"
+          }
+        }
+      }
+    },
+    "Safari and other apps": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Safari とその他のアプリ"
+          }
+        }
+      }
+    },
+    "Turn on Kagisecure under General › AutoFill & Passwords in System Settings, and its logins appear in every password field on this Mac.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "システム設定の「一般」›「自動入力とパスワード」で Kagisecure をオンにすると、この Mac のあらゆるパスワード欄にログイン情報が表示されます。"
+          }
+        }
+      }
+    },
+    "Chrome, Edge, Brave, Firefox": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Chrome、Edge、Brave、Firefox"
+          }
+        }
+      }
+    },
+    "Set up the browser extension…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ブラウザ拡張機能を設定…"
+          }
+        }
+      }
+    },
+    "The extension shows matching logins on the page. Setup installs a small helper the browser talks to; it stores nothing in the browser.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拡張機能は、ページに合うログイン情報を表示します。設定ではブラウザがやり取りする小さなヘルパーをインストールします。ブラウザには何も保存しません。"
+          }
+        }
+      }
+    },
+    "Agent connection (MCP)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェント接続（MCP）"
+          }
+        }
+      }
+    },
+    "Set up your agent…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントを設定…"
+          }
+        }
+      }
+    },
+    "Connection": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続"
+          }
+        }
+      }
+    },
+    "Claude Code, Codex and other MCP clients connect while the vault is unlocked. Setup shows the one line to add.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Claude Code、Codex などの MCP クライアントは、保管庫のロック解除中に接続できます。設定画面に追加する1行が表示されます。"
+          }
+        }
+      }
+    },
+    "Let agents fill logins in your browser": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントにブラウザでのログイン入力を許可"
+          }
+        }
+      }
+    },
+    "The agent never receives the password; Kagisecure types it into the page.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントはパスワードを受け取りません。Kagisecure がページに直接入力します。"
+          }
+        }
+      }
+    },
+    "Stricter: ignore the confirmation period for agents.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "より厳格：エージェントには確認の有効期間を適用しません。"
+          }
+        }
+      }
+    },
+    "An agent that can run script in that page could still read what was typed. Blocked agents and recent notices are in Environments.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "そのページでスクリプトを実行できるエージェントは、入力された内容を読み取れる可能性があります。ブロック中のエージェントと最近のお知らせは「環境」にあります。"
+          }
+        }
+      }
+    },
+    "Environments and agent fills": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "環境とエージェントによる入力"
+          }
+        }
+      }
+    },
+    "Activity": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アクティビティ"
+          }
+        }
+      }
+    },
+    "Location": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存場所"
+          }
+        }
+      }
+    },
+    "State": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "状態"
+          }
+        }
+      }
+    },
+    "Unlocked": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ロック解除中"
+          }
+        }
+      }
+    },
+    "One encrypted file. Time Machine and other backups copy it like any other file; it is useless without your master password.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暗号化された1つのファイルです。Time Machine などのバックアップでも通常のファイルと同じようにコピーされ、マスターパスワードがなければ開けません。"
+          }
+        }
+      }
+    },
+    "Import from a File…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ファイルから読み込む…"
+          }
+        }
+      }
+    },
+    "Bring items in": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "項目の読み込み"
+          }
+        }
+      }
+    },
+    "1Password (.1pux), Apple Passwords, Chrome and other CSV exports. You see a preview before anything is saved.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1Password（.1pux）、Apple のパスワード、Chrome などの CSV 書き出しに対応しています。保存する前にプレビューで確認できます。"
+          }
+        }
+      }
+    },
+    "Details": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "詳細情報"
+          }
+        }
+      }
+    },
+    "Version %@ (%@)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "バージョン %1$@（%2$@）"
+          }
+        }
+      }
+    },
+    "An open-source password manager for people and their AI agents.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "人と AI エージェントのための、オープンソースのパスワードマネージャ。"
+          }
+        }
+      }
+    },
+    "kagisecure.com": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kagisecure.com"
+          }
+        }
+      }
+    },
+    "Source code on GitHub": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "GitHub のソースコード"
+          }
+        }
+      }
+    },
+    "Report a problem": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "問題を報告"
+          }
+        }
+      }
+    },
+    "Links": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リンク"
+          }
+        }
+      }
+    },
+    "Licence": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ライセンス"
+          }
+        }
+      }
+    },
+    "Free and open source. Your vault never leaves this Mac unless you put it somewhere.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "無料のオープンソースです。あなたが移動しない限り、保管庫がこの Mac の外に出ることはありません。"
+          }
+        }
+      }
+    },
+    "Current version": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "現在のバージョン"
+          }
+        }
+      }
+    },
+    " with “%@”": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "（「%@」を使用）"
+          }
+        }
+      }
+    },
+    "Item visibility": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "項目の公開範囲"
+          }
+        }
+      }
+    },
+    "Agents see titles, categories, tags and field names, never values.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントに見えるのはタイトル、カテゴリ、タグ、フィールド名だけで、値は見えません。"
+          }
+        }
+      }
+    },
+    "New and imported items start visible to agents, with all their fields. Each value still needs your approval.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新規作成・読み込みした項目は、すべてのフィールドがエージェントに公開された状態で始まります。値を使うたびに承認が必要です。"
+          }
+        }
+      }
+    },
+    "System": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "システム"
+          }
+        }
+      }
+    },
+    "Light": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ライト"
+          }
+        }
+      }
+    },
+    "Dark": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ダーク"
+          }
+        }
+      }
+    },
+    "System default": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "システムのデフォルト"
+          }
+        }
+      }
+    },
+    "Restart Kagisecure to apply the new language.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "新しい言語を適用するには Kagisecure を再起動してください。"
+          }
+        }
+      }
+    },
+    "Relaunch": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再起動"
+          }
+        }
+      }
+    },
+    "A new language applies after a relaunch, which locks the vault first.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "言語の変更は再起動後に反映されます。再起動の前に保管庫はロックされます。"
+          }
+        }
+      }
+    },
+    "Language & Region…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "言語と地域…"
+          }
+        }
+      }
+    },
+    "Fill passwords in your browsers": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ブラウザでパスワードを入力"
+          }
+        }
+      }
+    },
+    "Kagisecure isn't connected to these browsers yet. Connect one and your logins are a click away on every site.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kagisecure はまだこれらのブラウザに接続されていません。接続すると、どのサイトでもワンクリックでログインを入力できます。"
+          }
+        }
+      }
+    },
+    "Don't ask about this browser again": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このブラウザについては今後確認しない"
+          }
+        }
+      }
+    },
+    "Ready to fill": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "入力の準備ができています"
+          }
+        }
+      }
+    },
+    "Connected": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続済み"
+          }
+        }
+      }
+    },
+    "Connect": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続"
+          }
+        }
+      }
+    },
+    "More setup options…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "その他の設定方法…"
+          }
+        }
+      }
+    },
+    "No supported browsers found.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "対応ブラウザが見つかりません。"
+          }
+        }
+      }
+    },
+    "Not connected": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "未接続"
+          }
+        }
+      }
+    },
+    "Ask to connect": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "接続を提案"
+          }
+        }
+      }
+    },
+    "Reset “Don't Ask Again”": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「今後確認しない」をリセット"
+          }
+        }
+      }
+    },
+    "Browsers on this Mac": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この Mac のブラウザ"
+          }
+        }
+      }
+    },
+    "After you unlock, Kagisecure offers to connect browsers that are not connected yet — at most once a launch, and not again for a week after “Later”.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ロック解除後、まだ接続されていないブラウザへの接続を提案します。提案は起動ごとに最大1回で、「あとで」を選ぶと1週間は表示しません。"
           }
         }
       }

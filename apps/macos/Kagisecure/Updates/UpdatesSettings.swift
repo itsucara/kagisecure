@@ -7,6 +7,8 @@ struct UpdatesSettings: View {
     var body: some View {
         @Bindable var updater = updater
         Form {
+            SettingsPaneHeader(pane: .updates)
+
             Section {
                 Toggle("Check for updates automatically", isOn: $updater.automaticallyChecks)
                     .disabled(!updater.isEnabled)
@@ -16,6 +18,11 @@ struct UpdatesSettings: View {
                 } label: {
                     Text("Last checked")
                     lastCheckText
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Current version") {
+                    Text("\(AboutInfo.version) (\(AboutInfo.build))")
+                        .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
             } footer: {

@@ -188,6 +188,20 @@ doing nothing.
    CLI, both architectures, `lipo`d, staged in `target/helpers/Release/`.
 5. `xcodegen generate`, then `xcodebuild -configuration Release` with the Developer ID identity,
    `ARCHS="arm64 x86_64"`, `--timestamp` and **`CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO`**.
+   The AutoFill credential provider extension is signed with
+   `apps/macos/Signing/CredentialProvider.Provisioned.entitlements` (the restricted
+   `autofill-credential-provider` entitlement) and its Developer ID provisioning profile, named
+   by its Name: `Kagisecure CredentialProvider Developer ID` by default, `KAGISECURE_CP_PROFILE`
+   to override (`CP_PROFILE` for `make macos SIGN=developer-id`). The profile must be installed
+   (double-click it, or put it in `~/Library/MobileDevice/Provisioning Profiles/`) and cover
+   App ID `com.kagisecure.app.credential-provider` with the AutoFill capability and the App
+   Group ([ADR-0045](decisions/0045-system-wide-autofill-credential-provider.md)). Without it the build fails rather than ship an extension
+   macOS will not offer.
+   The **app itself** needs the same AutoFill entitlement, or macOS silently hides the
+   extension (Settings lists only Apple Passwords): it is signed with
+   `apps/macos/Signing/App.Provisioned.entitlements` and a second Developer ID profile, `Kagisecure
+   App Developer ID` by default (`KAGISECURE_APP_PROFILE` / `APP_PROFILE` to override), for App ID
+   `com.kagisecure.app` with the AutoFill Credential Provider capability enabled.
 6. `cargo xtask embed` — copy the three helpers into `Contents/Helpers`, sign each under the
    Hardened Runtime with `apps/macos/Signing/Helper.entitlements`, then re-sign the app around
    them. Inside-out, because adding a file to a signed bundle invalidates its seal

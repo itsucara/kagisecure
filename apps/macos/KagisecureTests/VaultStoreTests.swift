@@ -43,7 +43,9 @@ struct VaultStoreTests {
         // field, is the one place a site lives.
         #expect(item.fields.map(\.label) == ["username", "password", "one-time password"])
         #expect(item.fields[1].concealed)
-        #expect(!item.agentVisible, "a new item is never visible to agents")
+        // "Show new items to agents" is on by default (ADR-0007 amendment 2026-10-04).
+        #expect(item.agentVisible, "a new item starts visible to agents")
+        #expect(item.fields.allSatisfy { $0.agentVisible })
     }
 
     @Test func roundTripsAConcealedFieldThroughSaveAndReveal() async throws {
@@ -162,9 +164,10 @@ struct VaultStoreTests {
         #expect(store.items.isEmpty)
     }
 
-    @Test func agentVisibilityDefaultsOffAndPersists() throws {
+    @Test func agentVisibilityTogglesAndPersists() throws {
         let (session, path) = try Self.newVault()
         let store = VaultStore(session: session)
+        store.setNewItemsAgentVisible(false)
         try store.createItem(category: "api-credential")
         let item = try #require(store.selectedItem)
         #expect(!item.agentVisible)

@@ -19,7 +19,10 @@ struct LockView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)
         .onAppear {
-            if model.hasPlatformSlot, model.platformAvailability.isAvailable {
+            // A lock the user just asked for must stay locked: prompting here would have the
+            // finger that pressed "Lock Now" unlock the vault again a moment later.
+            if reason != .manual, reason != .conflict,
+               model.hasPlatformSlot, model.platformAvailability.isAvailable {
                 model.unlockWithTouchID()
             }
         }

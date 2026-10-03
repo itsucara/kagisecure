@@ -1,7 +1,8 @@
 import XCTest
 
-/// The Settings scene (⌘,): the Security pane's three preferences (ui-spec.md §6.2 auto-lock,
-/// §11's copy actions, §6.1 Touch ID) and the Vault pane that says which file is open.
+/// The Settings window (⌘,, ui-spec.md §17): the General pane's clipboard interval and Quick
+/// Access shortcut, the Security & Unlock pane's auto-lock and Touch ID (§6.2, §6.1), the AI Agents
+/// pane's item visibility, and the Vault pane that says which file is open.
 ///
 /// This is also the suite's own safety net. `-KSUITestDefaultsSuite` exists so that a scenario
 /// which turns auto-lock off and clipboard clearing down to fifteen seconds is changing a throwaway
@@ -9,9 +10,11 @@ import XCTest
 /// second scenario below is the one that proves the redirection actually holds, by reading the
 /// suite back after clicking the pane.
 final class I_SettingsTests: UITestCase {
-    /// The Settings tabs, by the names they show. See `tab(_:)` for why not by identifier.
-    private static let securityTab = "Security"
-    private static let vaultTab = "Vault"
+    /// The Settings sidebar panes, by accessibility identifier (`ks.settings.pane.<rawValue>`).
+    private static let generalPane = "ks.settings.pane.general"
+    private static let securityPane = "ks.settings.pane.security"
+    private static let agentsPane = "ks.settings.pane.agents"
+    private static let vaultPane = "ks.settings.pane.vault"
     /// `PasteboardService.clearSecondsKey`. Hardcoded because the UI-test bundle links against
     /// XCTest and the app's *bundle*, not the app's module — there is no `import Kagisecure` to be
     /// had from a UI test, so the key travels as a string and this comment is the reference back to
@@ -30,17 +33,17 @@ final class I_SettingsTests: UITestCase {
             capture("settings-before", "The main window, before ⌘, opens Settings")
         }
 
-        step("⌘, opens Settings, and its Security tab carries the clipboard interval") {
+        step("⌘, opens Settings, and its General pane carries the clipboard interval") {
             openSettings()
-            // By name, not by identifier. `.tabItem` hands AppKit a title and an image and builds
-            // its own tab item; a view modifier on the label reaches nothing, so the tabs have no
-            // identifiers to find. Their names are what a user reads and what VoiceOver says.
-            XCTAssertTrue(tab(Self.securityTab).exists, "Settings should offer a Security tab")
-            XCTAssertTrue(tab(Self.vaultTab).exists, "Settings should offer a Vault tab")
+            for pane in ["general", "security", "autofill", "agents", "vault", "updates", "about"] {
+                XCTAssertTrue(
+                    element("ks.settings.pane.\(pane)").exists,
+                    "the Settings sidebar should offer the \(pane) pane (ui-spec.md §17)")
+            }
             XCTAssertTrue(
                 element("ks.settings.clipboardInterval").exists,
-                "the Security tab carries the clipboard interval (ui-spec.md §11's copy actions)")
-            capture("settings-security", "Settings: the Security tab")
+                "the General pane carries the clipboard interval (ui-spec.md §11's copy actions)")
+            capture("settings-general", "Settings: the General pane")
         }
 
         step("the Quick Access section says either its shortcut or why it has none") {
@@ -54,7 +57,7 @@ final class I_SettingsTests: UITestCase {
 
             if registered {
                 XCTAssertEqual(
-                    text(of: shortcut), "⇧⌘Space",
+                    text(of: shortcut), "Shift Command Space",
                     "ui-spec.md §7's Quick Access shortcut is ⇧⌘Space")
                 record(
                     "settings-quick-access", "shortcut: \(text(of: shortcut))",
@@ -71,6 +74,8 @@ final class I_SettingsTests: UITestCase {
         }
 
         step("the Touch ID section resolves to an answer rather than a spinner") {
+            selectSettingsPane(Self.securityPane, thenWaitFor: "ks.settings.autoLockInterval")
+            capture("settings-security", "Settings: the Security & Unlock pane")
             // Three states in `SecuritySettings`: available (a toggle), unavailable (an
             // explanation) and unknown (a `ProgressView` with no identifier at all). The third is
             // a transient, so this waits for one of the first two rather than sampling once.
@@ -90,8 +95,16 @@ final class I_SettingsTests: UITestCase {
                 "Which of the two Touch ID states this machine is in")
         }
 
-        step("the Vault tab names the file that is actually open") {
-            selectSettingsTab(Self.vaultTab, thenWaitFor: "ks.settings.vaultPath")
+        step("the AI Agents pane carries item visibility") {
+            selectSettingsPane(Self.agentsPane, thenWaitFor: "ks.settings.newItemsAgentVisible")
+            XCTAssertTrue(
+                element("ks.settings.showAllToAgents").exists,
+                "the AI Agents pane offers Show All Items to Agents… (ui-spec.md §17)")
+            capture("settings-agents", "Settings: the AI Agents pane")
+        }
+
+        step("the Vault pane names the file that is actually open") {
+            selectSettingsPane(Self.vaultPane, thenWaitFor: "ks.settings.vaultPath")
 
             let path = text("ks.settings.vaultPath")
             XCTAssertTrue(
@@ -114,7 +127,7 @@ final class I_SettingsTests: UITestCase {
                 "the generator's word list is the EFF long list, which is 7776 words; Settings "
                     + "said \(wordlist)")
 
-            capture("settings-vault", "Settings: the Vault tab, naming the scratch vault")
+            capture("settings-vault", "Settings: the Vault pane, naming the scratch vault")
         }
     }
 
@@ -123,10 +136,10 @@ final class I_SettingsTests: UITestCase {
         // back proves a change rather than restating a default.
         try openSeededVault(autoLockMinutes: 0, pasteboardSeconds: 60)
 
-        step("Settings opens on Security") {
+        step("Settings opens on General") {
             openSettings()
             waitFor("ks.settings.clipboardInterval")
-            capture("settings-intervals-before", "Security, before either interval is changed")
+            capture("settings-intervals-before", "General, before either interval is changed")
         }
 
         step("the clipboard interval can be moved to fifteen seconds") {
@@ -142,6 +155,7 @@ final class I_SettingsTests: UITestCase {
         }
 
         step("the auto-lock interval can be moved to one minute") {
+            selectSettingsPane(Self.securityPane, thenWaitFor: "ks.settings.autoLockInterval")
             // ui-spec.md §6.2: the idle timeout is the one auto-lock trigger that is a preference.
             chooseFromPicker("ks.settings.autoLockInterval", "1 minute")
             assertPreference(
@@ -196,61 +210,37 @@ final class I_SettingsTests: UITestCase {
 
     // MARK: - Driving Settings
 
-    /// Open Settings with ⌘, and put it on the Security tab.
+    /// Open Settings with ⌘, and put it on the General pane.
     ///
-    /// Waited for by the panes rather than by a window: `Settings { }` is a separate scene with a
-    /// title AppKit localises and decorates ("Kagisecure Settings", "…Preferences" on older
-    /// systems), so the window title is the wrong thing to wait on.
-    ///
-    /// *Either* pane, then Security explicitly, because Settings reopens on whichever tab it was
-    /// last left on. SwiftUI keeps that in the app's own `UserDefaults.standard`
-    /// (`com_apple_SwiftUI_Settings_selectedTabIndex`), which `-KSUITestDefaultsSuite` does not
-    /// move — so the previous scenario, or whoever used the app last, decides where it opens. The
-    /// first scenario here leaves it on Vault; the second one used to open straight onto that tab
-    /// and wait thirty seconds for a Security control that was never going to appear.
+    /// The window remembers the last pane shown (`settings.selectedPane`), which may live outside
+    /// the throwaway defaults suite, so where it opens is not up to this scenario: wait for the
+    /// sidebar, then select General explicitly.
     private func openSettings(file: StaticString = #filePath, line: UInt = #line) {
         app.typeKey(",", modifierFlags: .command)
         XCTAssertTrue(
-            waitUntil("Settings is open on one of its tabs", timeout: Self.timeout) {
-                self.element("ks.settings.autoLockInterval").exists
-                    || self.element("ks.settings.vaultPath").exists
-            },
-            "⌘, opened no Settings pane. On screen: "
+            element(Self.generalPane).waitForExistence(timeout: Self.timeout),
+            "⌘, opened no Settings window. On screen: "
                 + onScreenIdentifiers().joined(separator: ", "),
             file: file, line: line)
-        if !element("ks.settings.autoLockInterval").exists {
-            selectSettingsTab(
-                Self.securityTab, thenWaitFor: "ks.settings.autoLockInterval", file: file,
-                line: line)
-        }
+        selectSettingsPane(
+            Self.generalPane, thenWaitFor: "ks.settings.clipboardInterval", file: file, line: line)
     }
 
-    /// Switch Settings tabs, and wait for something that is only on the destination tab.
-    ///
-    /// The fallback is by visible title: a `.tabItem`'s `accessibilityIdentifier` sits on the
-    /// `Label` inside the modifier, and AppKit rebuilds that label into a toolbar or segmented
-    /// control item, which does not always carry the identifier across. The tab is still there and
-    /// still named, so the scenario falls back to its name rather than stopping at a detail of how
-    /// SwiftUI lowered it.
-    private func selectSettingsTab(
-        _ name: String, thenWaitFor destination: String,
+    /// Select a Settings sidebar pane by identifier, and wait for something only that pane has.
+    private func selectSettingsPane(
+        _ identifier: String, thenWaitFor destination: String,
         file: StaticString = #filePath, line: UInt = #line
     ) {
-        let target = tab(name)
-        XCTAssertTrue(
-            target.waitForExistence(timeout: Self.shortTimeout),
-            "no tab named \(name) in the Settings window", file: file, line: line)
-        target.click()
+        if element(destination).exists { return }
+        let row = waitFor(identifier, file: file, line: line)
+        row.click()
+        if !element(destination).waitForExistence(timeout: Self.shortTimeout) {
+            // The identifier can land on the label inside the row; clicking its cell is what a
+            // `List(selection:)` reliably takes.
+            let cell = app.cells.containing(.any, identifier: identifier).firstMatch
+            if cell.exists { cell.click() }
+        }
         waitFor(destination, file: file, line: line)
-    }
-
-    /// The Settings tab called `name`.
-    private func tab(_ name: String) -> XCUIElement {
-        let radio = app.radioButtons[name]
-        if radio.exists { return radio }
-        return app.descendants(matching: .any).matching(
-            NSPredicate(format: "label == %@ OR title == %@", name, name)
-        ).firstMatch
     }
 
     /// Choose `option` from the `.menu`-style `Picker` with `identifier`.

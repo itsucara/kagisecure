@@ -148,3 +148,14 @@ a Touch ID unlock" is therefore **not met**, and the roadmap says so rather than
   owner wants the biometric path proven before then.
 - **Two entitlements files** is one more thing to keep in step. Mitigated by keeping the
   provisioned one a two-key superset, and by a comment in it explaining why it exists.
+
+## Amendment (2026-10-04): Developer ID build carries the keychain entitlements
+
+The Developer ID build is now signed with the "Kagisecure App Developer ID" provisioning profile
+(App ID `4CZNJKU58K.com.kagisecure.app`, introduced for AutoFill in ADR-0045). That profile permits
+`keychain-access-groups 4CZNJKU58K.*`, so `Signing/App.Provisioned.entitlements` now also carries
+`com.apple.application-identifier`, `com.apple.developer.team-identifier` and
+`keychain-access-groups` (`$(AppIdentifierPrefix)com.kagisecure.app`). This is the "registered App
+ID" this ADR said was missing: the released build can own the Secure Enclave key and offer Touch ID
+unlock. Ad-hoc and source builds are unchanged and still fall back to `notEntitled`. Proving it on
+hardware (enrol in Settings, lock, unlock with a finger) remains an owner step.

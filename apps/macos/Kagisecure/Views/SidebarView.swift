@@ -46,11 +46,16 @@ struct SidebarView: View {
 
             Section("Categories") {
                 ForEach(store.counts.categories, id: \.name) { entry in
+                    let title = store.displayName(forCategory: entry.name)
                     row(
                         .category(entry.name),
-                        store.displayName(forCategory: entry.name),
+                        title,
                         symbol(forCategory: entry.name),
-                        count: entry.count)
+                        count: entry.count
+                    )
+                    .contextMenu {
+                        agentVisibilityMenu(.category(category: entry.name), title)
+                    }
                 }
             }
 
@@ -58,6 +63,7 @@ struct SidebarView: View {
                 Section("Tags") {
                     ForEach(store.counts.tags, id: \.name) { entry in
                         row(.tag(entry.name), entry.name, "number", count: entry.count)
+                            .contextMenu { agentVisibilityMenu(.tag(tag: entry.name), entry.name) }
                     }
                 }
             }
@@ -166,6 +172,18 @@ struct SidebarView: View {
             Button("Show Folder in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: folder)])
             }
+        }
+    }
+
+    /// "Show all in <tag> to Agents" / "Hide all in <tag> from Agents" on a tag or category row
+    /// (ADR-0007 amendment 2026-10-04): every item there, not in the trash, in one transaction.
+    @ViewBuilder
+    private func agentVisibilityMenu(_ scope: AgentVisibilityScopeView, _ name: String) -> some View {
+        Button("Show All in “\(name)” to Agents") {
+            store.attempt { try store.setAgentVisible(scope: scope, true) }
+        }
+        Button("Hide All in “\(name)” from Agents") {
+            store.attempt { try store.setAgentVisible(scope: scope, false) }
         }
     }
 

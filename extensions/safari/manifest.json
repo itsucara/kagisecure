@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "Kagisecure",
-  "version": "0.1.2",
-  "description": "Fill logins from your Kagisecure vault. Values never leave the app until you approve a fill.",
+  "name": "__MSG_extName__",
+  "version": "0.1.3",
+  "description": "__MSG_extDescriptionSafari__",
+  "default_locale": "en",
   "permissions": [
     "nativeMessaging",
     "activeTab"

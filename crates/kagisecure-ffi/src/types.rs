@@ -443,6 +443,41 @@ pub struct VaultView {
     pub item_count: u32,
     /// Whether agents may see it at all.
     pub agent_visible: bool,
+    /// "Show new items to agents": whether items created in it start visible to agents with all
+    /// their fields (ADR-0007 amendment 2026-10-04). On by default.
+    pub new_items_agent_visible: bool,
+}
+
+/// Which items a bulk "Show to agents" / "Hide from agents" applies to
+/// ([`crate::VaultSession::set_agent_visible_bulk`]).
+#[derive(Clone, Debug, uniffi::Enum)]
+pub enum AgentVisibilityScopeView {
+    /// Exactly these item ids — a multi-selection in the list.
+    Items {
+        /// Item ids.
+        item_ids: Vec<String>,
+    },
+    /// Every item, not in the trash, with this tag.
+    Tag {
+        /// The tag.
+        tag: String,
+    },
+    /// Every item, not in the trash, of this category.
+    Category {
+        /// Canonical category name.
+        category: String,
+    },
+    /// Every item not in the trash.
+    All,
+}
+
+/// What a bulk visibility change did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct BulkVisibilityView {
+    /// Items the scope matched.
+    pub matched: u32,
+    /// Of those, items whose visibility actually changed.
+    pub changed: u32,
 }
 
 /// Where one environment variable's value comes from (vault-format.md §5.2, ADR-0007 §4).

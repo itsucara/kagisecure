@@ -40,6 +40,21 @@
 
 importScripts("origin.js", "tabmemory.js", "native.js");
 
+/**
+ * A UI string in the browser's language (`_locales/<lang>/messages.json`). `fallback` is the
+ * English text, used where `chrome.i18n` is absent (the unit tests) and kept identical to
+ * `_locales/en` by `test/i18n.test.js`. `$1`… are filled from `subs` either way.
+ */
+function localized(key, fallback, ...subs) {
+  try {
+    const text = globalThis.chrome && chrome.i18n && chrome.i18n.getMessage(key, subs.map(String));
+    if (text) return text;
+  } catch {
+    // No i18n here; the English fallback below is the answer.
+  }
+  return subs.reduce((t, v, i) => t.split(`$${i + 1}`).join(String(v)), fallback);
+}
+
 // Findings #14: after an app lock the native port can drop, and an already-open tab neither
 // navigates nor opens the popup, so nothing else would ever say `hello` again — `request_fill`
 // then kept answering `FILL_UNAVAILABLE` until the person reloaded the page by hand. Turned on
@@ -176,7 +191,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const page = trustedPageContext(sender, message.page);
         if (!page) {
-          sendResponse({ ok: false, code: "PROTOCOL", message: "This page has no usable origin." });
+          sendResponse({ ok: false, code: "PROTOCOL", message: localized("noUsableOrigin", "This page has no usable origin.") });
           return;
         }
         // A `match` is the first thing a content script asks on a new document, which makes it
@@ -204,7 +219,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const page = trustedPageContext(sender, message.page);
         if (!page) {
-          sendResponse({ ok: false, code: "PROTOCOL", message: "This page has no usable origin." });
+          sendResponse({ ok: false, code: "PROTOCOL", message: localized("noUsableOrigin", "This page has no usable origin.") });
           return;
         }
         const reply = await call({
@@ -262,7 +277,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         }
         const page = trustedPageContext(sender, message.page);
         if (!page) {
-          sendResponse({ ok: false, code: "PROTOCOL", message: "This page has no usable origin." });
+          sendResponse({ ok: false, code: "PROTOCOL", message: localized("noUsableOrigin", "This page has no usable origin.") });
           return;
         }
         const reply = await call({ ask: "totp", page, item_id: message.itemId });
@@ -272,7 +287,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       default:
         // Unreachable: `DIRECT` is the same list as the arms above. Kept so that adding a name to
         // one and not the other fails loudly rather than silently.
-        sendResponse({ ok: false, code: "PROTOCOL", message: "Unknown request." });
+        sendResponse({ ok: false, code: "PROTOCOL", message: localized("unknownRequest", "Unknown request.") });
     }
   })().catch((e) => {
     // Never let an exception's message carry a reply body with it.
@@ -286,7 +301,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 /** Normalize an app reply into the `{ ok, … }` shape the content script and popup branch on. */
 function toResult(reply) {
   if (!reply || typeof reply.reply !== "string") {
-    return { ok: false, code: "INTERNAL", message: "No answer from kagisecure." };
+    return { ok: false, code: "INTERNAL", message: localized("noAnswer", "No answer from kagisecure.") };
   }
   if (reply.reply === "error") {
     return { ok: false, code: reply.code, message: reply.message };
@@ -374,7 +389,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   (async () => {
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tab || typeof tab.id !== "number") {
-      sendResponse({ ok: false, code: "PROTOCOL", message: "No active tab." });
+      sendResponse({ ok: false, code: "PROTOCOL", message: localized("noActiveTab", "No active tab.") });
       return;
     }
     try {
@@ -388,7 +403,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({
         ok: false,
         code: "PROTOCOL",
-        message: "Autofill does not run on this page.",
+        message: localized("autofillNotOnPage", "Autofill does not run on this page."),
       });
     }
   })();
@@ -794,13 +809,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           ? agentDeliveries.get(message.grantId)
           : null;
         if (!delivery || delivery.asked || !isDeliveryTarget(delivery, sender)) {
-          sendResponse({ ok: false, code: "PROTOCOL", message: "No fill is waiting here." });
+          sendResponse({ ok: false, code: "PROTOCOL", message: localized("noFillWaiting", "No fill is waiting here.") });
           return;
         }
         delivery.asked = true;
         const page = trustedPageContext(sender, undefined);
         if (!page) {
-          sendResponse({ ok: false, code: "PROTOCOL", message: "This page has no usable origin." });
+          sendResponse({ ok: false, code: "PROTOCOL", message: localized("noUsableOrigin", "This page has no usable origin.") });
           return;
         }
         const reply = await call({
@@ -839,7 +854,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
       default:
-        sendResponse({ ok: false, code: "PROTOCOL", message: "Unknown request." });
+        sendResponse({ ok: false, code: "PROTOCOL", message: localized("unknownRequest", "Unknown request.") });
     }
   })().catch((e) => {
     // Never let an exception's message carry a reply body with it.

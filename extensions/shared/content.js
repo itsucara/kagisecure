@@ -68,6 +68,21 @@
 "use strict";
 
 (function () {
+
+  /**
+   * A UI string in the browser's language (`_locales/<lang>/messages.json`). `fallback` is the
+   * English text, used where `chrome.i18n` is absent (the unit tests) and kept identical to
+   * `_locales/en` by `test/i18n.test.js`. `$1`… are filled from `subs` either way.
+   */
+  function localized(key, fallback, ...subs) {
+    try {
+      const text = globalThis.chrome && chrome.i18n && chrome.i18n.getMessage(key, subs.map(String));
+      if (text) return text;
+    } catch {
+      // No i18n here; the English fallback below is the answer.
+    }
+    return subs.reduce((t, v, i) => t.split(`$${i + 1}`).join(String(v)), fallback);
+  }
   /** How long a "no match here" answer is believed before asking again. */
   const MATCH_TTL_MS = 20_000;
 
@@ -119,13 +134,13 @@
           // every message sent while the service worker is starting.
           const failed = chrome.runtime.lastError;
           if (failed || !response) {
-            resolve({ ok: false, code: "INTERNAL", message: "kagisecure is not reachable." });
+            resolve({ ok: false, code: "INTERNAL", message: localized("appNotReachable", "kagisecure is not reachable.") });
             return;
           }
           resolve(response);
         });
       } catch {
-        resolve({ ok: false, code: "INTERNAL", message: "kagisecure is not reachable." });
+        resolve({ ok: false, code: "INTERNAL", message: localized("appNotReachable", "kagisecure is not reachable.") });
       }
     });
   }
@@ -215,8 +230,8 @@
     root.append(style);
     const button = document.createElement("button");
     button.type = "button";
-    button.setAttribute("aria-label", "Fill with Kagisecure");
-    button.setAttribute("title", "Fill with Kagisecure (⌘\\)");
+    button.setAttribute("aria-label", localized("fillWithKagisecure", "Fill with Kagisecure"));
+    button.setAttribute("title", localized("fillWithKagisecureShortcut", "Fill with Kagisecure (⌘\\)"));
     button.textContent = "\u{1F511}";
     button.addEventListener("click", onIconClick);
     root.append(button);
@@ -330,7 +345,7 @@
     try {
       const answer = await refreshMatches(true);
       if (!answer || answer.items.length === 0) {
-        showMenu([note("No kagisecure item is saved for this site.")]);
+        showMenu([note(localized("noItemForSite", "No kagisecure item is saved for this site."))]);
         return;
       }
       if (answer.items.length === 1) {
@@ -499,7 +514,7 @@
     button.className = "row";
     const title = document.createElement("div");
     title.className = "title";
-    title.textContent = "Copy one-time code";
+    title.textContent = localized("copyOneTimeCode", "Copy one-time code");
     const sub = document.createElement("div");
     sub.className = "sub";
     sub.textContent = item.title;
@@ -544,9 +559,9 @@
     }
     navigator.clipboard
       .writeText(code)
-      .then(() => showMenu([note("One-time code copied. It expires in under a minute.")]))
+      .then(() => showMenu([note(localized("totpCopied", "One-time code copied. It expires in under a minute."))]))
       .catch(() =>
-        showMenu([note("Could not copy the code. Open Kagisecure and copy it there.")]),
+        showMenu([note(localized("totpCopyFailed", "Could not copy the code. Open Kagisecure and copy it there."))]),
       );
   }
 
@@ -558,32 +573,29 @@
   function friendly(result) {
     switch (result.code) {
       case "VAULT_LOCKED":
-        return "Kagisecure is locked. Unlock it and try again.";
+        return localized("errLocked", "Kagisecure is locked. Unlock it and try again.");
       case "USER_DENIED":
-        return "You declined this fill.";
+        return localized("errDenied", "You declined this fill.");
       case "APPROVAL_TIMEOUT":
-        return "Nobody answered the approval in Kagisecure.";
+        return localized("errTimeout", "Nobody answered the approval in Kagisecure.");
       case "ORIGIN_MISMATCH":
-        return "That item is not saved for this site, so kagisecure refused to fill it.";
+        return localized("errOriginMismatch", "That item is not saved for this site, so kagisecure refused to fill it.");
       case "NO_MATCH":
-        return "No kagisecure item applies here.";
+        return localized("errNoMatch", "No kagisecure item applies here.");
       case "UNKNOWN_EXTENSION":
       case "UNTRUSTED_HOST":
-        return "Kagisecure does not recognize this browser connection. Re-run setup in the app.";
+        return localized("errUnknownConnection", "Kagisecure does not recognize this browser connection. Re-run setup in the app.");
       case "AUDIT_UNAVAILABLE":
         // Nothing was filled: a value leaves the app only once its audit record is saved, and
         // this one could not be (ADR-0040). The app says why; trying again later can work.
-        return (
-          "Kagisecure could not save this fill to its audit log, so nothing was filled. " +
-          "Open Kagisecure to see why, then try again."
-        );
+        return localized("errAuditUnavailable", "Kagisecure could not save this fill to its audit log, so nothing was filled. Open Kagisecure to see why, then try again.");
       case "VAULT_CONFLICT":
         // The vault file on disk no longer matches the unlocked vault (restored from a backup,
         // replaced, or removed) and the app is refusing every request until a person resolves it
         // there. Retrying here cannot help, unlike VAULT_LOCKED or AUDIT_UNAVAILABLE.
-        return "Kagisecure needs your attention to continue. Open Kagisecure to resolve it.";
+        return localized("errConflict", "Kagisecure needs your attention to continue. Open Kagisecure to resolve it.");
       default:
-        return result.message || "Kagisecure could not complete that.";
+        return result.message || localized("errGeneric", "Kagisecure could not complete that.");
     }
   }
 
@@ -922,7 +934,7 @@
   /** Fetch and apply a one-time code for `itemId`, reporting only whether it worked. */
   async function runTotp(itemId) {
     const context = page();
-    if (!context) return { ok: false, message: "This page has no usable origin." };
+    if (!context) return { ok: false, message: localized("noUsableOrigin", "This page has no usable origin.") };
     const result = await send({ kind: "totp", page: context, itemId });
     if (!result.ok) return { ok: false, message: friendly(result) };
     applyTotp(result.reply.code);

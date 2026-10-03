@@ -3233,7 +3233,8 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
      * Create an item pre-populated with its category's default fields (vault-format.md §5.4).
      *
      * The item is saved immediately, so the list can select it and the detail pane can open it
-     * in edit mode. `agent_visible` is `false`, as it is on every new item.
+     * in edit mode. It is visible to agents, with every field, exactly when its logical vault's
+     * "Show new items to agents" setting is on ([`Tx::add_new_item`]).
      *
      * # Errors
      *
@@ -3575,6 +3576,20 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
     func setAgentVisible(itemId: String, visible: Bool) throws  -> ItemView
     
     /**
+     * Show every item in `scope` to agents with all its fields, or hide each one and all its
+     * fields — a multi-selection, a tag, a category, or everything — in **one** transaction with
+     * **one** audit entry recording the scope kind and counts, never a tag, a title or a value.
+     *
+     * An item id in [`AgentVisibilityScopeView::Items`] that is not canonical or names no item
+     * is ignored, so a selection that went stale while the list was open changes what is left.
+     *
+     * # Errors
+     *
+     * I/O failures; nothing changes on any error.
+     */
+    func setAgentVisibleBulk(scope: AgentVisibilityScopeView, visible: Bool) throws  -> BulkVisibilityView
+    
+    /**
      * Move an item to the archive, or bring it back.
      *
      * # Errors
@@ -3609,6 +3624,17 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
      * [`FfiError::NotPresent`], plus I/O failures.
      */
     func setFieldAgentVisible(itemId: String, fieldId: String, visible: Bool) throws  -> ItemView
+    
+    /**
+     * Set a logical vault's "Show new items to agents" setting (ADR-0007 amendment
+     * 2026-10-04). Existing items keep their visibility; [`VaultSession::set_agent_visible_bulk`]
+     * changes those. Returns whether the vault was found.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`] if there is no such logical vault; I/O failures.
+     */
+    func setNewItemsAgentVisible(vaultId: String, visible: Bool) throws  -> Bool
     
     /**
      * Move an item to the trash, or restore it. A soft delete: nothing is destroyed.
@@ -4234,7 +4260,8 @@ open func createEnvironment(name: String, description: String?)throws  -> Enviro
      * Create an item pre-populated with its category's default fields (vault-format.md §5.4).
      *
      * The item is saved immediately, so the list can select it and the detail pane can open it
-     * in edit mode. `agent_visible` is `false`, as it is on every new item.
+     * in edit mode. It is visible to agents, with every field, exactly when its logical vault's
+     * "Show new items to agents" setting is on ([`Tx::add_new_item`]).
      *
      * # Errors
      *
@@ -4781,6 +4808,29 @@ open func setAgentVisible(itemId: String, visible: Bool)throws  -> ItemView  {
 }
     
     /**
+     * Show every item in `scope` to agents with all its fields, or hide each one and all its
+     * fields — a multi-selection, a tag, a category, or everything — in **one** transaction with
+     * **one** audit entry recording the scope kind and counts, never a tag, a title or a value.
+     *
+     * An item id in [`AgentVisibilityScopeView::Items`] that is not canonical or names no item
+     * is ignored, so a selection that went stale while the list was open changes what is left.
+     *
+     * # Errors
+     *
+     * I/O failures; nothing changes on any error.
+     */
+open func setAgentVisibleBulk(scope: AgentVisibilityScopeView, visible: Bool)throws  -> BulkVisibilityView  {
+    return try  FfiConverterTypeBulkVisibilityView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_set_agent_visible_bulk(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeAgentVisibilityScopeView_lower(scope),
+        FfiConverterBool.lower(visible),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Move an item to the archive, or bring it back.
      *
      * # Errors
@@ -4848,6 +4898,26 @@ open func setFieldAgentVisible(itemId: String, fieldId: String, visible: Bool)th
             self.uniffiCloneHandle(),
         FfiConverterString.lower(itemId),
         FfiConverterString.lower(fieldId),
+        FfiConverterBool.lower(visible),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Set a logical vault's "Show new items to agents" setting (ADR-0007 amendment
+     * 2026-10-04). Existing items keep their visibility; [`VaultSession::set_agent_visible_bulk`]
+     * changes those. Returns whether the vault was found.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`] if there is no such logical vault; I/O failures.
+     */
+open func setNewItemsAgentVisible(vaultId: String, visible: Bool)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_set_new_items_agent_visible(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(vaultId),
         FfiConverterBool.lower(visible),uniffiCallStatus
     )
 })
@@ -6581,6 +6651,75 @@ public func FfiConverterTypeBrowserManifestView_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeBrowserManifestView_lower(_ value: BrowserManifestView) -> RustBuffer {
     return FfiConverterTypeBrowserManifestView.lower(value)
+}
+
+
+/**
+ * What a bulk visibility change did.
+ */
+public struct BulkVisibilityView: Equatable, Hashable {
+    /**
+     * Items the scope matched.
+     */
+    public var matched: UInt32
+    /**
+     * Of those, items whose visibility actually changed.
+     */
+    public var changed: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Items the scope matched.
+         */matched: UInt32, 
+        /**
+         * Of those, items whose visibility actually changed.
+         */changed: UInt32) {
+        self.matched = matched
+        self.changed = changed
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension BulkVisibilityView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeBulkVisibilityView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> BulkVisibilityView {
+        return
+            try BulkVisibilityView(
+                matched: FfiConverterUInt32.read(from: &buf), 
+                changed: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: BulkVisibilityView, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.matched, into: &buf)
+        FfiConverterUInt32.write(value.changed, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBulkVisibilityView_lift(_ buf: RustBuffer) throws -> BulkVisibilityView {
+    return try FfiConverterTypeBulkVisibilityView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeBulkVisibilityView_lower(_ value: BulkVisibilityView) -> RustBuffer {
+    return FfiConverterTypeBulkVisibilityView.lower(value)
 }
 
 
@@ -12666,6 +12805,11 @@ public struct VaultView: Equatable, Hashable {
      * Whether agents may see it at all.
      */
     public var agentVisible: Bool
+    /**
+     * "Show new items to agents": whether items created in it start visible to agents with all
+     * their fields (ADR-0007 amendment 2026-10-04). On by default.
+     */
+    public var newItemsAgentVisible: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -12681,11 +12825,16 @@ public struct VaultView: Equatable, Hashable {
          */itemCount: UInt32, 
         /**
          * Whether agents may see it at all.
-         */agentVisible: Bool) {
+         */agentVisible: Bool, 
+        /**
+         * "Show new items to agents": whether items created in it start visible to agents with all
+         * their fields (ADR-0007 amendment 2026-10-04). On by default.
+         */newItemsAgentVisible: Bool) {
         self.id = id
         self.name = name
         self.itemCount = itemCount
         self.agentVisible = agentVisible
+        self.newItemsAgentVisible = newItemsAgentVisible
     }
 
     
@@ -12707,7 +12856,8 @@ public struct FfiConverterTypeVaultView: FfiConverterRustBuffer {
                 id: FfiConverterString.read(from: &buf), 
                 name: FfiConverterString.read(from: &buf), 
                 itemCount: FfiConverterUInt32.read(from: &buf), 
-                agentVisible: FfiConverterBool.read(from: &buf)
+                agentVisible: FfiConverterBool.read(from: &buf), 
+                newItemsAgentVisible: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -12716,6 +12866,7 @@ public struct FfiConverterTypeVaultView: FfiConverterRustBuffer {
         FfiConverterString.write(value.name, into: &buf)
         FfiConverterUInt32.write(value.itemCount, into: &buf)
         FfiConverterBool.write(value.agentVisible, into: &buf)
+        FfiConverterBool.write(value.newItemsAgentVisible, into: &buf)
     }
 }
 
@@ -13052,6 +13203,120 @@ public func FfiConverterTypeAgentFillNoticeView_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeAgentFillNoticeView_lower(_ value: AgentFillNoticeView) -> RustBuffer {
     return FfiConverterTypeAgentFillNoticeView.lower(value)
+}
+
+
+
+/**
+ * Which items a bulk "Show to agents" / "Hide from agents" applies to
+ * ([`crate::VaultSession::set_agent_visible_bulk`]).
+ */
+
+public enum AgentVisibilityScopeView: Equatable, Hashable {
+    
+    /**
+     * Exactly these item ids — a multi-selection in the list.
+     */
+    case items(
+        /**
+         * Item ids.
+         */itemIds: [String]
+    )
+    /**
+     * Every item, not in the trash, with this tag.
+     */
+    case tag(
+        /**
+         * The tag.
+         */tag: String
+    )
+    /**
+     * Every item, not in the trash, of this category.
+     */
+    case category(
+        /**
+         * Canonical category name.
+         */category: String
+    )
+    /**
+     * Every item not in the trash.
+     */
+    case all
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentVisibilityScopeView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentVisibilityScopeView: FfiConverterRustBuffer {
+    typealias SwiftType = AgentVisibilityScopeView
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentVisibilityScopeView {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .items(itemIds: try FfiConverterSequenceString.read(from: &buf)
+        )
+        
+        case 2: return .tag(tag: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 3: return .category(category: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 4: return .all
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AgentVisibilityScopeView, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .items(itemIds):
+            writeInt(&buf, Int32(1))
+            FfiConverterSequenceString.write(itemIds, into: &buf)
+            
+        
+        case let .tag(tag):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(tag, into: &buf)
+            
+        
+        case let .category(category):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(category, into: &buf)
+            
+        
+        case .all:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentVisibilityScopeView_lift(_ buf: RustBuffer) throws -> AgentVisibilityScopeView {
+    return try FfiConverterTypeAgentVisibilityScopeView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentVisibilityScopeView_lower(_ value: AgentVisibilityScopeView) -> RustBuffer {
+    return FfiConverterTypeAgentVisibilityScopeView.lower(value)
 }
 
 
@@ -18802,7 +19067,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_create_environment() != 58548) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_create_item() != 25386) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_create_item() != 32973) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_default_vault_id() != 65098) {
@@ -18880,6 +19145,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_set_agent_visible() != 13450) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_set_agent_visible_bulk() != 5518) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_set_archived() != 32544) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -18890,6 +19158,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_set_field_agent_visible() != 25996) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_set_new_items_agent_visible() != 49844) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_set_trashed() != 37198) {

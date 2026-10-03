@@ -10,6 +10,43 @@ what it means for a vault written by an earlier build — see
 
 ## Unreleased
 
+## 0.1.3 — 2026-10-04
+
+What changed for you:
+
+- **One Touch ID, then no more prompts until you lock.** After you unlock or confirm with Touch ID,
+  a grace window covers the whole app: fills, revealing and copying passwords inside the app do not
+  ask again. It slides with use and by default lasts until Kagisecure locks; change it in
+  **Settings**.
+- **AI agents fill without interrupting you.** During the grace window an agent's fill request
+  goes through without a sheet or Touch ID, the approval-fatigue limits are gone, fills reach
+  background tabs, and agent fill is on by default.
+- **AutoFill everywhere on your Mac.** Kagisecure is now a system-wide AutoFill password provider
+  (ADR-0045), so native apps and Safari can fill from your vault. Turn it on in **System Settings ▸
+  General ▸ AutoFill & Passwords**.
+- **Touch ID unlock is on by default**, and the app offers to turn it on if it is off. After you
+  lock manually, Touch ID no longer pops up on its own.
+- **Redesigned Settings**, laid out like System Settings, with in-app choices for appearance and
+  language.
+- **The browser extension speaks Japanese** as well as English.
+- **Quick Access**: the arrow keys move the highlight.
+- After unlocking, the app offers to connect browsers that are not connected yet.
+- **Items are visible to agents by default.** New and imported items now start visible to agents,
+  with all their fields, so an agent can find a login without you turning it on first. Agents
+  still see only titles, categories, tags and field names — never a value, and every value still
+  needs your approval. Turn this off in **Settings ▸ Vault ▸ Show new items to agents**. Items you
+  already have are not changed; use **Show All Items to Agents…** there to show them all at once.
+- **Show or hide many items at once.** Select several items in the list (⌘-click, ⇧-click, ⌘A)
+  and choose **Show to Agents** or **Hide from Agents**, from the right-click menu or the **Item**
+  menu. Right-click a tag or category in the sidebar to show or hide everything in it — for
+  example the `imported:chromium` tag after an import.
+- CLI: `kagisecure item agent-visible <on|off> --tag|--category|--item|--all` and
+  `kagisecure vault new-items-agent-visible <on|off>`.
+- Vault format: logical vaults gain `new_items_agent_visible` (default on, including for vaults
+  written by earlier builds). An earlier build keeps the key and writes it back.
+
+The detailed list follows.
+
 ## 0.1.2 — 2026-10-03
 
 What changed for you:

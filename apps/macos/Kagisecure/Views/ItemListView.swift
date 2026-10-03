@@ -29,7 +29,10 @@ struct ItemListView: View {
     }
 
     private var list: some View {
-        List(store.items, id: \.id, selection: $store.selectedItemId) { item in
+        // A set: ⌘-click, ⇧-click and ⌘A select several items for a bulk "Show to Agents" /
+        // "Hide from Agents" (ADR-0007 amendment 2026-10-04). One selected item is still
+        // `selectedItemId`; see `VaultStore.listSelection`.
+        List(store.items, id: \.id, selection: $store.listSelection) { item in
             ItemRow(store: store, item: item)
                 .tag(item.id)
         }
@@ -158,6 +161,24 @@ private struct ItemRow: View {
                     store.attempt { try store.setArchived(item, !item.archived) }
                 }
                 Button("Move to Trash") { store.attempt { try store.setTrashed(item, true) } }
+            }
+            if store.canChangeAgentVisibilityInBulk {
+                Divider()
+                // On the whole multi-selection when this row is part of it, else on this row.
+                let ids =
+                    store.multiSelection.contains(item.id) ? store.bulkTargetIds : [item.id]
+                Button("Show to Agents") {
+                    store.attempt {
+                        try store.setAgentVisible(scope: .items(itemIds: ids), true)
+                    }
+                }
+                .accessibilityIdentifier("ks.itemList.showToAgents")
+                Button("Hide from Agents") {
+                    store.attempt {
+                        try store.setAgentVisible(scope: .items(itemIds: ids), false)
+                    }
+                }
+                .accessibilityIdentifier("ks.itemList.hideFromAgents")
             }
         }
     }

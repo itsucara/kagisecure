@@ -13,10 +13,12 @@
 //!
 //! Two invariants this module is responsible for:
 //!
-//! * **Every imported item is `agent_visible = false`** (threat-model M-9). An import is a bulk
-//!   operation over data the user has not looked at yet; opting four hundred items into agent
-//!   visibility because the source had a "shared" flag would be the worst possible default.
-//!   Asserted in `tests/dedupe.rs`.
+//! * **A newly imported item follows its logical vault's "Show new items to agents" setting**
+//!   ([`kagisecure_core::model::VaultMeta::new_items_agent_visible`], on by default — ADR-0004
+//!   amendment 2026-10-04), exactly as an item created by hand does, and never anything the
+//!   source said: a source's own "shared" flag is ignored. An *update* of an existing item never
+//!   changes its visibility. Agents see metadata only; values still need an approval. Asserted in
+//!   `tests/dedupe.rs`.
 //! * **The audit entry carries no labels and no values** — a source kind, three counts and the
 //!   source's *file name* (plan §1).
 
@@ -145,14 +147,14 @@ pub fn commit(
             ItemAction::Create => {
                 let item = build_item(imported, target, now);
                 outcome.history_added += item.history.len();
-                vault.add_item(item);
+                vault.add_new_item(item);
                 outcome.created += 1;
             }
             ItemAction::KeepBoth => {
                 let mut item = build_item(imported, target, now);
                 item.title = format!("{} (imported {today})", item.title);
                 outcome.history_added += item.history.len();
-                vault.add_item(item);
+                vault.add_new_item(item);
                 outcome.kept_both += 1;
             }
             ItemAction::Update => {
@@ -161,7 +163,7 @@ pub fn commit(
                 let Some(id) = existing else {
                     let item = build_item(imported, target, now);
                     outcome.history_added += item.history.len();
-                    vault.add_item(item);
+                    vault.add_new_item(item);
                     outcome.created += 1;
                     continue;
                 };
@@ -229,7 +231,7 @@ fn build_item(imported: &ImportedItem, vault_id: VaultId, now: u64) -> Item {
     item.favorite = *favorite;
     item.archived = *archived;
     item.trashed_at = *trashed_at;
-    // Never, whatever the source said (threat-model M-9).
+    // Never what the source said; `Tx::add_new_item` applies the vault's own setting.
     item.agent_visible = false;
 
     let mut extra = extra.clone();

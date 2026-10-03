@@ -1018,6 +1018,17 @@ pub enum VaultCommand {
 
     /// Check that the master password opens the vault. Prints a summary, never a value.
     Unlock,
+
+    /// Set "Show new items to agents" for the first logical vault: whether items created by the
+    /// app, the CLI or an import start visible to agents. On by default.
+    NewItemsAgentVisible(NewItemsAgentVisibleArgs),
+}
+
+/// `kagisecure vault new-items-agent-visible`
+#[derive(Debug, Args)]
+pub struct NewItemsAgentVisibleArgs {
+    /// `on` or `off`.
+    pub state: OnOff,
 }
 
 /// `kagisecure vault init`
@@ -1058,6 +1069,56 @@ pub enum ItemCommand {
 
     /// Remove an item.
     Rm(RmArgs),
+
+    /// Show items to agents, or hide them, in bulk: named items, a tag, a category, or all.
+    /// Agents see titles, categories, tags and field names; values still need an approval.
+    /// One transaction, one audit entry with counts only.
+    AgentVisible(AgentVisibleArgs),
+}
+
+/// `on` or `off`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
+pub enum OnOff {
+    /// Turn it on.
+    On,
+    /// Turn it off.
+    Off,
+}
+
+impl OnOff {
+    /// `true` for [`OnOff::On`].
+    #[must_use]
+    pub fn is_on(self) -> bool {
+        self == Self::On
+    }
+}
+
+/// `kagisecure item agent-visible`
+#[derive(Debug, Args)]
+#[command(group(
+    clap::ArgGroup::new("scope")
+        .required(true)
+        .args(["items", "tag", "category", "all"])
+))]
+pub struct AgentVisibleArgs {
+    /// `on` to show the items (and every field) to agents, `off` to hide them.
+    pub state: OnOff,
+
+    /// An item id, unique id prefix, or exact title. Repeatable.
+    #[arg(long = "item", value_name = "ITEM")]
+    pub items: Vec<String>,
+
+    /// Every item, not in the trash, with this tag (for example `imported:chromium`).
+    #[arg(long, value_name = "TAG")]
+    pub tag: Option<String>,
+
+    /// Every item, not in the trash, of this category.
+    #[arg(long, value_name = "CATEGORY")]
+    pub category: Option<String>,
+
+    /// Every item not in the trash.
+    #[arg(long)]
+    pub all: bool,
 }
 
 /// `kagisecure item add`

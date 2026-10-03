@@ -150,7 +150,9 @@ struct MainView: View {
 
     @ViewBuilder
     private var itemDetail: some View {
-        if let item = store.selectedItem {
+        if store.multiSelection.count > 1 {
+            MultiSelectionView(store: store)
+        } else if let item = store.selectedItem {
             ItemDetailView(store: store, item: item)
                 .id(item.id)
         } else {
@@ -320,5 +322,43 @@ struct EmptyStateView: View {
         // One identifier for every empty state in the app. There is at most one on screen at a
         // time — they are what a pane shows *instead of* its content — and the title is what tells
         // a test which one it is looking at.
+    }
+}
+
+/// The detail pane while several items are selected in the list: how many, and the bulk agent
+/// visibility actions (ADR-0007 amendment 2026-10-04). Values are never shown here.
+private struct MultiSelectionView: View {
+    @Bindable var store: VaultStore
+
+    var body: some View {
+        let count = store.multiSelection.count
+        VStack(spacing: 14) {
+            Image(systemName: "square.stack.3d.up")
+                .font(.system(size: 40))
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("\(count) items selected")
+                .font(.title3)
+                .accessibilityIdentifier("ks.multiSelection.count")
+            if store.canChangeAgentVisibilityInBulk {
+                HStack {
+                    Button("Show to Agents") {
+                        store.attempt { try store.setSelectionAgentVisible(true) }
+                    }
+                    .accessibilityIdentifier("ks.multiSelection.showToAgents")
+                    Button("Hide from Agents") {
+                        store.attempt { try store.setSelectionAgentVisible(false) }
+                    }
+                    .accessibilityIdentifier("ks.multiSelection.hideFromAgents")
+                }
+                Text("Agents see titles, categories, tags and field names. Values still need your approval.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: 320)
+            }
+        }
+        .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

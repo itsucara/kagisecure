@@ -69,6 +69,7 @@ final class VaultStore {
 
     var selection: SidebarSelection = .all {
         didSet {
+            multiSelection = []
             if selection.sharedVaultId != oldValue.sharedVaultId {
                 // What is shown belongs to the vault it came from.
                 releases.hideAll(because: .deselected)
@@ -87,6 +88,34 @@ final class VaultStore {
         // A shown value belongs to the item it was shown for: moving away hides it (ADR-0038
         // user decisions 2 and 5).
         didSet { releases.show(item: selectedItemId) }
+    }
+
+    /// Items selected together in the list (⌘-click, ⇧-click, ⌘A). Holds two or more ids, or is
+    /// empty: a single selection is `selectedItemId`, so the detail pane, ⌘E and every copy
+    /// shortcut keep meaning exactly one item.
+    private(set) var multiSelection: Set<String> = []
+
+    /// The list's selection as SwiftUI's multi-select `List` sees it.
+    var listSelection: Set<String> {
+        get {
+            if multiSelection.count > 1 { return multiSelection }
+            return selectedItemId.map { [$0] } ?? []
+        }
+        set {
+            if newValue.count > 1 {
+                multiSelection = newValue
+            } else {
+                multiSelection = []
+                selectedItemId = newValue.first
+            }
+        }
+    }
+
+    /// The items a bulk "Show to agents" / "Hide from agents" from the list applies to: the
+    /// multi-selection, or else the one selected item.
+    var bulkTargetIds: [String] {
+        if multiSelection.count > 1 { return items.map(\.id).filter(multiSelection.contains) }
+        return selectedItemId.map { [$0] } ?? []
     }
 
     private(set) var items: [ItemView] = []
@@ -312,6 +341,14 @@ final class VaultStore {
             filter: filter, query: query.isEmpty ? nil : query, sort: sort)
         counts = session.sidebarCounts()
         environments = session.environments()
+        if !multiSelection.isEmpty {
+            let shown = Set(items.map(\.id))
+            multiSelection.formIntersection(shown)
+            if multiSelection.count < 2 {
+                if let only = multiSelection.first { selectedItemId = only }
+                multiSelection = []
+            }
+        }
         if let id = selectedItemId, !items.contains(where: { $0.id == id }) {
             selectedItemId = items.first?.id
         }
@@ -387,6 +424,39 @@ final class VaultStore {
     func setAgentVisible(_ item: ItemView, _ visible: Bool) throws {
         _ = try mutating { try source.setAgentVisible(itemId: item.id, visible: visible) }
         refresh()
+    }
+
+    // MARK: - Bulk agent visibility (ADR-0007 amendment 2026-10-04)
+
+    /// Whether bulk visibility changes are offered where the sidebar points. Personal vault only:
+    /// a shared vault's agent visibility is this device's own local state, item by item.
+    var canChangeAgentVisibilityInBulk: Bool { sharedVaultId == nil }
+
+    /// Show or hide every item in `scope`, with all its fields, in one transaction with one audit
+    /// entry (counts only). Returns what changed.
+    @discardableResult
+    func setAgentVisible(scope: AgentVisibilityScopeView, _ visible: Bool) throws
+        -> BulkVisibilityView
+    {
+        let result = try mutating { try session.setAgentVisibleBulk(scope: scope, visible: visible) }
+        refresh()
+        return result
+    }
+
+    /// The list's selection (`bulkTargetIds`) shown to agents or hidden.
+    @discardableResult
+    func setSelectionAgentVisible(_ visible: Bool) throws -> BulkVisibilityView {
+        try setAgentVisible(scope: .items(itemIds: bulkTargetIds), visible)
+    }
+
+    /// Whether the first logical vault's "Show new items to agents" setting is on.
+    var newItemsAgentVisible: Bool {
+        session.vaults().first?.newItemsAgentVisible ?? true
+    }
+
+    func setNewItemsAgentVisible(_ visible: Bool) {
+        guard let id = session.vaults().first?.id else { return }
+        perform { _ = try session.setNewItemsAgentVisible(vaultId: id, visible: visible) }
     }
 
     func setFieldAgentVisible(_ item: ItemView, _ field: FieldView, _ visible: Bool) throws {

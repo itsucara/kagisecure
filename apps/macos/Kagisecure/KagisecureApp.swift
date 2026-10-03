@@ -231,6 +231,21 @@ struct KagisecureCommands: Commands {
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(model.store?.selectedItem?.passwordField == nil)
             Divider()
+            // The list's selection — several items, or the one shown (ADR-0007 amendment
+            // 2026-10-04). Personal vault only.
+            Button("Show to Agents") {
+                model.store?.attempt { try model.store?.setSelectionAgentVisible(true) }
+            }
+            .disabled(
+                model.store?.canChangeAgentVisibilityInBulk != true
+                    || model.store?.bulkTargetIds.isEmpty != false)
+            Button("Hide from Agents") {
+                model.store?.attempt { try model.store?.setSelectionAgentVisible(false) }
+            }
+            .disabled(
+                model.store?.canChangeAgentVisibilityInBulk != true
+                    || model.store?.bulkTargetIds.isEmpty != false)
+            Divider()
             Button("Quick Access") { model.toggleQuickAccess() }
                 .keyboardShortcut(.space, modifiers: [.command, .shift])
                 .help("A floating search over every item. Works from any app.")

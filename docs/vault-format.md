@@ -74,7 +74,9 @@ vectors. Until then, breaking changes are expected and no migration is promised.
 ```
 body := {
   "schema": 1,
-  "vaults":  [ VaultMeta, ... ],     # logical vaults inside the file
+  "vaults":  [ VaultMeta, ... ],     # logical vaults inside the file; each carries
+                                     # agent_visible (default false) and
+                                     # new_items_agent_visible (default true, 2026-10-04)
   "items":   [ Item, ... ],
   "envs":    [ Environment, ... ],
   "audit_head": bytes(32),           # hash chain head, see §8
@@ -347,7 +349,8 @@ struct Item {
     favorite: bool,
     archived: bool,
     trashed_at: Option<u64>,    // soft delete; None when the item is not in the trash (ADR-0012)
-    agent_visible: bool,        // default false; see threat-model M-9
+    agent_visible: bool,        // serde default false; a *new* item takes its logical vault's
+                                // new_items_agent_visible (on by default) — threat-model M-9
     created_at: u64,
     updated_at: u64,
     attachments: Vec<AttachmentRef>,     // DESIGN ONLY — not implemented, see §5.5

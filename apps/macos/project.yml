@@ -49,8 +49,8 @@ settings:
     # Cargo.toml (ADR-0028). Both are the same string on purpose: kagisecure ships one artifact
     # per version and has no separate build number to count. Override on the xcodebuild command
     # line if a rebuild of the same version ever has to be distinguishable.
-    MARKETING_VERSION: "0.1.2"
-    CURRENT_PROJECT_VERSION: "0.1.2"
+    MARKETING_VERSION: "0.1.3"
+    CURRENT_PROJECT_VERSION: "0.1.3"
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
@@ -130,28 +130,22 @@ targets:
         SUAllowsAutomaticUpdates: true
         SUScheduledCheckInterval: 3600
         SUEnableSystemProfiling: false
-    entitlements:
-      path: Kagisecure/Kagisecure.entitlements
-      properties:
-        # Sandbox off (ADR-0010). `keychain-access-groups` — which the Secure Enclave key needs —
-        # is a *restricted* entitlement whose mere presence makes Xcode demand a provisioning
-        # profile, so a clean checkout could not build (nor could CI, before it was removed on
-        # 2026-09-19). It lives in
-        # Signing/Provisioned.entitlements instead, for builds that have a team; see ADR-0011.
-        com.apple.security.app-sandbox: false
-        # The App Group the Safari extension reaches this app through (ADR-0024). Unlike
-        # `keychain-access-groups` this is **not** restricted: a Developer ID signature carries it
-        # with no provisioning profile, which is what makes the Safari front end shippable while
-        # the Secure Enclave path is still blocked. `$(AppIdentifierPrefix)` expands to the team
-        # identifier plus a dot, so a fork with its own team gets its own group with no edit here;
-        # under ad-hoc signing there is no team, the group is meaningless, and the app says so on
-        # the Browser extension screen rather than pretending to serve Safari.
-        com.apple.security.application-groups:
-          - $(AppIdentifierPrefix)com.kagisecure
+    # No `entitlements:` block: XcodeGen would pin CODE_SIGN_ENTITLEMENTS to the file it generates,
+    # and this target needs it overridable (KAGI_APP_ENTITLEMENTS below). The ad-hoc entitlements
+    # are the hand-written Signing/App.entitlements: sandbox off (ADR-0010) and the App Group
+    # (ADR-0024); see the comments there.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.kagisecure.app
         PRODUCT_NAME: Kagisecure
+        # Like KAGI_CP_* on the credential provider target: a Developer ID build swaps in
+        # Signing/App.Provisioned.entitlements (adds the restricted AutoFill entitlement) and the
+        # app's own provisioning profile. macOS lists the AutoFill extension only when the
+        # containing app carries that entitlement too (ADR-0045). Defaults are the ad-hoc build.
+        KAGI_APP_ENTITLEMENTS: Signing/App.entitlements
+        KAGI_APP_PROFILE: ""
+        CODE_SIGN_ENTITLEMENTS: $(KAGI_APP_ENTITLEMENTS)
+        PROVISIONING_PROFILE_SPECIFIER: $(KAGI_APP_PROFILE)
         COMBINE_HIDPI_IMAGES: YES
         ENABLE_PREVIEWS: YES
     # Note what is NOT here: a build phase that embeds the three helper binaries. Two things
@@ -189,8 +183,15 @@ targets:
           - manifest.json
           - "icons/**"
           - icons
+          - "_locales/**"
+          - _locales
         createIntermediateGroups: false
       - path: ../../extensions/shared/icons
+        type: folder
+        buildPhase: resources
+      # The UI strings (`_locales/<lang>/messages.json`), a folder reference for the same reason as
+      # `icons/`: Safari looks them up by that path, and the files share one name.
+      - path: ../../extensions/shared/_locales
         type: folder
         buildPhase: resources
       - path: ../../extensions/safari/manifest.json
@@ -241,7 +242,8 @@ targets:
   # The AutoFill entitlement (`com.apple.developer.authentication-services.autofill-credential-
   # provider`) is a **restricted** one: like `keychain-access-groups` (ADR-0011) it needs a
   # provisioning profile, and its presence would stop a clean ad-hoc checkout from building. So it
-  # is not here; `Signing/CredentialProvider.Provisioned.entitlements` carries it for a build with
+  # is not in the default `Signing/CredentialProvider.entitlements`;
+  # `Signing/CredentialProvider.Provisioned.entitlements` carries it for a build with
   # a team and a profile. Without it the extension builds, embeds and is unit-testable, but macOS
   # will not offer it in System Settings.
   KagisecureCredentialProvider:
@@ -270,12 +272,9 @@ targets:
               ProvidesPasswords: true
               ProvidesOneTimeCodes: true
               ShowsConfigurationUI: true
-    entitlements:
-      path: KagisecureCredentialProvider/KagisecureCredentialProvider.entitlements
-      properties:
-        com.apple.security.app-sandbox: true
-        com.apple.security.application-groups:
-          - $(AppIdentifierPrefix)com.kagisecure
+    # No `entitlements:` block: XcodeGen would pin CODE_SIGN_ENTITLEMENTS to the file it
+    # generates, and this target needs it overridable (see KAGI_CP_ENTITLEMENTS below). The
+    # ad-hoc entitlements are the hand-written Signing/CredentialProvider.entitlements.
     settings:
       base:
         # Must match `AutoFillChannel.providerBundleIdentifier`: the app checks the peer's signing
@@ -286,6 +285,17 @@ targets:
         ENABLE_APP_SANDBOX: YES
         SKIP_INSTALL: YES
         CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        # Two overridable variables, read by this target only, so that a Developer ID build can
+        # give the extension the restricted AutoFill entitlement and the profile that allows it
+        # without touching any other target (a plain `CODE_SIGN_ENTITLEMENTS=` on the xcodebuild
+        # command line would apply to all of them). Their defaults are the ad-hoc build:
+        # Signing/CredentialProvider.entitlements and no profile. `make macos SIGN=developer-id` and `cargo xtask
+        # dist` set KAGI_CP_ENTITLEMENTS=Signing/CredentialProvider.Provisioned.entitlements and
+        # KAGI_CP_PROFILE=<the profile's Name> (ADR-0045).
+        KAGI_CP_ENTITLEMENTS: Signing/CredentialProvider.entitlements
+        KAGI_CP_PROFILE: ""
+        CODE_SIGN_ENTITLEMENTS: $(KAGI_CP_ENTITLEMENTS)
+        PROVISIONING_PROFILE_SPECIFIER: $(KAGI_CP_PROFILE)
 
   # The XCUITest bundle (docs/e2e-harness.md §7, suite D). Separate from `KagisecureTests`
   # because it is a different kind of thing: that one is hosted *in* the app and calls its types,

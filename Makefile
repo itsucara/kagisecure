@@ -32,9 +32,21 @@ DEVID_IDENTITY ?= Developer ID Application
 TEAM_ID ?= $(shell security find-identity -v -p codesigning 2>/dev/null | \
 	sed -n 's/.*Developer ID Application: .*(\([A-Z0-9][A-Z0-9]*\)).*/\1/p' | head -1)
 
+# The AutoFill credential provider extension needs a restricted entitlement and so a Developer ID
+# provisioning profile for com.kagisecure.app.credential-provider (ADR-0045). Named by the
+# profile's Name, so a fork with its own profile overrides this one variable.
+CP_PROFILE ?= Kagisecure CredentialProvider Developer ID
+# The containing app needs the same AutoFill entitlement, or macOS hides the extension, and so
+# its own Developer ID profile for com.kagisecure.app (ADR-0045).
+APP_PROFILE ?= Kagisecure App Developer ID
+
 ifeq ($(SIGN),developer-id)
 SIGN_FLAGS := CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="$(DEVID_IDENTITY)" \
-	DEVELOPMENT_TEAM=$(TEAM_ID) OTHER_CODE_SIGN_FLAGS=--timestamp
+	DEVELOPMENT_TEAM=$(TEAM_ID) OTHER_CODE_SIGN_FLAGS=--timestamp \
+	KAGI_CP_ENTITLEMENTS=Signing/CredentialProvider.Provisioned.entitlements \
+	KAGI_CP_PROFILE="$(CP_PROFILE)" \
+	KAGI_APP_ENTITLEMENTS=Signing/App.Provisioned.entitlements \
+	KAGI_APP_PROFILE="$(APP_PROFILE)"
 EMBED_IDENTITY := $(DEVID_IDENTITY)
 else
 SIGN_FLAGS := CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=
@@ -115,7 +127,7 @@ macos: bindgen helpers icon project signing-check
 	@app=$$($(XCODEBUILD) -project $(XCODEPROJ) -scheme Kagisecure -destination '$(DESTINATION)' \
 		-configuration $(CONFIG) $(SIGN_FLAGS) \
 		-showBuildSettings 2>/dev/null | awk -F' = ' '/ BUILT_PRODUCTS_DIR /{print $$2; exit}'); \
-	KAGISECURE_SIGN_IDENTITY=$(EMBED_IDENTITY) $(CARGO) xtask embed \
+	KAGISECURE_SIGN_IDENTITY="$(EMBED_IDENTITY)" $(CARGO) xtask embed \
 		$(if $(filter Release,$(CONFIG)),--release,) "$$app/Kagisecure.app"
 
 macos-test: bindgen helpers icon project signing-check

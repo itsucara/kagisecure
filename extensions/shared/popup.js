@@ -31,6 +31,26 @@
 
 "use strict";
 
+/**
+ * A UI string in the browser's language (`_locales/<lang>/messages.json`). `fallback` is the
+ * English text, used where `chrome.i18n` is absent (the unit tests) and kept identical to
+ * `_locales/en` by `test/i18n.test.js`. `$1`… are filled from `subs` either way.
+ */
+function localized(key, fallback, ...subs) {
+  try {
+    const text = globalThis.chrome && chrome.i18n && chrome.i18n.getMessage(key, subs.map(String));
+    if (text) return text;
+  } catch {
+    // No i18n here; the English fallback below is the answer.
+  }
+  return subs.reduce((t, v, i) => t.split(`$${i + 1}`).join(String(v)), fallback);
+}
+
+// The static labels in popup.html, each naming its message in `data-i18n`.
+for (const el of document.querySelectorAll("[data-i18n]")) {
+  el.textContent = localized(el.dataset.i18n, el.textContent);
+}
+
 const dot = document.getElementById("dot");
 const heading = document.getElementById("heading");
 const detail = document.getElementById("detail");
@@ -47,7 +67,7 @@ function send(message) {
       const failed = chrome.runtime.lastError;
       resolve(
         failed || !response
-          ? { ok: false, code: "INTERNAL", message: "kagisecure is not reachable." }
+          ? { ok: false, code: "INTERNAL", message: localized("appNotReachable", "kagisecure is not reachable.") }
           : response,
       );
     });
@@ -58,11 +78,11 @@ function setStatus(state) {
   dot.className = `dot ${state.status === "ready" ? "ready" : state.status === "locked" ? "locked" : state.status === "error" ? "error" : ""}`;
   heading.textContent =
     state.status === "ready"
-      ? "Connected"
+      ? localized("statusConnected", "Connected")
       : state.status === "locked"
-        ? "Vault locked"
+        ? localized("statusLocked", "Vault locked")
         : state.status === "error"
-          ? "Not connected"
+          ? localized("statusNotConnected", "Not connected")
           : "Kagisecure";
   detail.textContent = state.detail || "";
   evidence.replaceChildren(
@@ -92,8 +112,8 @@ function showContinuing(entry, matched) {
   }
   const item = (matched || []).find((i) => i.item_id === entry.itemId);
   const who = item && item.username ? item.username : item ? item.title : null;
-  continuingTitle.textContent = who ? `Continuing as ${who}` : "Continuing with a saved login";
-  continuingOrigin.textContent = `for ${entry.origin}`;
+  continuingTitle.textContent = who ? localized("continuingAs", "Continuing as $1", who) : localized("continuingSaved", "Continuing with a saved login");
+  continuingOrigin.textContent = localized("continuingFor", "for $1", entry.origin);
   continuing.hidden = false;
 }
 
@@ -126,7 +146,7 @@ async function refresh() {
   if (!state.ok) {
     setStatus({ status: "error", detail: state.message, evidence: [] });
     showContinuing(null, []);
-    showEmpty("Open Kagisecure and unlock your vault.");
+    showEmpty(localized("emptyOpenAndUnlock", "Open Kagisecure and unlock your vault."));
     return;
   }
   setStatus(state.state);
@@ -135,8 +155,8 @@ async function refresh() {
     showContinuing(null, []);
     showEmpty(
       state.state.status === "locked"
-        ? "Unlock Kagisecure to see what applies to this page."
-        : "Run “Browser extension” setup in Kagisecure.",
+        ? localized("emptyUnlockToSee", "Unlock Kagisecure to see what applies to this page.")
+        : localized("emptyRunSetup", "Run “Browser extension” setup in Kagisecure."),
     );
     return;
   }
@@ -146,7 +166,7 @@ async function refresh() {
   const result = await send({ kind: "matches-active-tab" });
   if (!result.ok) {
     showContinuing(null, []);
-    showEmpty(result.message || "Autofill does not run on this page.");
+    showEmpty(result.message || localized("autofillNotOnPage", "Autofill does not run on this page."));
     return;
   }
   const matched = result.items || [];
@@ -159,8 +179,8 @@ async function refresh() {
   if (matched.length === 0) {
     showEmpty(
       result.origin
-        ? `No item is saved for ${result.origin}.`
-        : "No item is saved for this page.",
+        ? localized("noItemForOrigin", "No item is saved for $1.", result.origin)
+        : localized("noItemForPage", "No item is saved for this page."),
     );
     return;
   }
@@ -169,10 +189,10 @@ async function refresh() {
   const rows = [];
   for (const item of matched) {
     rows.push(
-      row(`Fill “${item.title}”`, item.username || undefined, async () => {
+      row(localized("fillItem", "Fill “$1”", item.title), item.username || undefined, async () => {
         const filled = await send({ kind: "fill-active-tab" });
         if (!filled.ok) {
-          showEmpty(filled.message || "Kagisecure could not fill this page.");
+          showEmpty(filled.message || localized("fillFailed", "Kagisecure could not fill this page."));
           return;
         }
         window.close();
@@ -180,14 +200,14 @@ async function refresh() {
     );
     if (item.has_totp) {
       rows.push(
-        row("Copy one-time code", item.title, async () => {
+        row(localized("copyOneTimeCode", "Copy one-time code"), item.title, async () => {
           // The code never comes back here: the content script writes it into a detected field or
           // onto the clipboard, and this only learns whether that worked.
           const totp = await send({ kind: "totp-active-tab", itemId: item.item_id });
           showEmpty(
             totp.ok
-              ? "One-time code applied. It expires in under a minute."
-              : totp.message || "Kagisecure declined.",
+              ? localized("totpApplied", "One-time code applied. It expires in under a minute.")
+              : totp.message || localized("declined", "Kagisecure declined."),
           );
         }),
       );
@@ -209,8 +229,8 @@ document.getElementById("open").addEventListener("click", async () => {
   const state = await send({ kind: "status" });
   showEmpty(
     state.ok && state.state.status === "ready"
-      ? "Kagisecure is already connected."
-      : "Open Kagisecure from your Applications folder or the menu bar, and unlock it.",
+      ? localized("alreadyConnected", "Kagisecure is already connected.")
+      : localized("openFromApplications", "Open Kagisecure from your Applications folder or the menu bar, and unlock it."),
   );
 });
 

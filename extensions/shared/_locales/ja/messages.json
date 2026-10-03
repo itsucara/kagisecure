@@ -1,0 +1,197 @@
+{
+  "extName": {
+    "message": "Kagisecure"
+  },
+  "extDescription": {
+    "message": "Kagisecure Mac アプリに保存したログイン情報を Web ページに入力します。macOS 版 Kagisecure アプリが必要です（単体では動作しません）。"
+  },
+  "extDescriptionSafari": {
+    "message": "Kagisecure の保管庫からログイン情報を入力します。入力を承認するまで、値がアプリの外に出ることはありません。"
+  },
+  "popupChecking": {
+    "message": "確認しています…"
+  },
+  "popupForget": {
+    "message": "選択を解除"
+  },
+  "popupOpenApp": {
+    "message": "Kagisecure を開く"
+  },
+  "appNotReachable": {
+    "message": "Kagisecure に接続できません。"
+  },
+  "statusConnected": {
+    "message": "接続済み"
+  },
+  "statusLocked": {
+    "message": "保管庫はロック中"
+  },
+  "statusNotConnected": {
+    "message": "未接続"
+  },
+  "continuingAs": {
+    "message": "$arg1$ として続行中",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  },
+  "continuingSaved": {
+    "message": "保存済みのログインで続行中"
+  },
+  "continuingFor": {
+    "message": "対象: $arg1$",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  },
+  "emptyOpenAndUnlock": {
+    "message": "Kagisecure を開いて保管庫のロックを解除してください。"
+  },
+  "emptyUnlockToSee": {
+    "message": "Kagisecure のロックを解除すると、このページで使える項目が表示されます。"
+  },
+  "emptyRunSetup": {
+    "message": "Kagisecure で「ブラウザ拡張機能」のセットアップを実行してください。"
+  },
+  "autofillNotOnPage": {
+    "message": "このページでは自動入力は使えません。"
+  },
+  "noItemForOrigin": {
+    "message": "$arg1$ に保存された項目はありません。",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  },
+  "noItemForPage": {
+    "message": "このページに保存された項目はありません。"
+  },
+  "fillItem": {
+    "message": "「$arg1$」を入力",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  },
+  "fillFailed": {
+    "message": "Kagisecure はこのページに入力できませんでした。"
+  },
+  "copyOneTimeCode": {
+    "message": "ワンタイムコードをコピー"
+  },
+  "totpApplied": {
+    "message": "ワンタイムコードを入力しました。1分以内に有効期限が切れます。"
+  },
+  "declined": {
+    "message": "Kagisecure が拒否しました。"
+  },
+  "alreadyConnected": {
+    "message": "Kagisecure はすでに接続されています。"
+  },
+  "openFromApplications": {
+    "message": "「アプリケーション」フォルダかメニューバーから Kagisecure を開き、ロックを解除してください。"
+  },
+  "fillWithKagisecure": {
+    "message": "Kagisecure で入力"
+  },
+  "fillWithKagisecureShortcut": {
+    "message": "Kagisecure で入力（⌘\\）"
+  },
+  "noItemForSite": {
+    "message": "このサイトに保存された Kagisecure の項目はありません。"
+  },
+  "totpCopied": {
+    "message": "ワンタイムコードをコピーしました。1分以内に有効期限が切れます。"
+  },
+  "totpCopyFailed": {
+    "message": "コードをコピーできませんでした。Kagisecure を開いてコピーしてください。"
+  },
+  "errLocked": {
+    "message": "Kagisecure はロックされています。ロックを解除してからもう一度お試しください。"
+  },
+  "errDenied": {
+    "message": "この入力は拒否されました。"
+  },
+  "errTimeout": {
+    "message": "Kagisecure の承認に応答がありませんでした。"
+  },
+  "errOriginMismatch": {
+    "message": "この項目はこのサイト用に保存されていないため、Kagisecure は入力を拒否しました。"
+  },
+  "errNoMatch": {
+    "message": "ここで使える Kagisecure の項目はありません。"
+  },
+  "errUnknownConnection": {
+    "message": "Kagisecure はこのブラウザ接続を認識できません。アプリでセットアップをやり直してください。"
+  },
+  "errAuditUnavailable": {
+    "message": "監査ログに記録できなかったため、何も入力されませんでした。Kagisecure を開いて原因を確認してから、もう一度お試しください。"
+  },
+  "errConflict": {
+    "message": "続行するには対応が必要です。Kagisecure を開いて解決してください。"
+  },
+  "errGeneric": {
+    "message": "Kagisecure はその操作を完了できませんでした。"
+  },
+  "noUsableOrigin": {
+    "message": "このページには使用できるオリジンがありません。"
+  },
+  "unknownRequest": {
+    "message": "不明なリクエストです。"
+  },
+  "noAnswer": {
+    "message": "Kagisecure から応答がありません。"
+  },
+  "noActiveTab": {
+    "message": "アクティブなタブがありません。"
+  },
+  "noFillWaiting": {
+    "message": "ここで待機中の入力はありません。"
+  },
+  "detailNotConnectedYet": {
+    "message": "まだ接続されていません。"
+  },
+  "detailConnecting": {
+    "message": "接続しています…"
+  },
+  "detailConnected": {
+    "message": "接続しました。"
+  },
+  "detailVaultLocked": {
+    "message": "保管庫はロックされています。"
+  },
+  "detailRefused": {
+    "message": "Kagisecure が接続を拒否しました。"
+  },
+  "detailTimeout": {
+    "message": "Kagisecure から時間内に応答がありませんでした。"
+  },
+  "detailCouldNotReach": {
+    "message": "Kagisecure に接続できませんでした: $arg1$",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  },
+  "detailSafariNotConnected": {
+    "message": "Kagisecure が起動していないか、Safari 拡張機能が接続されていません。"
+  },
+  "detailHelperDisconnected": {
+    "message": "Kagisecure ヘルパーとの接続が切れました。"
+  },
+  "detailHelperDisconnectedWith": {
+    "message": "Kagisecure ヘルパーとの接続が切れました: $arg1$",
+    "placeholders": {
+      "arg1": {
+        "content": "$1"
+      }
+    }
+  }
+}

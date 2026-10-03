@@ -7,7 +7,7 @@ use kagisecure_core::Vault;
 use kagisecure_core::crypto::kdf::KdfParams;
 use kagisecure_core::vault::CreateOptions;
 
-use crate::cli::InitArgs;
+use crate::cli::{InitArgs, NewItemsAgentVisibleArgs};
 use crate::prompt::{SecretInput, require_non_empty};
 
 /// Create a vault and print its one-time recovery code.
@@ -95,5 +95,40 @@ pub fn unlock(path: &Path, input: &mut SecretInput) -> Result<()> {
         .map(|s| s.kind.as_str())
         .collect();
     println!("  key slots: {}", slots.join(", "));
+    Ok(())
+}
+
+/// Set "Show new items to agents" on the first logical vault (ADR-0007 amendment 2026-10-04).
+/// Existing items are untouched; `kagisecure item agent-visible` changes those.
+///
+/// # Errors
+///
+/// If the vault cannot be opened or written.
+pub fn new_items_agent_visible(
+    path: &Path,
+    args: &NewItemsAgentVisibleArgs,
+    input: &mut SecretInput,
+) -> Result<()> {
+    crate::commands::ensure_exists(path)?;
+    let password = input.read("Master password")?;
+    let mut vault = Vault::open_with_password(path, password.as_bytes())?;
+    let visible = args.state.is_on();
+    crate::commands::transact_patiently(&mut vault, |tx| {
+        let id = tx.default_vault_id()?;
+        tx.set_new_items_agent_visible(id, visible);
+        tx.append_audit(kagisecure_core::audit::AuditDraft {
+            vault_id: Some(id),
+            detail: Some(format!(
+                "new_items_agent_visible={}",
+                if visible { "on" } else { "off" }
+            )),
+            ..crate::commands::cli_draft("vault new-items-agent-visible")
+        });
+        Ok(())
+    })?;
+    println!(
+        "New items will {}be shown to agents",
+        if visible { "" } else { "not " }
+    );
     Ok(())
 }

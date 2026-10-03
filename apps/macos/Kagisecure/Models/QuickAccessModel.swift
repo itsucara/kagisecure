@@ -68,6 +68,14 @@ final class QuickAccessModel {
         return results.first { $0.id == selection }
     }
 
+    /// ↑/↓: move the highlight by `delta` rows, stopping at either end.
+    func moveSelection(by delta: Int) {
+        guard !results.isEmpty else { return }
+        let current = selection.flatMap { id in results.firstIndex { $0.id == id } } ?? -1
+        let next = min(max(current + delta, 0), results.count - 1)
+        selection = results[next].id
+    }
+
     /// Re-run the search. A flat list across everything not archived or trashed — ui-spec.md §7
     /// says "across all vaults", and the sidebar's notion of a current section does not apply.
     func reload() {

@@ -48,6 +48,30 @@ const IDENTITY: &str = "Developer ID Application";
 /// with the rest of CI, and releases are built locally only now.
 const PROFILE_ENV: &str = "NOTARY_KEYCHAIN_PROFILE";
 
+/// The Name of the Developer ID provisioning profile for the credential provider extension, and the
+/// variable that overrides it for a fork with its own profile.
+const CP_PROFILE_ENV: &str = "KAGISECURE_CP_PROFILE";
+const CP_PROFILE_DEFAULT: &str = "Kagisecure CredentialProvider Developer ID";
+
+fn credential_provider_profile() -> String {
+    std::env::var(CP_PROFILE_ENV)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| CP_PROFILE_DEFAULT.to_string())
+}
+
+/// The Name of the Developer ID provisioning profile for the app itself. The app must carry the
+/// AutoFill entitlement too, or macOS never lists the extension (ADR-0045).
+const APP_PROFILE_ENV: &str = "KAGISECURE_APP_PROFILE";
+const APP_PROFILE_DEFAULT: &str = "Kagisecure App Developer ID";
+
+fn app_profile() -> String {
+    std::env::var(APP_PROFILE_ENV)
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| APP_PROFILE_DEFAULT.to_string())
+}
+
 /// How much of the pipeline to run.
 pub struct Options {
     /// Build for both architectures. Off makes a much faster, host-only artifact for trying the
@@ -230,6 +254,15 @@ fn build_app(
         // CI did too, before it was removed on 2026-09-19). Both are required for
         // notarization, so a release asks for the timestamp explicitly.
         .arg("OTHER_CODE_SIGN_FLAGS=--timestamp")
+        // The AutoFill credential provider extension's restricted entitlement, and the Developer
+        // ID provisioning profile that allows it (ADR-0045). project.yml reads these two
+        // variables for that target only; their defaults are the ad-hoc build's.
+        .arg("KAGI_CP_ENTITLEMENTS=Signing/CredentialProvider.Provisioned.entitlements")
+        .arg(format!("KAGI_CP_PROFILE={}", credential_provider_profile()))
+        // The containing app needs the same entitlement: SafariFoundation drops an extension
+        // whose containing app lacks it, so Settings would list only Apple Passwords.
+        .arg("KAGI_APP_ENTITLEMENTS=Signing/App.Provisioned.entitlements")
+        .arg(format!("KAGI_APP_PROFILE={}", app_profile()))
         // Xcode adds `com.apple.security.get-task-allow` to the entitlements it signs with unless
         // told not to — it is the "let a debugger attach" entitlement, and it is injected on top
         // of the entitlements file, so turning off the Debug configuration is not enough. Apple

@@ -1009,7 +1009,7 @@ mod tests {
     }
 
     #[test]
-    fn an_imported_item_is_never_agent_visible() {
+    fn an_imported_item_follows_the_show_new_items_setting() {
         let (dir, session) = session();
         session
             .import_commit(
@@ -1022,8 +1022,8 @@ mod tests {
             session
                 .list_items(crate::ItemFilter::All, None, crate::ItemSort::Title)
                 .iter()
-                .all(|item| !item.agent_visible),
-            "threat-model M-9: an import must not opt items into agent visibility"
+                .all(|item| item.agent_visible),
+            "ADR-0007 amendment 2026-10-04: imported items follow \"Show new items to agents\""
         );
     }
 

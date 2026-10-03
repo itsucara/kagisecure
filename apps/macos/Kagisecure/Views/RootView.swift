@@ -159,6 +159,15 @@ struct RootView: View {
         ) {
             RecoveryCodeSheet(code: model.pendingRecoveryCode ?? "")
         }
+        // Touch ID on by default (ADR-0004 amendment 2026-10-04): offered after an unlock when
+        // it is off and the person has not asked us to stop asking.
+        .sheet(
+            isPresented: Binding(
+                get: { model.showTouchIDOffer },
+                set: { if !$0, model.showTouchIDOffer { model.answerTouchIDOffer(turnOn: false, dontAskAgain: false) } })
+        ) {
+            TouchIDOfferSheet()
+        }
         // "While you were away" (ADR-0042 §9): after an unlock, when the machine log recorded
         // anything the person has not acknowledged.
         .sheet(
@@ -170,6 +179,24 @@ struct RootView: View {
                 WhileAwaySheet(store: store)
                     .environment(model.unattended)
             }
+        }
+        // "Connect your browsers" (ui-spec.md §6.5): queued behind every other sheet — the
+        // recovery code, the Touch ID offer, an approval, "While you were away" — so it never
+        // competes with something the person has to answer first.
+        .sheet(
+            isPresented: Binding(
+                get: {
+                    model.browserPrompt.pending && model.store != nil && !model.showTouchIDOffer
+                        && model.pendingRecoveryCode == nil && model.agent.sheetRequest == nil
+                        && !model.unattended.showWhileAway && !model.showGenerator && !model.showImport
+                },
+                set: { if !$0, model.browserPrompt.pending { model.browserPrompt.dismiss() } })
+        ) {
+            BrowserConnectSheet(showSetup: {
+                model.browserPrompt.dismiss()
+                model.show(.browserExtension)
+            })
+            .environment(model.browserPrompt)
         }
         // The standalone generator (ui-spec.md §8), from the toolbar's `+` menu and ⇧⌘G. With no
         // field to fill it offers Copy and nothing else; the in-field version is presented by the
@@ -333,5 +360,36 @@ struct RecoveryCodeSheet: View {
         }
         .padding(24)
         .frame(width: 460)
+    }
+}
+
+/// "Turn on Touch ID unlock?" — shown after an unlock while Touch ID is off.
+private struct TouchIDOfferSheet: View {
+    @Environment(AppModel.self) private var model
+    @State private var dontAskAgain = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Turn on Touch ID unlock?", systemImage: "touchid")
+                .font(.title3.weight(.semibold))
+                .accessibilityIdentifier("ks.touchIdOffer.title")
+            Text("Unlock kagisecure with your fingerprint instead of typing your master password.")
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Toggle("Don't show this again", isOn: $dontAskAgain)
+                .toggleStyle(.checkbox)
+                .accessibilityIdentifier("ks.touchIdOffer.dontAskAgain")
+            HStack {
+                Spacer()
+                Button("Not Now") { model.answerTouchIDOffer(turnOn: false, dontAskAgain: dontAskAgain) }
+                    .keyboardShortcut(.cancelAction)
+                    .accessibilityIdentifier("ks.touchIdOffer.notNow")
+                Button("Turn On") { model.answerTouchIDOffer(turnOn: true, dontAskAgain: dontAskAgain) }
+                    .keyboardShortcut(.defaultAction)
+                    .accessibilityIdentifier("ks.touchIdOffer.turnOn")
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
     }
 }

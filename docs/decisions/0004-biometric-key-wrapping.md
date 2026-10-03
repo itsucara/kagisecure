@@ -153,3 +153,15 @@ and 6, for a separate **machine vault** only: its standing grants persist in its
 key survives screen lock, sleep and — by the owner's choice — restarts, kept in the Keychain until
 a person disarms it (ADR-0042 implementation decision 1). Leases, and every rule here for the
 personal vault and shared vaults, are unchanged.
+
+## Addendum 2026-10-04 — Touch ID unlock is on by default (macOS)
+
+Product decision (convenience first): after a master-password or recovery-code unlock, if Touch ID
+is available and this vault has no platform slot, the app enrols one silently — wrapping uses the
+Enclave key's public half, so no fingerprint is asked for, and enrolment still holds the
+`PresenceCoordinator` `.enrolment` slot. The silent path is skipped once the person has turned
+Touch ID off in Settings (`touchID.explicitlyOff`, cleared when they turn it back on). When it is
+skipped, or fails, the app instead offers "Turn on Touch ID unlock?" (Turn On / Not Now, with
+"Don't show this again", persisted as `touchID.dontAskAgain`). The wrapping, the
+`.biometryCurrentSet` access control and every lifetime rule above are unchanged; the decision
+logic is `TouchIDOffer` and is unit-tested.
