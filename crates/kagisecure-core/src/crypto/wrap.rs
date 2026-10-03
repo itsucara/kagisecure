@@ -5,6 +5,8 @@
 //! copy, authenticated with `vault_id || kind || id` as AAD so that a wrapped key cannot be
 //! transplanted between vaults or between slots.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::aead::{self, NONCE_LEN};
@@ -19,7 +21,7 @@ pub const KIND_PASSWORD: &str = "password";
 /// Implemented in M3 for macOS. Unlike the password and recovery slots, this crate does **not**
 /// perform the wrapping: the ciphertext is produced and consumed by the platform keystore, which
 /// is the only thing that can, and this crate stores and returns it opaquely. See
-/// [`ALG_PLATFORM_OPAQUE`] and `Vault::install_platform_slot`.
+/// [`ALG_PLATFORM_OPAQUE`] and `Tx::install_platform_slot`.
 pub const KIND_PLATFORM: &str = "platform";
 /// Slot unlocked by the printable recovery code.
 pub const KIND_RECOVERY: &str = "recovery";
@@ -52,6 +54,7 @@ pub fn platform_slot(id: &str, label: &str, wrapped: Vec<u8>) -> WrappedKey {
         ct: wrapped,
         added_at: crate::unix_now(),
         kdf: None,
+        unknown: BTreeMap::new(),
     }
 }
 
@@ -84,6 +87,10 @@ pub struct WrappedKey {
     /// the document still opens.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kdf: Option<KdfParams>,
+    /// Top-level slot keys this build does not recognize, preserved verbatim (vault-format §9
+    /// rule 1) — e.g. a future device-binding field on a shared-vault slot.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, ciborium::Value>,
 }
 
 /// The associated data that binds a slot to its vault and its position: `vault_id || kind || id`.
@@ -127,6 +134,7 @@ impl WrappedKey {
             ct,
             added_at: crate::unix_now(),
             kdf,
+            unknown: BTreeMap::new(),
         })
     }
 

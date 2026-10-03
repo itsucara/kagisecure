@@ -1,0 +1,61 @@
+<UserControl
+    x:Class="Kagisecure.App.Views.GeneratorView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:converters="using:Kagisecure.App.Converters"
+    xmlns:vm="using:Kagisecure.App.ViewModels">
+
+    <UserControl.Resources>
+        <converters:ModeToBoolConverter x:Key="ModeToBoolConverter" />
+        <converters:ModeToVisibilityConverter x:Key="CharactersVisibilityConverter" Invert="False" />
+        <converters:ModeToVisibilityConverter x:Key="WordsVisibilityConverter" Invert="True" />
+    </UserControl.Resources>
+
+    <StackPanel Width="340" Padding="16" Spacing="10">
+        <TextBlock Text="Password generator" Style="{StaticResource SubtitleTextBlockStyle}" />
+
+        <ToggleSwitch
+            Header="Mode"
+            OnContent="Memorable words"
+            OffContent="Random characters"
+            IsOn="{x:Bind ViewModel.Mode, Mode=TwoWay, Converter={StaticResource ModeToBoolConverter}}" />
+
+        <TextBox
+            Text="{x:Bind ViewModel.GeneratedPassword, Mode=OneWay}"
+            IsReadOnly="True"
+            FontFamily="Consolas"
+            TextWrapping="Wrap"
+            AcceptsReturn="True" />
+
+        <TextBlock Text="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}" Foreground="Red" />
+        <TextBlock Text="{x:Bind ViewModel.StrengthLabel, Mode=OneWay}" Opacity="0.7" FontSize="12" />
+
+        <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="Regenerate" Command="{x:Bind ViewModel.RegenerateCommand}" />
+            <Button
+                Content="Copy"
+                Style="{StaticResource AccentButtonStyle}"
+                Command="{x:Bind ViewModel.CopyToClipboardCommand}" />
+        </StackPanel>
+        <TextBlock Text="{x:Bind ViewModel.CopiedNotice, Mode=OneWay}" Opacity="0.7" FontSize="12" />
+
+        <!-- Characters mode -->
+        <StackPanel Visibility="{x:Bind ViewModel.Mode, Mode=OneWay, Converter={StaticResource CharactersVisibilityConverter}}" Spacing="6">
+            <TextBlock Text="Length" />
+            <Slider Minimum="{x:Bind ViewModel.Limits.MinLength}" Maximum="{x:Bind ViewModel.Limits.MaxLength}" Value="{x:Bind ViewModel.Length, Mode=TwoWay}" />
+            <CheckBox Content="Uppercase (A-Z)" IsChecked="{x:Bind ViewModel.Uppercase, Mode=TwoWay}" />
+            <CheckBox Content="Lowercase (a-z)" IsChecked="{x:Bind ViewModel.Lowercase, Mode=TwoWay}" />
+            <CheckBox Content="Digits (0-9)" IsChecked="{x:Bind ViewModel.Digits, Mode=TwoWay}" />
+            <CheckBox Content="Symbols" IsChecked="{x:Bind ViewModel.Symbols, Mode=TwoWay}" />
+            <CheckBox Content="Avoid ambiguous characters (0 O 1 l I)" IsChecked="{x:Bind ViewModel.AvoidAmbiguous, Mode=TwoWay}" />
+        </StackPanel>
+
+        <!-- Words mode -->
+        <StackPanel Visibility="{x:Bind ViewModel.Mode, Mode=OneWay, Converter={StaticResource WordsVisibilityConverter}}" Spacing="6">
+            <TextBlock Text="Number of words" />
+            <Slider Minimum="{x:Bind ViewModel.Limits.MinWords}" Maximum="{x:Bind ViewModel.Limits.MaxWords}" Value="{x:Bind ViewModel.Words, Mode=TwoWay}" />
+            <CheckBox Content="Capitalize each word" IsChecked="{x:Bind ViewModel.Capitalize, Mode=TwoWay}" />
+            <CheckBox Content="Include a digit" IsChecked="{x:Bind ViewModel.IncludeDigit, Mode=TwoWay}" />
+        </StackPanel>
+    </StackPanel>
+</UserControl>

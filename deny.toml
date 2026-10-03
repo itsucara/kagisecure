@@ -12,8 +12,9 @@
 [graph]
 # The platforms kagisecure is actually built for. Without this, `cargo deny` walks Windows and
 # Linux-only dependency edges that nothing here compiles, and reports on crates that are never in
-# a shipped binary. Linux and Windows stay in the list because the core crate is meant to build and
-# test on both, even though only macOS is released.
+# a shipped binary. Linux and Windows stay in the list because the intent is for the core crate to
+# build and test on both — but the CI job that verified that was removed on 2026-09-19, and nothing
+# currently checks it. Treat these two targets as aspirational until something exercises them again.
 targets = [
     { triple = "aarch64-apple-darwin" },
     { triple = "x86_64-apple-darwin" },
@@ -59,9 +60,41 @@ exceptions = []
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# Nothing is banned outright yet. The entry exists so that the first ban has an obvious home and
-# a comment saying why, rather than appearing as a bare line in a diff.
-deny = []
+# Network code, banned outright for the whole workspace. kagisecure has no HTTP client, no TLS, no
+# sync service and no git integration (architecture §9, threat-model N-9), and shared vaults keep
+# it that way: they are exchanged by people, as files in a folder or a bundle, and kagisecure never
+# runs git or opens a connection (ADR-0035 §7, alternative (e)). Any of these arriving in the lock
+# file — directly or deep in someone else's tree — is a design change for a human to make, not a
+# side effect of a dependency update. `kagisecure-shared`'s `tests/dependency_guard.rs` checks the
+# same list, plus the socket and async-runtime crates the local IPC legitimately uses elsewhere.
+deny = [
+    { crate = "reqwest", reason = "HTTP client: kagisecure has no network code (threat-model N-9)" },
+    { crate = "hyper", reason = "HTTP: kagisecure has no network code (threat-model N-9)" },
+    { crate = "ureq", reason = "HTTP client: kagisecure has no network code (threat-model N-9)" },
+    { crate = "curl", reason = "HTTP client: kagisecure has no network code (threat-model N-9)" },
+    { crate = "h2", reason = "HTTP/2: kagisecure has no network code (threat-model N-9)" },
+    { crate = "rustls", reason = "TLS: kagisecure has no network code (threat-model N-9)" },
+    { crate = "native-tls", reason = "TLS: kagisecure has no network code (threat-model N-9)" },
+    { crate = "openssl", reason = "TLS: kagisecure has no network code (threat-model N-9)" },
+    { crate = "isahc", reason = "HTTP client: kagisecure has no network code (threat-model N-9)" },
+    { crate = "git2", reason = "git client: shared vaults never run git (ADR-0035 §7)" },
+    { crate = "gix", reason = "git client: shared vaults never run git (ADR-0035 §7)" },
+    { crate = "hyper-util", reason = "HTTP: kagisecure has no network code (threat-model N-9)" },
+    { crate = "attohttpc", reason = "HTTP client: kagisecure has no network code (threat-model N-9)" },
+    { crate = "minreq", reason = "HTTP client: kagisecure has no network code (threat-model N-9)" },
+    { crate = "surf", reason = "HTTP client: kagisecure has no network code (threat-model N-9)" },
+    { crate = "tungstenite", reason = "WebSocket: kagisecure has no network code (threat-model N-9)" },
+    { crate = "tokio-tungstenite", reason = "WebSocket: kagisecure has no network code (threat-model N-9)" },
+    { crate = "quinn", reason = "QUIC: kagisecure has no network code (threat-model N-9)" },
+    { crate = "hickory-resolver", reason = "DNS resolver: kagisecure has no network code (threat-model N-9)" },
+    { crate = "trust-dns-resolver", reason = "DNS resolver: kagisecure has no network code (threat-model N-9)" },
+    { crate = "openssl-sys", reason = "TLS: kagisecure has no network code (threat-model N-9)" },
+    { crate = "curl-sys", reason = "HTTP client: kagisecure has no network code (threat-model N-9)" },
+    { crate = "ssh2", reason = "SSH client: shared vaults never reach a remote (ADR-0035 §7)" },
+    { crate = "libssh2-sys", reason = "SSH client: shared vaults never reach a remote (ADR-0035 §7)" },
+    { crate = "gix-transport", reason = "git transport: shared vaults never run git (ADR-0035 §7)" },
+    { crate = "gix-protocol", reason = "git protocol: shared vaults never run git (ADR-0035 §7)" },
+]
 skip = []
 skip-tree = []
 

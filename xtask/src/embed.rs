@@ -11,20 +11,35 @@
 //! 1. Copy each helper into `Contents/Helpers` — *not* `Contents/MacOS`, where the CLI's name
 //!    would collide with the app's own executable on a case-insensitive filesystem — and sign
 //!    **it** under the Hardened Runtime, with its own minimal entitlements and a secure timestamp.
-//! 2. Leave the Safari `.appex` alone. Xcode already signed it, correctly, and re-signing a valid
+//! 2. Copy the unpacked Chromium extension (`extensions/shared`) into
+//!    `Contents/Resources/ChromiumExtension`, which an unattended job's run browser loads
+//!    (ADR-0042 §12.3). Plain files, sealed by the app's own signature in step 4.
+//! 3. Leave the Safari `.appex` alone. Xcode already signed it, correctly, and re-signing a valid
 //!    nested bundle only risks breaking it.
-//! 3. Re-sign the **app** last, with the entitlements it was built with. Adding files to a signed
+//! 4. Re-sign the **app** last, with the entitlements it was built with. Adding files to a signed
 //!    bundle invalidates its seal — `Contents/_CodeSignature/CodeResources` is a manifest of
 //!    hashes — so the outer signature has to be the last one applied. Sign the outer first and
 //!    every inner signature you add afterwards makes it invalid again.
+//!
+//! Between 3 and 4, Sparkle's framework (ADR-0044) is re-signed inside-out with the same
+//! identity. Xcode's copy-and-sign of an embedded framework signs the framework only, not the
+//! helpers nested in it (`Autoupdate`, `Updater.app`, two XPC services), which keep the signature
+//! Sparkle's own build gave them — and notarization rejects a bundle with any piece not signed by
+//! the team. The order and the flags are the ones Sparkle's documentation gives for signing by
+//! hand.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use crate::chrome_package::extension_files;
 use crate::helpers::{HELPERS, HELPERS_DIR};
-use crate::util::{capture_all, run};
+use crate::util::{capture_all, repo_root, run};
+
+/// Where the run browser's copy of the extension goes, under `Contents/Resources`. Must match
+/// `kagisecure_agent::unattended::browser::RunBrowserSetup::discover`.
+const RUN_BROWSER_EXTENSION_DIR: &str = "ChromiumExtension";
 
 /// Copy the staged helpers into `app` and sign the bundle inside-out.
 ///
@@ -69,8 +84,81 @@ pub fn embed(app: &Path, staging: &Path, entitlements: &Path, identity: &str) ->
         println!("embed: {helper} -> {}", target.display());
     }
 
+    let extension = app
+        .join("Contents")
+        .join("Resources")
+        .join(RUN_BROWSER_EXTENSION_DIR);
+    copy_extension(&repo_root()?.join("extensions").join("shared"), &extension)?;
+    println!("embed: extension -> {}", extension.display());
+
+    sign_sparkle(app, identity, ad_hoc)?;
+
     sign(app, identity, &app_entitlements, ad_hoc).context("re-signing the app bundle")?;
     println!("embed: re-signed {}", app.display());
+    Ok(())
+}
+
+/// Replace `target` with a copy of the extension in `source`.
+///
+/// The same file set `cargo xtask chrome-package` ships — subdirectories included (`icons/`, which
+/// both manifests name; a flat copy would leave the run browser refusing to load the extension),
+/// dotfiles and tests left out — but with the committed manifest unchanged: the run browser loads
+/// this copy unpacked, and it is the manifest's `key` that gives it the id the app pins (ADR-0021).
+fn copy_extension(source: &Path, target: &Path) -> Result<()> {
+    if target.exists() {
+        std::fs::remove_dir_all(target)
+            .with_context(|| format!("removing {}", target.display()))?;
+    }
+    std::fs::create_dir_all(target).with_context(|| format!("creating {}", target.display()))?;
+    for relative in extension_files(source)? {
+        let from = source.join(&relative);
+        let to = target.join(&relative);
+        if let Some(parent) = to.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating {}", parent.display()))?;
+        }
+        std::fs::copy(&from, &to).with_context(|| format!("copying {}", from.display()))?;
+    }
+    Ok(())
+}
+
+/// Re-sign Sparkle's nested code, innermost first, then the framework itself. A no-op for a bundle
+/// that does not embed it.
+fn sign_sparkle(app: &Path, identity: &str, ad_hoc: bool) -> Result<()> {
+    let framework = app.join("Contents/Frameworks/Sparkle.framework");
+    if !framework.is_dir() {
+        return Ok(());
+    }
+    let version = framework.join("Versions/B");
+    // The Downloader service keeps its own entitlements (it is sandboxed so it can reach the
+    // network); nothing else in the framework has any.
+    let parts: [(PathBuf, bool); 5] = [
+        (version.join("XPCServices/Installer.xpc"), false),
+        (version.join("XPCServices/Downloader.xpc"), true),
+        (version.join("Autoupdate"), false),
+        (version.join("Updater.app"), false),
+        (framework.clone(), false),
+    ];
+    for (target, keep_entitlements) in parts {
+        if !target.exists() {
+            continue;
+        }
+        let mut command = Command::new("codesign");
+        command
+            .arg("--force")
+            .args(["--sign", identity])
+            .args(["--options", "runtime"]);
+        if keep_entitlements {
+            command.arg("--preserve-metadata=entitlements");
+        }
+        command.arg(if ad_hoc {
+            "--timestamp=none"
+        } else {
+            "--timestamp"
+        });
+        run(command.arg(&target)).with_context(|| format!("signing {}", target.display()))?;
+    }
+    println!("embed: re-signed {}", framework.display());
     Ok(())
 }
 

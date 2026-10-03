@@ -8,6 +8,51 @@ use anyhow::{Context, Result, bail};
 use crate::helpers::Arches;
 use crate::util::{cargo, release_rustflags, run, utf8};
 
+/// Regenerate only the checked-in Swift sources, from a host build of the FFI crate.
+///
+/// The Swift file is a function of the UniFFI metadata alone, and that metadata is the same in
+/// every build of the crate on every OS. What ties [`bindgen`] to a Mac is the xcframework (`lipo`,
+/// `xcodebuild`), not the Swift. So this reads the metadata out of the host's cdylib — a `.dll` on
+/// Windows — and writes the one file ADR-0009 checks in. Without it, an FFI change made on Windows
+/// would leave the Swift stale until someone ran `bindgen` on a Mac, and a stale file is not a
+/// compile error but a UniFFI checksum mismatch the macOS app hits at launch.
+///
+/// Headers, modulemap and xcframework are left alone; `bindgen` on a Mac still builds those.
+pub fn swift_sources_only(root: &Path) -> Result<()> {
+    let sources = root.join("apps/macos/KagisecureFFI/Sources/KagisecureFFI");
+    run(Command::new(cargo())
+        .current_dir(root)
+        .env("RUSTFLAGS", release_rustflags(root))
+        .args(["build", "--release", "-p", "kagisecure-ffi"]))
+    .context("building kagisecure-ffi for the host")?;
+    let library = root.join("target/release").join(format!(
+        "{}kagisecure_ffi{}",
+        std::env::consts::DLL_PREFIX,
+        std::env::consts::DLL_SUFFIX
+    ));
+    if !library.is_file() {
+        bail!("expected the host cdylib at {}", library.display());
+    }
+    std::fs::create_dir_all(&sources)?;
+    uniffi::generate_swift_bindings(uniffi::SwiftBindingsOptions {
+        generate_swift_sources: true,
+        generate_headers: false,
+        generate_modulemap: false,
+        source: utf8(&library)?,
+        out_dir: utf8(&sources)?,
+        xcframework: true,
+        module_name: None,
+        modulemap_filename: None,
+        metadata_no_deps: false,
+        link_frameworks: Vec::new(),
+        config: None,
+    })
+    .map_err(|e| anyhow::anyhow!("{e:?}"))
+    .context("generating Swift sources")?;
+    println!("bindgen: swift sources -> {}", sources.display());
+    Ok(())
+}
+
 /// Build the static library, generate the Swift bindings, and package the xcframework.
 ///
 /// The generated `.swift` is checked in (architecture.md §6, as amended by

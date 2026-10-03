@@ -34,17 +34,23 @@ fn fixture() -> Fixture {
 
     // Deliberately cheap KDF parameters: this vault exists for a second and protects nothing.
     let mut options = CreateOptions::new().expect("options");
-    options.kdf = kagisecure_core::crypto::kdf::KdfParams::new(8, 1, 1).expect("kdf");
+    options.kdf = kagisecure_core::crypto::kdf::KdfParams::new(
+        kagisecure_core::crypto::kdf::MIN_M_KIB,
+        kagisecure_core::crypto::kdf::MIN_T,
+        1,
+    )
+    .expect("kdf");
     options.vault_name = "Personal".to_owned();
     let (vault, _code) = Vault::create(&vault_path, b"pw", &options).expect("create");
 
-    let socket = dir.path().join("agent.sock");
+    let endpoint = Endpoint::for_instance(dir.path(), "agent.sock");
     let handle = VaultHandle::new(vault);
     let agent = Agent::start(
         Arc::clone(&handle),
         &AgentConfig {
-            socket_path: Some(socket.clone()),
+            endpoint: Some(endpoint.clone()),
             queue: None,
+            agent_fill: None,
         },
     )
     .expect("the agent should bind a fresh socket");
@@ -53,7 +59,7 @@ fn fixture() -> Fixture {
         dir,
         _handle: handle,
         _agent: agent,
-        endpoint: Endpoint::Path(socket),
+        endpoint,
     }
 }
 
@@ -91,13 +97,19 @@ fn revoking_a_lease_that_is_gone_is_a_successful_no_op() {
     }
 }
 
+/// REPLACED: this test used to assert that a path named beside a stale lease id is shredded
+/// whether or not kagisecure ever wrote it — which is the defect below, recorded as behaviour.
+/// What survives of it is the part that is still true: a stale lease id does not stop anything,
+/// and the call still succeeds.
+///
+/// The positive half — a file kagisecure *did* write is still shredded by path, even after the
+/// lease that wrote it has gone — is asserted in `tests/adversarial_lease.rs`, which has the
+/// approval-UI fixture this file deliberately does not.
 #[test]
-fn a_stale_lease_id_alongside_a_path_still_shreds_the_path() {
+fn a_stale_lease_id_beside_a_path_is_still_a_successful_no_op() {
     let fixture = fixture();
     let mut client = connect(&fixture);
 
-    // The path is actionable on its own — the file is right there — so an unrecognised lease id
-    // beside it must not stop the shred.
     let env_file = fixture.dir.path().join(".env");
     std::fs::write(&env_file, b"TOKEN=whatever\n").expect("write");
 
@@ -109,14 +121,67 @@ fn a_stale_lease_id_alongside_a_path_still_shreds_the_path() {
         .expect("the call itself should succeed");
 
     match response {
-        Response::Revoked { shredded } => {
-            assert_eq!(
-                shredded,
-                vec![env_file.display().to_string()],
-                "the file named by `path` should have been shredded"
-            );
-            assert!(!env_file.exists(), "the file should be gone");
-        }
+        Response::Revoked { shredded } => assert!(
+            shredded.is_empty(),
+            "this agent never wrote {env_file:?}, so it may not destroy it"
+        ),
+        other => panic!("revoking is cleanup and must not fail. Got {other:?}"),
+    }
+    assert!(
+        env_file.exists(),
+        "a file this agent never wrote survives, whatever it is called"
+    );
+}
+
+/// `revoke_env_file` must not be an unauthenticated delete-any-file primitive.
+///
+/// `Service::revoke` opens with "Revoking access is always allowed: there is no approval", which
+/// is the right rule for giving access *back*. But the `path` arm does not restrict itself to
+/// paths this process wrote:
+///
+/// ```text
+/// targets.extend(leases.revoke_by_path(&candidate));
+/// if !targets.contains(&candidate) {
+///     targets.push(candidate);          // unconditional
+/// }
+/// ```
+///
+/// and `envfile::shred` then zeroes and unlinks any regular file it is handed. So any caller that
+/// can reach the socket — which, on the shipped design, is any process running as the user — can
+/// name an arbitrary path and have the process holding the unlocked vault destroy it, with no
+/// approval sheet, no lease, and no relationship to anything kagisecure ever wrote.
+///
+/// The canary here is deliberately not a `.env`: it is a file with no connection to this product
+/// at all, which is the whole point.
+#[test]
+// FIXED: `Service::revoke` now shreds only paths in `LeaseStore`'s written ledger; an unknown
+// path drops any lease, leaves the file alone, and records PATH_NOT_WRITTEN_BY_KAGISECURE.
+// UNVERIFIED — this machine cannot run test binaries.
+fn revoking_a_path_this_agent_never_wrote_shreds_nothing() {
+    let fixture = fixture();
+    let mut client = connect(&fixture);
+
+    const BYSTANDER_CONTENTS: &str = "an important file that kagisecure never touched\n";
+    let bystander = fixture.dir.path().join("notes.txt");
+    std::fs::write(&bystander, BYSTANDER_CONTENTS).expect("write the bystander file");
+
+    let response = client
+        .call(&Request::RevokeEnvFile {
+            lease_id: None,
+            path: Some(bystander.display().to_string()),
+        })
+        .expect("the call itself should succeed");
+
+    match response {
+        Response::Revoked { shredded } => assert!(
+            shredded.is_empty(),
+            "the agent shredded {shredded:?}, which no lease of its ever wrote"
+        ),
         other => panic!("expected Revoked, got {other:?}"),
     }
+    assert_eq!(
+        std::fs::read_to_string(&bystander).unwrap_or_default(),
+        BYSTANDER_CONTENTS,
+        "a file the agent never wrote must survive a revoke that names it"
+    );
 }

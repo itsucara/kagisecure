@@ -34,6 +34,9 @@ final class TestBiometricGate: BiometricGate, @unchecked Sendable {
         return outcome
     }
 
+    /// Returns at once, so there is never a prompt in flight to cancel.
+    func cancelInFlight() {}
+
     private func record(_ reason: String) {
         lock.lock()
         defer { lock.unlock() }
@@ -61,7 +64,7 @@ struct AgentServiceTests {
         let session = try VaultSession.create(
             path: directory.appendingPathComponent("test.kagivault").path,
             masterPassword: "correct horse battery staple", vaultName: "Personal",
-            kdfMKib: 8, kdfT: 1)
+            kdfMKib: 64, kdfT: 1)
         _ = session.takeRecoveryCode()
 
         // Agent access is default-deny at three levels; the fixture opens all three, exactly as
@@ -79,7 +82,7 @@ struct AgentServiceTests {
                     value: $0.concealed ? "sk_live_kagisecure_test" : "https://api.example",
                     section: $0.section, agentVisible: true)
             },
-            tags: [], urls: [], notes: nil)
+            tags: [], urls: [], notes: nil, revision: item.revision)
         let saved = try session.saveItem(draft: draft)
         _ = try session.setAgentVisible(itemId: saved.id, visible: true)
 
@@ -144,6 +147,23 @@ struct AgentServiceTests {
         #expect(service.current == nil)
         #expect(service.leases.isEmpty)
         service.stop()
+    }
+
+    /// `revoke(_:)` used to discard whatever `agentRevokeLease` threw (`_ = try? …`), so a failed
+    /// revoke looked identical to a successful one: the person would believe the lease was gone
+    /// when it was not. A lease id that cannot even parse — never minted by this process — is a
+    /// reliable way to make the FFI call throw without needing a running agent or a real lease.
+    @Test func aFailedRevokeSurfacesThroughTheStandardErrorAlertRatherThanBeingSwallowed() {
+        let service = AgentService()
+        let bogus = LeaseView(
+            id: "not-a-real-lease-id", environmentId: "env", directory: "/tmp", variables: [],
+            kind: "run-command", clientIdentity: "test", expiresAt: 0, usesRemaining: 1)
+
+        #expect(service.errorMessage == nil)
+        service.revoke(bogus)
+        #expect(
+            service.errorMessage != nil,
+            "a thrown FfiError must reach the app's standard alert, not be swallowed by `try?`")
     }
 
     // MARK: - Integration: a real sidecar, a real approval
@@ -302,13 +322,15 @@ struct AgentServiceTests {
             clientPid: 42, clientPidFromKernel: true, clientExecutable: "/usr/bin/kagisecure-mcp",
             clientCwd: "/Users/x/code", environmentId: "e1", environmentName: "acme / staging",
             directory: "/Users/x/code", targetPath: "/Users/x/code/.env", variables: ["TOKEN"],
-            command: [], gitignored: false, requestedTtlSeconds: 900, requestedUses: 10,
+            command: [], gitignored: false, overwriteRequested: false, targetExists: false,
+            targetWrittenByUs: nil, requestedTtlSeconds: 900, requestedUses: 10,
             maxTtlSeconds: 86_400, createdAt: 0, expiresAt: 60,
             // The M6 browser-fill half. Empty for an agent request, and asserted to be empty in
             // `FillApprovalTests.theTwoKindsDoNotBleedIntoEachOther`.
-            origin: nil, topOrigin: nil, itemId: nil, itemTitle: nil, fillFields: [],
+            origin: nil, topOrigin: nil, topOriginUnknown: false, itemId: nil, itemTitle: nil,
+            fillFields: [],
             browser: nil, browserPid: nil, browserExecutable: nil, browserIsAppExtension: false,
-            extensionId: nil)
+            extensionId: nil, presenceOnly: false)
     }
 }
 

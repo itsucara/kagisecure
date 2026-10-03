@@ -271,11 +271,19 @@ final class J_AgentAccessTests: UITestCase {
             row.click()
             return
         }
-        let byLabel = app.descendants(matching: .any).matching(
-            NSPredicate(format: "label == %@", name)
+        // A `Text`'s string is its **value**; its label is empty (see `text(of:)`), so a match on
+        // the label alone found nothing and reported a row that was there as missing.
+        let byName = app.descendants(matching: .any).matching(
+            NSPredicate(format: "value == %@ OR label == %@", name, name)
         ).firstMatch
-        XCTAssertTrue(byLabel.waitForExistence(timeout: Self.shortTimeout), "no row called \(name)")
-        byLabel.click()
+        XCTAssertTrue(
+            byName.waitForExistence(timeout: Self.shortTimeout),
+            "no row reads \(name). On screen: \(onScreenIdentifiers().joined(separator: ", "))")
+        XCTAssertTrue(
+            byName.isHittable,
+            "the row reading \(name) is in the accessibility tree but not clickable — its frame "
+                + "is \(byName.frame)")
+        byName.click()
     }
 
     private func seedAgentVault() throws {

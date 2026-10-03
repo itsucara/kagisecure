@@ -4,7 +4,7 @@
 //! position, so a re-ordered header still works. Everything becomes `Category::Login`; the format
 //! gives a parser nothing to guess a richer category from (plan §3).
 
-use kagisecure_core::model::{Category, FieldKind};
+use kagisecure_core::model::{Category, FieldKind, SecretText};
 
 use super::dialect::{cell, fallback_title, is_blank, require, totp_field};
 use crate::error::Result;
@@ -82,7 +82,7 @@ pub(crate) fn map_row(record: &::csv::StringRecord, columns: &Columns) -> Option
         item.push_field(totp_field(&title_for_totp, otpauth));
     }
     if !notes.is_empty() {
-        item.notes = Some(notes.to_owned());
+        item.notes = Some(SecretText::new(notes.to_owned()));
     }
 
     Some(item)

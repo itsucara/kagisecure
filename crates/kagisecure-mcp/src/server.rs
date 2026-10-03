@@ -1,4 +1,4 @@
-//! The nine tools (mcp-server.md §2).
+//! The ten tools (mcp-server.md §2).
 //!
 //! # What this file is allowed to do
 //!
@@ -21,14 +21,16 @@ use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ErrorData, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{Peer, RoleServer, ServerHandler, tool, tool_handler, tool_router};
-use schemars::JsonSchema;
+use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::Deserialize;
 use serde_json::json;
 
 use kagisecure_core::proto::{EnvId, ItemId, LeaseId, VaultId};
 use kagisecure_ipc::client::{Client, self_info};
 use kagisecure_ipc::protocol::{
-    ErrorCode, FieldRef, OutputMode, Request, Response, VariableRequest,
+    AgentFillField, DEFAULT_AGENT_FILL_FIELDS, ErrorCode, FieldRef, MAX_RUN_ARGS,
+    MAX_VARIABLES_PER_CALL, OutputMode, RUN_TIMEOUT_DEFAULT_SECONDS, Request, Response,
+    VariableRequest, agent_fill_fields_ok, clamp_run_timeout,
 };
 use kagisecure_ipc::{ClientError, Endpoint};
 
@@ -172,8 +174,11 @@ pub struct RunWithEnvArgs {
     /// Wall-clock limit in seconds, 1-3600. Default 300.
     #[serde(default)]
     pub timeout_seconds: Option<u64>,
-    /// `scrubbed` (default) returns stdout/stderr with injected values masked; `none` returns
-    /// only the exit code. There is no unmasked option.
+    /// `scrubbed` (default) returns stdout/stderr with injected values, and their base64, hex and
+    /// percent-encoded forms, replaced by `[kagisecure:redacted:NAME]`; `none` returns only the exit
+    /// code. Scrubbing is best effort and is NOT a security boundary: a command that reverses,
+    /// splits, re-chunks, compresses or otherwise re-encodes a value defeats it. Do not treat
+    /// `scrubbed` output as proof a secret did not leave. There is no unmasked option.
     #[serde(default)]
     pub output: Option<String>,
 }
@@ -189,13 +194,98 @@ pub struct RevokeEnvFileArgs {
     pub path: Option<String>,
 }
 
+/// A field `request_fill` may ask for, by name. **There is no way to pass what is typed.**
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FillFieldArg {
+    /// The login's username.
+    Username,
+    /// The login's password.
+    Password,
+    /// A one-time code from the item's one-time-code field. Only on its own.
+    OneTimeCode,
+}
+
+impl From<FillFieldArg> for AgentFillField {
+    fn from(field: FillFieldArg) -> Self {
+        match field {
+            FillFieldArg::Username => Self::Username,
+            FillFieldArg::Password => Self::Password,
+            FillFieldArg::OneTimeCode => Self::OneTimeCode,
+        }
+    }
+}
+
+/// `request_fill` arguments. Unknown properties are refused rather than ignored.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RequestFillArgs {
+    /// The item id, from `list_items`. Titles are not accepted.
+    pub item_id: String,
+    /// The origin of the page you have open, e.g. `https://example.com`.
+    pub origin: String,
+    /// Which fields to fill: `username`, `password` or both, or `one_time_code` on its own.
+    /// Default `["username", "password"]`.
+    #[serde(default)]
+    #[schemars(schema_with = "fill_fields_schema")]
+    pub fields: Option<Vec<FillFieldArg>>,
+}
+
+/// The `fields` schema from mcp-server.md §2.10, which says the combination rule itself rather
+/// than leaving it to the error: a login's fields, or a one-time code alone.
+fn fill_fields_schema(_: &mut SchemaGenerator) -> Schema {
+    // The description comes from the doc comment on `RequestFillArgs::fields`.
+    json_schema!({
+        "oneOf": [
+            {
+                "type": "array",
+                "items": { "type": "string", "enum": ["username", "password"] },
+                "minItems": 1,
+                "maxItems": 2,
+                "uniqueItems": true
+            },
+            {
+                "type": "array",
+                "items": { "type": "string", "const": "one_time_code" },
+                "minItems": 1,
+                "maxItems": 1
+            }
+        ],
+        "default": ["username", "password"]
+    })
+}
+
+/// The fields a `request_fill` call asks for, or the `INVALID_ARGUMENT` it is answered with.
+///
+/// The schema already says this, but a model is not obliged to follow a schema. The rule is the
+/// one shared definition, [`agent_fill_fields_ok`], which the process that owns the vault applies
+/// too once it serves the request: the sidecar is a convenience, not a boundary.
+fn fill_fields(
+    requested: Option<Vec<FillFieldArg>>,
+) -> Result<Vec<AgentFillField>, CallToolResult> {
+    let fields: Vec<AgentFillField> = requested.map_or_else(
+        || DEFAULT_AGENT_FILL_FIELDS.to_vec(),
+        |fields| fields.into_iter().map(AgentFillField::from).collect(),
+    );
+    if agent_fill_fields_ok(&fields) {
+        Ok(fields)
+    } else {
+        Err(err(
+            ErrorCode::InvalidArgument,
+            "fields must name at least one field, none twice: username, password or both, or \
+             one_time_code on its own. A one-time code is never combined with a password. \
+             Nothing was asked. Fix the argument and retry.",
+        ))
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // The tools.
 // ---------------------------------------------------------------------------------------------
 
 #[tool_router(router = tool_router)]
 impl Kagisecure {
-    /// A server with the nine tools registered.
+    /// A server with the ten tools registered.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -332,9 +422,9 @@ impl Kagisecure {
             Ok(v) => v,
             Err(e) => return Ok(e),
         };
-        if args.variables.len() > 50 {
+        if args.variables.len() > MAX_VARIABLES_PER_CALL {
             return Ok(err(
-                ErrorCode::Internal,
+                ErrorCode::InvalidArgument,
                 "At most 50 variables per call. Split the request.",
             ));
         }
@@ -435,7 +525,8 @@ impl Kagisecure {
         description = "Run a command with an environment's variables in its process environment. \
                        kagisecure spawns the child itself, with no shell. Output comes back with \
                        injected values replaced by [kagisecure:redacted:NAME]; that masking is \
-                       best effort and is not a security boundary. There is no unmasked option."
+                       best effort and is not a security boundary — a command that re-encodes or \
+                       splits a value defeats it. There is no unmasked option."
     )]
     async fn run_with_env(
         &self,
@@ -447,9 +538,9 @@ impl Kagisecure {
             Err(e) => return Ok(e),
         };
         let cmd_args = args.args.unwrap_or_default();
-        if cmd_args.len() > 64 {
+        if cmd_args.len() > MAX_RUN_ARGS {
             return Ok(err(
-                ErrorCode::Internal,
+                ErrorCode::InvalidArgument,
                 "At most 64 arguments. Simplify the command.",
             ));
         }
@@ -458,7 +549,7 @@ impl Kagisecure {
             Some("none") => OutputMode::None,
             Some(_) => {
                 return Ok(err(
-                    ErrorCode::Internal,
+                    ErrorCode::InvalidArgument,
                     "output must be \"scrubbed\" or \"none\". There is no unmasked mode.",
                 ));
             }
@@ -469,7 +560,11 @@ impl Kagisecure {
             args: cmd_args,
             cwd: args.cwd,
             variables: args.variables,
-            timeout_seconds: args.timeout_seconds.unwrap_or(300).clamp(1, 3600),
+            // The agent clamps this too — it cannot rely on a sidecar a hostile caller would
+            // simply not run — so the two share one definition of the range.
+            timeout_seconds: clamp_run_timeout(
+                args.timeout_seconds.unwrap_or(RUN_TIMEOUT_DEFAULT_SECONDS),
+            ),
             output,
         };
         match ask(&peer, request).await {
@@ -511,7 +606,10 @@ impl Kagisecure {
         Parameters(args): Parameters<RevokeEnvFileArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         if args.lease_id.is_none() && args.path.is_none() {
-            return Ok(err(ErrorCode::Internal, "Pass lease_id, path, or both."));
+            return Ok(err(
+                ErrorCode::InvalidArgument,
+                "Pass lease_id, path, or both.",
+            ));
         }
         let lease_id = match parse_opt::<LeaseId>(args.lease_id.as_deref(), "lease_id") {
             Ok(v) => v,
@@ -527,6 +625,54 @@ impl Kagisecure {
         .await
         {
             Ok(Response::Revoked { shredded }) => Ok(ok(json!({ "shredded": shredded }))),
+            other => Ok(unexpected(other)),
+        }
+    }
+
+    #[tool(
+        name = "request_fill",
+        description = "Ask the user to let kagisecure fill a saved login into the browser tab \
+                       they are looking at. The user approves in the kagisecure app with a \
+                       biometric. Returns only which fields were filled: this tool never returns \
+                       a secret value. Works only in a browser with the kagisecure extension, in \
+                       the tab in front, when that tab's origin is exactly `origin` and is a \
+                       website saved on the item. On a sign-in that asks for the username \
+                       first, one approval covers both pages: the username is filled now and \
+                       `fields_pending` lists the password — press the page's own Next button, \
+                       then call again for [\"password\"] within 60 seconds, and no second \
+                       approval is asked. Ask for `one_time_code` in a call of its own: it is \
+                       approved on its own every time and filled only into a page with a code \
+                       field, never copied to the clipboard. Be aware: kagisecure never gives you a value, but it types the value into \
+                       a page you are driving, and an agent that can run script in that page can \
+                       read it there."
+    )]
+    async fn request_fill(
+        &self,
+        peer: Peer<RoleServer>,
+        Parameters(args): Parameters<RequestFillArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let item_id = match parse_req::<ItemId>(&args.item_id, "item_id") {
+            Ok(v) => v,
+            Err(e) => return Ok(e),
+        };
+        let fields = match fill_fields(args.fields) {
+            Ok(v) => v,
+            Err(e) => return Ok(e),
+        };
+        let request = Request::RequestFill {
+            item_id,
+            origin: args.origin,
+            fields,
+        };
+        match ask(&peer, request).await {
+            Ok(Response::FillResult {
+                fields_written,
+                fields_pending,
+            }) => Ok(ok(json!({
+                "status": "filled",
+                "fields_written": fields_written,
+                "fields_pending": fields_pending,
+            }))),
             other => Ok(unexpected(other)),
         }
     }
@@ -553,7 +699,12 @@ impl ServerHandler for Kagisecure {
                  exist, so do not look for it and do not ask the user to paste one to you. \
                  Every injection is approved by the user out of band, and grants a lease scoped \
                  to one environment, one directory and a short time window. Call \
-                 revoke_env_file when you are finished.",
+                 revoke_env_file when you are finished. request_fill asks the user to let \
+                 kagisecure fill a saved login into the browser tab in front of them, and the \
+                 same holds for it: kagisecure never gives you a value. It types the value into \
+                 a page you are driving, on a site saved for that login, after the user approves \
+                 — and an agent that can run script in that page can read it there. That holds \
+                 for a one-time code too.",
             )
     }
 }
@@ -676,11 +827,97 @@ mod tests {
                 "list_environments",
                 "list_items",
                 "list_vaults",
+                "request_fill",
                 "revoke_env_file",
                 "run_with_env",
                 "write_env_file",
             ]
         );
+    }
+
+    #[test]
+    fn request_fill_schema_has_no_place_for_a_value() {
+        // Three arguments, all of them names: which item, which origin the agent claims, which
+        // fields. Nothing the model could put a value in, and nothing it could ask for one with.
+        let router = Kagisecure::tool_router();
+        let tool = router
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "request_fill")
+            .expect("registered above");
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        let mut properties = Vec::new();
+        collect_property_names(&schema, &mut properties);
+        properties.sort();
+        assert_eq!(properties, ["fields", "item_id", "origin"], "{schema}");
+        assert_eq!(schema["additionalProperties"], false, "{schema}");
+        let rendered = serde_json::to_string(&schema).unwrap();
+        assert!(!rendered.contains("\"value\""), "{rendered}");
+
+        // The combination rule is in the schema itself, not only in the error.
+        let branches = schema["properties"]["fields"]["oneOf"]
+            .as_array()
+            .expect("fields is a oneOf");
+        assert_eq!(branches.len(), 2, "{schema}");
+        assert_eq!(branches[1]["items"]["const"], "one_time_code");
+        assert_eq!(branches[1]["maxItems"], 1);
+
+        // And the reply it maps onto names fields, never what went into them.
+        let reply = serde_json::to_value(Response::FillResult {
+            fields_written: vec![AgentFillField::Username, AgentFillField::Password],
+            fields_pending: vec![],
+        })
+        .unwrap();
+        let mut keys: Vec<&String> = reply.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["fields_pending", "fields_written", "reply"]);
+    }
+
+    #[test]
+    fn a_field_combination_the_schema_forbids_is_invalid_argument() {
+        use FillFieldArg::{OneTimeCode, Password, Username};
+        for refused in [
+            vec![],
+            vec![OneTimeCode, Password],
+            vec![Username, Password, OneTimeCode],
+            vec![Password, Password],
+        ] {
+            let result = fill_fields(Some(refused.clone())).expect_err("refused");
+            assert_eq!(result.is_error, Some(true));
+            let body = result.structured_content.expect("structured");
+            assert_eq!(body["code"], "INVALID_ARGUMENT", "{refused:?}");
+        }
+        assert_eq!(
+            fill_fields(None).expect("the default is accepted"),
+            DEFAULT_AGENT_FILL_FIELDS
+        );
+        assert_eq!(
+            fill_fields(Some(vec![OneTimeCode])).expect("a code alone is accepted"),
+            [AgentFillField::OneTimeCode]
+        );
+    }
+
+    #[test]
+    fn request_fill_arguments_refuse_an_unknown_property() {
+        let parsed = serde_json::from_value::<RequestFillArgs>(json!({
+            "item_id": "x",
+            "origin": "https://example.com",
+            "value": "anything",
+        }));
+        assert!(
+            parsed.is_err(),
+            "a value property must be refused, not ignored"
+        );
+        let parsed = serde_json::from_value::<RequestFillArgs>(json!({
+            "item_id": "x",
+            "origin": "https://example.com",
+            "fields": ["one_time_code"],
+        }))
+        .expect("the documented shape parses");
+        assert!(matches!(
+            parsed.fields.as_deref(),
+            Some([FillFieldArg::OneTimeCode])
+        ));
     }
 
     #[test]
@@ -771,6 +1008,100 @@ mod tests {
         let instructions = info.instructions.unwrap_or_default();
         assert!(instructions.contains("cannot read a value"));
         assert!(instructions.contains("revoke_env_file"));
+    }
+
+    #[test]
+    fn the_instructions_say_what_an_agent_fill_does_and_does_not_protect() {
+        // ADR-0036 §8.2: the true sentence for request_fill, said where the model reads it.
+        let info = Kagisecure::new().get_info();
+        let instructions = info.instructions.unwrap_or_default();
+        assert!(instructions.contains("request_fill"), "{instructions}");
+        assert!(
+            instructions.contains("kagisecure never gives you a value"),
+            "{instructions}"
+        );
+        assert!(
+            instructions.contains("an agent that can run script in that page can read it there"),
+            "{instructions}"
+        );
+
+        let router = Kagisecure::tool_router();
+        let tool = router
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "request_fill")
+            .expect("registered");
+        let description = tool.description.as_deref().unwrap_or_default();
+        assert!(
+            description.contains("can run script in that page can read it there"),
+            "{description}"
+        );
+    }
+
+    #[test]
+    fn the_request_fill_description_says_how_page_two_and_codes_are_served() {
+        // ADR-0036 Phase 3 is served, so the description says how to use it — and what it will
+        // not do: no second approval is skipped for a code, and no clipboard.
+        let router = Kagisecure::tool_router();
+        let tool = router
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "request_fill")
+            .expect("registered");
+        let description = tool.description.as_deref().unwrap_or_default();
+        for phrase in [
+            "fields_pending",
+            "call again for [\"password\"] within 60 seconds",
+            "no second approval is asked",
+            "approved on its own every time",
+            "never copied to the clipboard",
+        ] {
+            assert!(description.contains(phrase), "{phrase}: {description}");
+        }
+    }
+
+    /// ADR-0042 §5: no MCP tool creates, widens, extends, re-enables or proposes a standing grant
+    /// or a job, or arms the machine vault. The tool list is fixed above; this says why it must
+    /// stay free of them, in words a new tool's name would trip.
+    #[test]
+    fn no_tool_reaches_grants_jobs_or_arming() {
+        for tool in Kagisecure::tool_router().list_all() {
+            let name = tool.name.to_lowercase();
+            for word in ["grant", "job", "arm", "unattended", "schedule"] {
+                assert!(!name.contains(word), "{name} names {word}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_agent_error_code_reaches_the_model_verbatim() {
+        // The codes in mcp-server.md §7 are the agent's, passed through as they arrive: the
+        // sidecar has no table of its own that a new code (here `AUDIT_UNAVAILABLE`) could be
+        // missing from.
+        for code in [
+            ErrorCode::AuditUnavailable,
+            ErrorCode::VaultBusy,
+            ErrorCode::VaultConflict,
+            ErrorCode::FillUnavailable,
+            ErrorCode::NothingToFill,
+            ErrorCode::NoMatchingTab,
+            ErrorCode::RateLimited,
+            ErrorCode::NotGranted,
+            ErrorCode::UnattendedPaused,
+        ] {
+            let result = unexpected(Ok(Response::error(code, "fixed text")));
+            assert_eq!(result.is_error, Some(true));
+            let body = result.structured_content.expect("structured");
+            assert_eq!(body["code"], code.as_str());
+            assert_eq!(body["message"], "fixed text");
+        }
+    }
+
+    #[test]
+    fn run_with_env_timeouts_use_the_shared_range() {
+        assert_eq!(clamp_run_timeout(0), 1);
+        assert_eq!(clamp_run_timeout(u64::MAX), 3600);
+        assert_eq!(clamp_run_timeout(RUN_TIMEOUT_DEFAULT_SECONDS), 300);
     }
 
     #[test]

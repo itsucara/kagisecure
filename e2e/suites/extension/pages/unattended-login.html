@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Unattended sign-in</title>
+<link rel="stylesheet" href="/_style.css" />
+<h1>Service sign-in</h1>
+<p class="origin" id="origin"></p>
+<form id="login" method="post" action="/signed-in">
+  <label for="username">Username</label>
+  <input id="username" name="username" type="text" autocomplete="username" />
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" />
+  <button type="submit">Sign in</button>
+</form>
+<script>
+  document.getElementById("origin").textContent = location.origin;
+</script>

@@ -40,9 +40,7 @@ struct AgentSetupView: View {
                 .font(.title2.weight(.semibold))
                 .accessibilityIdentifier("ks.agentSetup.title")
             Text(
-                "kagisecure ships a small MCP server. Your agent spawns it; it talks to this app "
-                + "over a local socket; and every injection raises the approval sheet you have to "
-                + "put a fingerprint on. The agent never receives a value — only names."
+                "kagisecure ships a small MCP server. Your agent spawns it; it talks to this app over a local socket; and every injection raises the approval sheet you have to put a fingerprint on. The agent never receives a value — only names."
             )
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -69,10 +67,7 @@ struct AgentSetupView: View {
             } else {
                 Label {
                     Text(
-                        "kagisecure-mcp was not found next to this app, on your PATH, or at "
-                        + "KAGISECURE_MCP. The snippets below show where a normal install puts it; "
-                        + "build it with `cargo build -p kagisecure-mcp` if you are running from "
-                        + "source, and set KAGISECURE_MCP to the result."
+                        "kagisecure-mcp was not found next to this app, on your PATH, or at KAGISECURE_MCP. The snippets below show where a normal install puts it; build it with `cargo build -p kagisecure-mcp` if you are running from source, and set KAGISECURE_MCP to the result."
                     )
                     .fixedSize(horizontal: false, vertical: true)
                 } icon: {
@@ -86,10 +81,9 @@ struct AgentSetupView: View {
                 Image(systemName: agent.status.running ? "checkmark.circle.fill" : "circle.slash")
                     .foregroundStyle(agent.status.running ? .green : .secondary)
                     .accessibilityHidden(true)
-                Text(
-                    agent.status.running
-                        ? "This app is listening on \(agent.status.endpoint)"
-                        : "This app is not listening. Agents will get APP_NOT_RUNNING.")
+                (agent.status.running
+                    ? Text("This app is listening on \(agent.status.endpoint)")
+                    : Text("This app is not listening. Agents will get APP_NOT_RUNNING."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -147,15 +141,14 @@ struct AgentSetupView: View {
                 if copied == label { copied = nil }
             }
         } label: {
-            Label(copied == label ? "Copied" : "Copy", systemImage: copied == label ? "checkmark" : "doc.on.doc")
+            Label(copied == label ? String(localized: "Copied") : String(localized: "Copy"), systemImage: copied == label ? "checkmark" : "doc.on.doc")
         }
         .buttonStyle(.bordered)
     }
 
     private var footer: some View {
         Text(
-            "The vault must be unlocked for any of this to work. A locked vault answers "
-            + "VAULT_LOCKED and kills every lease it had granted."
+            "The vault must be unlocked for any of this to work. A locked vault answers VAULT_LOCKED and kills every lease it had granted."
         )
         .font(.caption)
         .foregroundStyle(.secondary)

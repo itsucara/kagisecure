@@ -243,6 +243,27 @@
     return true;
   }
 
+  /**
+   * Whether an element's rectangle is on the visible canvas at all.
+   *
+   * The test is deliberately "not positioned off-canvas" rather than "inside the viewport": a
+   * legitimate login form can sit below the fold or to the right of a carousel, and refusing it
+   * would break ordinary pages. What no real login box does is sit entirely to the *left of* or
+   * *above* the document canvas — `top: -9999px` is the decoy's move, and the icon drawn beside
+   * such a field would be off-screen while `⌘\` filled it.
+   *
+   * @param {Element} el
+   * @returns {boolean}
+   */
+  function isOnCanvas(el) {
+    if (!el || typeof el.getBoundingClientRect !== "function") return false;
+    const rect = el.getBoundingClientRect();
+    const x = typeof scrollX === "number" ? scrollX : 0;
+    const y = typeof scrollY === "number" ? scrollY : 0;
+    // Page coordinates, so a field scrolled out of view is still on the canvas.
+    return rect.right + x > 0 && rect.bottom + y > 0;
+  }
+
   function score(text, words) {
     let total = 0;
     for (const word of words) {
@@ -370,7 +391,15 @@
     const usable = passwords.filter(isFillable);
     if (usable.length === 0) return null;
 
-    const current = usable.filter((p) => !isNewPasswordField(p, usable));
+    // A field positioned off the canvas outranks nothing: it is a decoy, and it would otherwise
+    // win on document order and take the icon off-screen with it. It is dropped here, before the
+    // new-password heuristic, so that it does not count as the second half of a "new password /
+    // confirm password" pair either. A page where *every* candidate is off-canvas has no visible
+    // login box, and refusing it is the safe answer.
+    const onCanvas = usable.filter(isOnCanvas);
+    if (onCanvas.length === 0) return null;
+
+    const current = onCanvas.filter((p) => !isNewPasswordField(p, onCanvas));
     if (current.length === 0) return null;
 
     // With more than one candidate left, prefer the one the site declared, then the first in
@@ -567,6 +596,7 @@
     autocompleteTokens,
     formOf,
     isFillable,
+    isOnCanvas,
     isNewPasswordField,
     isSearchField,
     looksLikeIdentifier,

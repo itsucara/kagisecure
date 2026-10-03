@@ -7,9 +7,28 @@ import KagisecureFFI
 struct ItemListView: View {
     @Environment(AppModel.self) private var model
     @Bindable var store: VaultStore
+    /// ⌘F pressed in an agent section, where this list is not on screen: `MainView` comes back to
+    /// a vault section and this list focuses its search as soon as it appears.
+    @Binding var searchRequested: Bool
     @FocusState private var searchFocused: Bool
 
     var body: some View {
+        ScrollViewReader { proxy in
+            list
+                // This list is rebuilt when the window comes back from an agent section
+                // (`MainView`) and starts scrolled to the top; the selected item is kept, so show
+                // it.
+                .onAppear {
+                    if let id = store.selectedItemId { proxy.scrollTo(id) }
+                    if searchRequested {
+                        searchRequested = false
+                        focusSearch()
+                    }
+                }
+        }
+    }
+
+    private var list: some View {
         List(store.items, id: \.id, selection: $store.selectedItemId) { item in
             ItemRow(store: store, item: item)
                 .tag(item.id)
@@ -22,14 +41,25 @@ struct ItemListView: View {
             if store.items.isEmpty {
                 EmptyStateView(
                     symbol: store.query.isEmpty ? "tray" : "magnifyingglass",
-                    title: store.query.isEmpty ? "Nothing here" : "No matches",
+                    title: store.query.isEmpty
+                        ? String(localized: "Nothing here") : String(localized: "No matches"),
                     message: store.query.isEmpty
-                        ? nil : "Nothing matches “\(store.query)”.")
+                        ? nil : String(localized: "Nothing matches “\(store.query)”."))
             }
         }
         .onChange(of: model.focusSearch) { _, _ in searchFocused = true }
-        .onChange(of: store.selectedItemId) { _, _ in store.clearRevealed() }
         .accessibilityIdentifier("ks.itemList.list")
+    }
+
+    /// Focus the search field of a list that has only just appeared: once now, and again once the
+    /// toolbar holding the field is actually in the window, because a request made before then is
+    /// dropped (QuickAccessView does the same for its panel).
+    private func focusSearch() {
+        searchFocused = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(60))
+            searchFocused = true
+        }
     }
 }
 
@@ -62,11 +92,16 @@ private struct ItemRow: View {
 
             if hovering, item.fields.contains(where: { $0.kind == .totp && $0.hasValue }) {
                 Button {
-                    store.copyItemTotp(item)
+                    // A one-use copy release behind its own presence prompt — or, if this item's
+                    // code is already running in the detail pane, a copy of that with no new
+                    // touch (ADR-0038 user decision 1).
+                    let releases = store.releases
+                    store.attemptRelease { try await releases.copyFirstTotp(of: item) }
                 } label: {
                     Image(systemName: "clock.badge.checkmark")
                 }
                 .buttonStyle(.borderless)
+                .disabled(store.releases.pending != nil)
                 .help("Copy the current one-time password")
                 .accessibilityLabel("Copy one-time password")
                 .accessibilityIdentifier("ks.itemList.rowCopyTotp")
@@ -84,15 +119,15 @@ private struct ItemRow: View {
             }
 
             Button {
-                try? store.toggleFavorite(item)
+                store.attempt { try store.toggleFavorite(item) }
             } label: {
                 Image(systemName: item.favorite ? "star.fill" : "star")
                     .foregroundStyle(item.favorite ? AnyShapeStyle(.yellow) : AnyShapeStyle(.tertiary))
             }
             .buttonStyle(.borderless)
             .opacity(item.favorite || hovering ? 1 : 0)
-            .help(item.favorite ? "Remove from favorites" : "Add to favorites")
-            .accessibilityLabel(item.favorite ? "Favorited" : "Not favorited")
+            .help(item.favorite ? Text("Remove from favorites") : Text("Add to favorites"))
+            .accessibilityLabel(item.favorite ? Text("Favorited") : Text("Not favorited"))
             .accessibilityIdentifier("ks.itemList.rowFavorite")
         }
         .padding(.vertical, 3)
@@ -101,20 +136,28 @@ private struct ItemRow: View {
         // The item's id, so a test can address one row without depending on its title — which is
         // exactly what the rename scenario changes underneath it.
         .contextMenu {
-            Button(item.favorite ? "Remove from Favorites" : "Add to Favorites") {
-                try? store.toggleFavorite(item)
+            Button(
+                item.favorite
+                    ? String(localized: "Remove from Favorites") : String(localized: "Add to Favorites")
+            ) {
+                store.attempt { try store.toggleFavorite(item) }
             }
-            if item.trashed {
-                Button("Restore") { try? store.setTrashed(item, false) }
+            if store.sharedVaultId != nil {
+                // Deleting a shared item is confirmed in the detail pane, where the item is.
+            } else if item.trashed {
+                Button("Restore") { store.attempt { try store.setTrashed(item, false) } }
                 Divider()
                 Button("Delete Permanently", role: .destructive) {
-                    try? store.deleteForever(item)
+                    store.attempt { try store.deleteForever(item) }
                 }
             } else {
-                Button(item.archived ? "Move out of Archive" : "Move to Archive") {
-                    try? store.setArchived(item, !item.archived)
+                Button(
+                    item.archived
+                        ? String(localized: "Move out of Archive") : String(localized: "Move to Archive")
+                ) {
+                    store.attempt { try store.setArchived(item, !item.archived) }
                 }
-                Button("Move to Trash") { try? store.setTrashed(item, true) }
+                Button("Move to Trash") { store.attempt { try store.setTrashed(item, true) } }
             }
         }
     }

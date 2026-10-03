@@ -26,18 +26,17 @@ enum PlatformKeyError: LocalizedError, Equatable {
     var errorDescription: String? {
         switch self {
         case .unavailable(let why):
-            "Touch ID is not available on this Mac: \(why)"
+            String(localized: "Touch ID is not available on this Mac: \(why)")
         case .cancelled:
-            "Touch ID was cancelled."
+            String(localized: "Touch ID was cancelled.")
         case .noKey:
-            "This Mac has no Touch ID key for kagisecure yet."
+            String(localized: "This Mac has no Touch ID key for kagisecure yet.")
         case .keyInvalidated:
-            "The Touch ID key was invalidated because the fingerprint set on this Mac changed."
+            String(localized: "The Touch ID key was invalidated because the fingerprint set on this Mac changed.")
         case .notEntitled:
-            "This build of Kagisecure is not signed with an identity that can own keychain items, "
-                + "so Touch ID unlock is unavailable. Unlock with your master password."
+            String(localized: "This build of Kagisecure is not signed with an identity that can own keychain items, so Touch ID unlock is unavailable. Unlock with your master password.")
         case .keychain(let detail):
-            "The keychain refused the operation: \(detail)"
+            String(localized: "The keychain refused the operation: \(detail)")
         }
     }
 }
@@ -91,12 +90,19 @@ final class PlatformKeyService: Sendable {
 
     /// Create (or replace) the Enclave key and wrap `vaultKey` with its public half.
     ///
-    /// Wrapping does not prompt: encryption uses the public key, which carries no access control.
-    /// That is deliberate — asking for a fingerprint to *store* something the user has already
-    /// unlocked would be theatre, and the fingerprint that matters is the one on the way back.
-    func enroll(vaultKey: Data) throws -> EnrolledPlatformKey {
+    /// Wrapping itself does not prompt: encryption uses the public key, which carries no access
+    /// control. That is deliberate — asking for a fingerprint to *store* something the user has
+    /// already unlocked would be theatre, and the fingerprint that matters is the one on the way
+    /// back. **Creating** the private key can still prompt (see `createKey`), which is why this
+    /// takes a context at all.
+    ///
+    /// - Parameter context: the `LAContext` a lock can invalidate while creation is in flight
+    ///   (`AppModel.enrollTouchID`, which registers it with `PresenceCoordinator`). Defaulted for
+    ///   every other caller — the tests, and any future one that does not route through the app's
+    ///   presence machinery — so a fresh, uncancellable context is used instead.
+    func enroll(vaultKey: Data, context: LAContext = LAContext()) throws -> EnrolledPlatformKey {
         deleteKey()
-        let privateKey = try createKey()
+        let privateKey = try createKey(context: context)
         guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
             throw PlatformKeyError.keychain("the Enclave key has no public half")
         }
@@ -123,8 +129,8 @@ final class PlatformKeyService: Sendable {
     /// context shows the system's generic wording instead. Verified on macOS 26.1.
     func unwrap(_ wrappedKey: Data) throws -> Data {
         let context = LAContext()
-        context.localizedReason = "unlock your kagisecure vault"
-        context.localizedCancelTitle = "Use Password"
+        context.localizedReason = String(localized: "unlock your kagisecure vault")
+        context.localizedCancelTitle = String(localized: "Use Password")
         let privateKey = try loadKey(context: context)
         var cfError: Unmanaged<CFError>?
         guard
@@ -154,7 +160,16 @@ final class PlatformKeyService: Sendable {
 
     // MARK: - Keychain plumbing
 
-    private func createKey() throws -> SecKey {
+    /// - Parameter context: attached via `kSecUseAuthenticationContext` so a lock has something to
+    ///   `invalidate()`. `.privateKeyUsage` + `.biometryCurrentSet` below is the same access
+    ///   control ADR-0004 gates *unwrapping* with; on macOS (unlike iOS) generating a Secure
+    ///   Enclave key under an access control that requires biometry can itself raise the Touch ID
+    ///   sheet at creation time, not only at first use — ADR-0011 records this as the one detail
+    ///   never actually observed on the hardware available to this project, because the
+    ///   `keychain-access-groups` entitlement this path needs has never been obtainable here. This
+    ///   is the same "implemented but untested" status ADR-0011 already gives the `LAContext`
+    ///   plumbing in `unwrap`, extended to the one other place a context can attach.
+    private func createKey(context: LAContext) throws -> SecKey {
         var accessError: Unmanaged<CFError>?
         guard
             let access = SecAccessControlCreateWithFlags(
@@ -183,6 +198,7 @@ final class PlatformKeyService: Sendable {
                 kSecAttrIsPermanent as String: false,
                 kSecAttrApplicationTag as String: Data(Self.applicationTag.utf8),
                 kSecAttrAccessControl as String: access,
+                kSecUseAuthenticationContext as String: context,
             ],
         ]
 

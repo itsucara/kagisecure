@@ -1,4 +1,5 @@
 import Foundation
+import LocalAuthentication
 import Observation
 import SwiftUI
 
@@ -12,14 +13,19 @@ enum LockReason: Equatable {
     case idle
     case sleep
     case screenLock
+    /// The human chose "Lock and reopen from the file" on the conflict alert (step 4, user
+    /// decision 3) rather than a plain lock — the vault file changed while this session held it
+    /// unlocked, and writes had already stopped.
+    case conflict
 
     var message: String? {
         switch self {
         case .launch: nil
-        case .manual: "Locked."
-        case .idle: "Locked after being idle."
-        case .sleep: "Locked when the Mac went to sleep."
-        case .screenLock: "Locked when the screen locked."
+        case .manual: String(localized: "Locked.")
+        case .idle: String(localized: "Locked after being idle.")
+        case .sleep: String(localized: "Locked when the Mac went to sleep.")
+        case .screenLock: String(localized: "Locked when the screen locked.")
+        case .conflict: String(localized: "Locked because the vault file changed outside kagisecure. Unlock to see the current version.")
         }
     }
 }
@@ -66,11 +72,20 @@ final class AppModel {
 
     let platformKey = PlatformKeyService()
 
+    /// The one presence prompt the app may have on screen at a time (ADR-0037 §3, ADR-0038 §6),
+    /// shared by the approval flow and every reveal and copy.
+    let presence: PresenceCoordinator
+
+    /// The presence gate's fallback when `LocalAuthentication` cannot run (ADR-0038 user
+    /// decision 7), and the panel it appears in.
+    let masterPasswordFallback = MasterPasswordFallback()
+    private let masterPasswordPanel = MasterPasswordPanel()
+
     /// The IPC listener and the approval queue (architecture.md §2.5 job 3).
     ///
     /// Created once and reused: starting it is what binds the socket, and stopping it is the
     /// first half of locking.
-    let agent = AgentService()
+    let agent: AgentService
 
     /// The browser-extension listener (M6).
     ///
@@ -78,6 +93,18 @@ final class AppModel {
     /// `agent` already polls, so there is one sheet, one timeout and one biometric gate. What this
     /// owns is the channel and its own lease store.
     let browserExtension = ExtensionService()
+
+    /// System-wide password AutoFill (ADR-0045): the socket the credential provider extension
+    /// asks, and the identity store QuickType reads.
+    let credentialProvider: CredentialProviderService
+
+    /// Agent-requested browser fills' switch, blocks and notices (ADR-0036 §2, §9). The sheet
+    /// itself is `agent`'s, on the same queue as every other approval.
+    let agentFill: AgentFillService
+
+    /// Unattended jobs (ADR-0042 Phase 3): the engine is started at launch, and re-armed from the
+    /// Keychain, whether or not the vault is ever unlocked.
+    let unattended: UnattendedService
 
     /// The floating ⇧⌘Space panel (ui-spec.md §7).
     ///
@@ -105,8 +132,42 @@ final class AppModel {
 
     private var autoLock: AutoLockCoordinator?
 
+    /// Set by `lockAfterConflict()`, read once by the next `adopt(_:)`: the file identity
+    /// (`VaultSession.vaultFileId()`) of the vault that was conflicting when the user chose "Lock
+    /// and reopen from the file", so the audit note (`VaultSession.noteReopenedAfterConflict`) is
+    /// written only when the vault actually being adopted is *that same vault file*, reopened —
+    /// best-effort, the same as a reveal (user decision 1), never blocking getting back in.
+    ///
+    /// A file id rather than a plain flag because "reopen from the file" does not always lead
+    /// back to `.locked`: a `Removed` conflict sends `refreshPhase` to `.noVault` instead (the
+    /// file is gone), and from there the very next `adopt(_:)` might be a brand-new vault the user
+    /// creates at the same path — a different file with a freshly minted id, not a reopen of
+    /// anything. A bare boolean could not tell those two apart and would misfile the new vault's
+    /// very first unlock as a conflict recovery it has nothing to do with.
+    private var reopeningAfterConflictFileId: String?
+
+    /// The context an in-flight `enrollTouchID()` created, if one is running — set only for the
+    /// duration of one call, so `presence.cancelInFlight()` has something to invalidate (see
+    /// `enrollTouchID`).
+    private var enrollmentContext: LAContext?
+
     init(vaultPath: String? = nil) {
         self.vaultPath = vaultPath ?? defaultVaultPath()
+        let presence = PresenceCoordinator()
+        self.presence = presence
+        self.agent = AgentService(presence: presence)
+        self.agentFill = AgentFillService(presence: presence)
+        self.unattended = UnattendedService(presence: presence)
+        self.credentialProvider = CredentialProviderService(presence: presence)
+        let panel = masterPasswordPanel
+        masterPasswordFallback.present = { panel.show($0) }
+        masterPasswordFallback.dismiss = { panel.hide() }
+        // A lock closes the fallback's panel the way it invalidates a `LAContext`.
+        presence.addCancelHandler { [weak fallback = masterPasswordFallback] in fallback?.cancel() }
+        // A lock reaches Touch ID enrolment's own context the same way, best-effort: see
+        // `enrollTouchID`. `enrollmentContext` is `nil` whenever no enrolment is in flight, so this
+        // is a no-op on every lock but the rare one that lands mid-enrolment.
+        presence.addCancelHandler { [weak self] in self?.enrollmentContext?.invalidate() }
         refreshPhase()
         platformAvailability = platformKey.availability()
         autoLock = AutoLockCoordinator { [weak self] reason in
@@ -120,24 +181,42 @@ final class AppModel {
         // One ticker for both panes, so a lease countdown and a fill-lease countdown cannot
         // disagree about what time it is.
         agent.extensionService = browserExtension
+        // Agent-fill notices are drained on the same tick (ADR-0036 implementation decision 11).
+        agent.agentFill = agentFill
+        // The switch the user chose, pushed to Rust's in-memory flag (off in every new process)
+        // at launch. Pushed again on every unlock, in `adopt`, before either listener starts.
+        agentFill.applyStoredSwitch()
         // Quick Access is registered at launch and stays registered: the shortcut has to work
         // while the vault is locked too, because "vault is locked, here is the unlock window" is
         // a more useful answer than a dead key combination (ui-spec.md §7).
+        // A fresh model every time the panel opens, over whichever session is unlocked then (or
+        // none, and the panel says the vault is locked). Closing the panel drops it.
         quickAccess.setContent { [weak self] in
             if let self {
-                QuickAccessView(onDismiss: { self.quickAccess.close() })
-                    .environment(self)
+                QuickAccessView(
+                    model: QuickAccessModel(
+                        session: self.store?.session,
+                        onDismiss: { [weak self] in self?.quickAccess.close() }))
             }
         }
         quickAccess.registerHotKey { [weak self] in
             self?.quickAccess.toggle()
+        }
+        // Armed jobs run whether or not anyone unlocks: the engine starts now and re-arms from the
+        // Keychain (ADR-0042 implementation decision 1). Not in a unit-test host, which must not
+        // bind the user's socket or read their Keychain item.
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
+            unattended.launch(vaultPath: self.vaultPath)
+            // Bound at launch, not at unlock, so an AutoFill request can bring a locked app
+            // forward to be unlocked (ADR-0045).
+            credentialProvider.start()
         }
         #if DEBUG
             // The XCUITest suite's only channel into this process is the command line it was
             // started with (`UITestSupport`). Applied last, so nothing above can be surprised by
             // a gate that is not the real one.
             if let gate = UITestSupport.biometricGate() {
-                agent.gate = gate
+                presence.gate = gate
             }
             UITestSupport.applyAppearance()
         #endif
@@ -170,7 +249,7 @@ final class AppModel {
             let session = try VaultSession.create(
                 path: self.vaultPath,
                 masterPassword: password,
-                vaultName: vaultName.isEmpty ? "Personal" : vaultName,
+                vaultName: vaultName.isEmpty ? String(localized: "Personal") : vaultName,
                 kdfMKib: nil,
                 kdfT: nil)
             self.pendingRecoveryCode = session.takeRecoveryCode()
@@ -210,9 +289,7 @@ final class AppModel {
             case .keyInvalidated, .noKey:
                 hasPlatformSlot = false
                 errorMessage =
-                    "Touch ID no longer unlocks this vault — the fingerprint set on this Mac "
-                    + "changed. Unlock with your master password, then turn Touch ID back on in "
-                    + "Settings."
+                    String(localized: "Touch ID no longer unlocks this vault — the fingerprint set on this Mac changed. Unlock with your master password, then turn Touch ID back on in Settings.")
             default:
                 errorMessage = error.localizedDescription
             }
@@ -222,11 +299,36 @@ final class AppModel {
     }
 
     private func adopt(_ session: VaultSession) {
+        // Before anything can ask for a value: with no gate installed every release fails closed,
+        // and Rust refuses a second install, so this is the one gate the session will ever have.
+        do {
+            try session.setPresenceGate(
+                gate: AppPresenceGate(
+                    coordinator: presence, fallback: masterPasswordFallback, session: session))
+        } catch {
+            errorMessage = message(for: error)
+        }
         let store = VaultStore(session: session)
         self.store = store
+        // Every explicit vault operation counts as in-app activity, the same as a keystroke or a
+        // click in one of our own windows (docs/investigations/2026-09-27-remote-idle-relock.md).
+        store.notifyActivity = { [weak self] in self?.autoLock?.noteInAppActivity() }
+        store.releases.notifyActivity = store.notifyActivity
+        // Read-once, regardless of outcome: whether or not this turns out to be the same vault,
+        // there is nothing left pending after this adoption.
+        if let expectedFileId = reopeningAfterConflictFileId {
+            reopeningAfterConflictFileId = nil
+            if session.vaultFileId() == expectedFileId {
+                session.noteReopenedAfterConflict()
+            }
+        }
         hasPlatformSlot = session.hasPlatformSlot()
         phase = .unlocked
         autoLock?.start()
+        store.startSyncMonitor()
+        // Before either listener starts, so no `request_fill` reaches the broker under a flag other
+        // than the one the user set (ADR-0036 implementation decision 12).
+        agentFill.applyStoredSwitch()
         // Serving agents is the whole of M4, and it starts the moment there is a key to serve
         // with. A failure to bind is not fatal — the vault still works — so it is recorded on the
         // service and shown in Agent access rather than raised as a modal.
@@ -235,25 +337,62 @@ final class AppModel {
         // loop is now draining — a fill that arrived before that loop existed would sit unanswered
         // until it timed out.
         browserExtension.start(session: session)
+        // After the agent: the machine vault's environments are served on its socket too, and
+        // "While you were away" is read from the machine log. The shared vaults open now are the
+        // store's, for copies of their environments (ADR-0042 §13).
+        unattended.sharedSessions = { [weak self] in self?.store?.shared.vaults ?? [] }
+        unattended.vaultUnlocked(session: session)
+        // AutoFill (ADR-0045): serve the session, publish its logins, and republish whenever the
+        // store re-reads its items.
+        credentialProvider.vaultUnlocked(session)
+        store.onItemsChanged = { [weak self] in self?.credentialProvider.itemsChanged() }
     }
 
     // MARK: - Locking
 
+    /// "Lock and reopen from the file" — the conflict alert's non-destructive choice (step 4,
+    /// user decision 3). An ordinary lock followed by an ordinary unlock already does the "reopen
+    /// from the file" half, since unlocking always reads the file fresh; what this adds is
+    /// remembering to note the recovery in the audit log once the next `adopt(_:)` succeeds.
+    func lockAfterConflict() {
+        // Captured before `lock(reason:)` runs: it sets `store = nil`, and the file id has to
+        // name the vault that was just conflicting, not whatever (if anything) replaces it.
+        reopeningAfterConflictFileId = store?.session.vaultFileId()
+        lock(reason: .conflict)
+    }
+
     /// Drop the vault key and every derived view of it.
     ///
-    /// Order matters: the store goes first so no view can hold the last reference to the session
-    /// past this point, and only then does the phase change.
+    /// The vault is locked by an explicit `VaultSession.lock()` (ADR-0038 §4), not by letting go
+    /// of the last reference: a release waiting on its presence prompt holds a reference to the
+    /// session in Rust, so dropping ours alone would leave the vault open for as long as the
+    /// prompt stayed up.
     func lock(reason: LockReason) {
-        guard store != nil else { return }
+        guard let store else { return }
         autoLock?.stop()
-        // Order matters twice over. The agent stops *first*, which denies every approval still
-        // waiting and drops every lease, so there is no interval in which a locked vault is still
-        // being served. Then the store goes, releasing the last reference to the `VaultSession`,
-        // whose `Drop` empties the shared handle and zeroizes the key. Only then does the phase
-        // change, so no view can still be holding the session when it does.
+        store.stopSyncMonitor()
+        // Order matters, and every step is synchronous:
+        //
+        // 1. What is on screen goes: every shown value is hidden and its release closed, and an
+        //    answer still on its way is discarded when it arrives.
+        // 2. The vault locks: the key is zeroized, the agent's and the extension's lock hooks deny
+        //    every approval waiting and drop every lease, and a release waiting on its prompt is
+        //    recorded `VAULT_LOCKED` and can no longer hand anything out, whatever the prompt says.
+        // 3. The prompt that is up — a Touch ID sheet or the master-password panel — is torn down
+        //    (its `LAContext` invalidated). Its slot frees when it has actually gone.
+        // 4. The listeners stop, the store goes, and only then does the phase change, so no view
+        //    can still be holding the session when it does.
+        store.releases.hideAll(because: .locked)
+        store.session.lock()
+        presence.cancelInFlight()
         agent.stop()
         browserExtension.stop()
-        store = nil
+        // The recent agent-fill notices name items; they go with the key. Blocks stay (Rust's).
+        agentFill.vaultLocked()
+        // What was read from the machine vault goes with the key; armed jobs keep running.
+        unattended.vaultLocked()
+        credentialProvider.vaultLocked()
+        self.store = nil
         pendingRecoveryCode = nil
         showGenerator = false
         // A preview of someone's 1Password export must not outlive the vault it was going to be
@@ -267,12 +406,31 @@ final class AppModel {
     // MARK: - Touch ID enrolment
 
     /// Enrol this Mac's Secure Enclave as an unlock method (ADR-0004, ADR-0008 crossing 3).
+    ///
+    /// `PlatformKeyService.enroll` can itself raise a Touch ID sheet (creating a Secure-Enclave key
+    /// under a biometry-gated access control can prompt on macOS, per ADR-0011) — a second presence
+    /// surface the app-wide `PresenceCoordinator` did not know about until now. It cannot drive that
+    /// prompt the way it drives `gate.authenticate` (there is no `BiometricGate.authenticate` call
+    /// here to make, only the Secure Enclave's own one, keyed off `enrollmentContext` instead), but
+    /// it can still hold the one slot around it: a release or an approval that shows up while this
+    /// is running is refused, not raised beside a sheet the person is already looking at, and this
+    /// itself is refused, not queued, if something else holds the slot first.
     func enrollTouchID() {
         guard let store else { return }
+        guard let ticket = presence.begin(.enrolment) else {
+            errorMessage = String(localized: "Another confirmation is in progress.")
+            return
+        }
+        let context = LAContext()
+        enrollmentContext = context
+        defer {
+            enrollmentContext = nil
+            presence.end(ticket)
+        }
         perform {
             var key = store.session.exportVaultKeyForPlatformWrapping()
             defer { key.resetBytes(in: 0..<key.count) }
-            let enrolled = try self.platformKey.enroll(vaultKey: key)
+            let enrolled = try self.platformKey.enroll(vaultKey: key, context: context)
             try store.session.installPlatformSlot(
                 slotId: enrolled.slotId, label: "Touch ID on this Mac", wrappedKey: enrolled.wrappedKey)
             self.hasPlatformSlot = true
@@ -300,8 +458,8 @@ final class AppModel {
         editRequest += 1
     }
 
-    func copyPrimaryField() {
-        store?.copySubtitle()
+    func copyUsername() {
+        store?.copyUsername()
     }
 
     /// Open the standalone generator sheet.
@@ -320,6 +478,19 @@ final class AppModel {
         guard let path = ImportModel.chooseSourceFile() else { return }
         importSource = path
         showImport = true
+    }
+
+    /// The menu bar's agent-fill notice entry: bring the app forward on Agent access, where the
+    /// notices and the blocks list are (ui-spec.md §10.4).
+    func showAgentFillNotices() {
+        store?.selection = .agentEnvironments
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// The menu bar's unattended entry: bring the app forward on Unattended jobs.
+    func showUnattended() {
+        store?.selection = .agentUnattended
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Called by the import sheet once a commit has been written to disk.
@@ -344,15 +515,6 @@ final class AppModel {
     }
 
     private func message(for error: Error) -> String {
-        if let ffi = error as? FfiError {
-            switch ffi {
-            case .WrongCredential:
-                return "That did not unlock the vault."
-            case .NotFound(let message), .AlreadyExists(let message), .NoSuchSlot(let message),
-                .NotPresent(let message), .Invalid(let message), .Io(let message):
-                return message
-            }
-        }
-        return error.localizedDescription
+        describeAnyError(error)
     }
 }

@@ -6,6 +6,7 @@
 - **Refines:** [ADR-0002](0002-no-secret-values-over-mcp.md),
   [ADR-0005](0005-secret-material-in-m1.md), [ADR-0008](0008-ffi-secret-crossings.md),
   [import.md](../import.md), [threat-model.md](../threat-model.md) M-21, W-9
+- **Refined by:** [ADR-0039](0039-transactional-vault-writes-and-the-lock-file.md)
 
 ## Context
 
@@ -83,6 +84,12 @@ signature and a column map.
 `Vault::save()`, which is already atomic and `0600`. Parsing is complete before commit begins, so
 a parse failure cannot leave a half-imported vault, and `--dry-run` is simply the path that never
 calls `save()`.
+
+Note (2026-09-25): since [ADR-0039](0039-transactional-vault-writes-and-the-lock-file.md) step 6,
+`commit` takes a `&mut kagisecure_core::vault::Tx<'_>`, not a `&mut Vault`, and dropped the
+`VaultTarget` generic that let it accept either; the caller runs it as the closure of a
+`Vault::transact`, which is what writes atomically and `0600`. `--dry-run` is the path that never
+calls `Vault::transact` (and so never reaches `commit`) at all.
 
 ### 3. "The report carries no values" is a type-level property, not a review rule
 

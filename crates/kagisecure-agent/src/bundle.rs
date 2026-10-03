@@ -176,6 +176,14 @@ mod tests {
                 .to_string_lossy()
                 .contains("Contents/MacOS")
         );
+        // The collision ADR-0026 warns about is specific to macOS: a case-insensitive-by-default
+        // filesystem plus an app bundle's `Contents/MacOS/Kagisecure` executable means the CLI's
+        // bare name `kagisecure` collides with it. Off macOS the note is already stale rather
+        // than merely untested — Windows has no `Contents/MacOS` app-bundle executable to collide
+        // with, and the CLI carries a `.exe` suffix (`kagisecure.exe`), which no longer
+        // case-insensitively equals `Kagisecure` even by name alone. So this tripwire only makes
+        // sense where the collision it warns about can actually happen.
+        #[cfg(target_os = "macos")]
         assert!(
             CLI.eq_ignore_ascii_case("Kagisecure"),
             "if this ever stops being true the collision is gone and the note above is stale"

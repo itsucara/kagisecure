@@ -19,13 +19,37 @@ mod common;
 use kagisecure_core::crypto::kdf::KdfParams;
 use kagisecure_core::model::{Category, FieldKind};
 use kagisecure_core::vault::{CreateOptions, Vault};
-use kagisecure_import::commit::commit;
+use kagisecure_import::commit::{ImportOutcome, commit as commit_tx};
 use kagisecure_import::dedupe::DuplicatePolicy;
-use kagisecure_import::error::ImportError;
+use kagisecure_import::error::{ImportError, Result as ImportResult};
 use kagisecure_import::ir::{
     DropKind, ForeignId, ImportPlan, ImportedField, ImportedItem, ImportedRevision, SourceKind,
     TargetVault,
 };
+
+/// Test-only shim: [`kagisecure_import::commit::commit`] now takes `&mut Tx<'_>` (`Vault`'s
+/// mutators live only on `Tx`, ADR-0039 step 6), so the one bare-`Vault` caller left in this file
+/// opens its own transaction rather than changing shape.
+fn commit(
+    vault: &mut Vault,
+    plan: ImportPlan,
+    policy: DuplicatePolicy,
+) -> ImportResult<ImportOutcome> {
+    let plan = Some(plan);
+    let mut failure: Option<ImportError> = None;
+    let result = vault.transact(|tx| {
+        commit_tx(tx, plan.as_ref().expect("the plan"), policy).map_err(|e| {
+            let placeholder = kagisecure_core::Error::Io(std::io::Error::other(e.to_string()));
+            failure = Some(e);
+            placeholder
+        })
+    });
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(_) if failure.is_some() => Err(failure.expect("checked by the guard above")),
+        Err(core_err) => Err(core_err.into()),
+    }
+}
 
 /// Seeded as the current password. If these bytes ever reach a report, the feature has failed at
 /// the one thing it has to get right.
@@ -35,24 +59,23 @@ const MARKER: &str = "K4G1-1MP0RT-C4N4RY-7b19d4e0a53f8c26";
 /// independent canary: the report is allowed to say "3 retired values", and nothing else.
 const HISTORY_MARKER: &str = "K4G1-H1ST0RY-C4N4RY-2f0c81ab64d97e35";
 
-/// Seeded as a note, a tag and a field label, to catch a leak through a path that is not the
-/// obvious one.
+/// Seeded as a note. A third canary, and since ADR-0038 (user decision 3) a secret one: a note is
+/// held as `SecretText`, in [`ImportedItem`] and in the stored item alike.
 const NOTE_MARKER: &str = "K4G1-N0TE-C4N4RY-90e7c1fa38b52d64";
 
 const PASSWORD: &[u8] = b"correct horse battery staple";
 
 /// The markers that are secret material. These must not appear in *anything* — a report, an
 /// error, a `Debug` rendering, the audit log.
-const SECRET_MARKERS: &[&str] = &[MARKER, HISTORY_MARKER];
-
-/// Every marker, including the one seeded into a note.
 ///
-/// A note is not secret material in this product's model: [`kagisecure_core::model::Item`] holds
-/// it as a plain `Option<String>` with a derived `Debug`, exactly as this crate's
-/// [`ImportedItem`] does, so a `{:?}` of either shows it. What a note must never do is reach a
-/// *report*, which is the thing that gets printed, written to a file and handed across the FFI
-/// boundary — so the note marker is checked there and not in `Debug`.
-const MARKERS: &[&str] = &[MARKER, HISTORY_MARKER, NOTE_MARKER];
+/// The note marker is one of them. Before ADR-0038 a note was a plain `Option<String>` with a
+/// derived `Debug`, and this list left it out; it is `SecretText` now, redacted like every other
+/// secret, so a `{:?}` that showed it would be a regression this list is here to catch.
+const SECRET_MARKERS: &[&str] = &[MARKER, HISTORY_MARKER, NOTE_MARKER];
+
+/// Every marker. The same set as [`SECRET_MARKERS`] now that notes are secret; kept as its own
+/// name so the call sites still say which property they check.
+const MARKERS: &[&str] = SECRET_MARKERS;
 
 /// A plan built by hand, seeded with every marker in every place a value can hide.
 fn seeded_plan() -> ImportPlan {
@@ -86,7 +109,9 @@ fn seeded_plan() -> ImportPlan {
         ImportedRevision::secret(HISTORY_MARKER.to_owned(), Some(1_500_000_001))
             .labelled("password"),
     );
-    item.notes = Some(format!("recovery phrase: {NOTE_MARKER}"));
+    item.notes = Some(kagisecure_core::model::SecretText::new(format!(
+        "recovery phrase: {NOTE_MARKER}"
+    )));
     item.report.note_dropped(DropKind::Attachment);
     item.report.note_dropped(DropKind::PasswordHistory);
 
@@ -198,9 +223,14 @@ fn no_marker_reaches_a_report_taken_after_a_real_commit() {
         item.history[0].value.as_secret().unwrap().expose(),
         HISTORY_MARKER.as_bytes()
     );
-    // Notes are not a value type — they are metadata the user wrote — but they are not in any
-    // report either, and the summary must not carry them.
-    assert!(item.notes.as_deref().unwrap().contains(NOTE_MARKER));
+    // The note landed, as secret text: in no report, no summary, and no `Debug` above.
+    assert!(
+        item.notes
+            .as_ref()
+            .map(kagisecure_core::model::SecretText::expose)
+            .unwrap()
+            .contains(NOTE_MARKER)
+    );
 }
 
 #[test]

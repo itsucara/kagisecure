@@ -1,6 +1,8 @@
 import Foundation
 import Security
 
+import KagisecureFFI
+
 /// What a code-signature check concluded about a connecting process.
 struct PeerSignature: Equatable, Sendable {
     /// Whether the peer satisfied the requirement below.
@@ -58,6 +60,38 @@ struct FillSignature: Equatable, Sendable {
         case .nativeMessagingHost:
             return host.verified && (browser?.verified ?? false)
         }
+    }
+}
+
+/// What was established about an agent fill (ADR-0036 §5): two identity stories on one sheet.
+///
+/// The **agent's**: the process on the MCP socket, which is always our own sidecar, and the
+/// program the kernel says started it — the one "this agent" means. The **browser's**: exactly
+/// what a fill the human started establishes (`FillSignature`), because the value lands in the
+/// same browser through the same helper either way.
+struct AgentFillSignature: Equatable, Sendable {
+    /// Our sidecar, on the MCP socket.
+    let sidecar: PeerSignature
+    /// The sidecar's parent, resolved from the kernel.
+    let startedBy: PeerSignature
+    /// The native messaging host and the browser above it.
+    let browser: FillSignature
+
+    /// Whether every verdict taken checks out. The weakest half decides: a record that said
+    /// "verified" because the browser was signed, while the program that asked was not, would
+    /// flatter the half that matters most.
+    var verified: Bool { sidecar.verified && startedBy.verified && browser.verified }
+
+    /// The one line that travels into Rust with the decision, for the audit entry.
+    var evidence: String {
+        [
+            "started by: \(startedBy.evidence)",
+            "sidecar: \(sidecar.evidence)",
+            "helper: \(browser.host.evidence)",
+            browser.browser.map { "browser: \($0.evidence)" },
+        ]
+        .compactMap { $0 }
+        .joined(separator: "; ")
     }
 }
 
@@ -304,6 +338,15 @@ struct PeerCodeSignature: Sendable {
             what: "this app's Safari extension")
     }
 
+    /// Check the process behind `pid` against the **AutoFill credential provider** requirement
+    /// (ADR-0045): our own `.appex`, signed by our own team, never ad-hoc.
+    func checkCredentialProvider(pid: UInt32?) -> PeerSignature {
+        checkOurs(
+            pid: pid,
+            isKnown: { $0 == AutoFillChannel.providerBundleIdentifier },
+            what: "this app's AutoFill credential provider")
+    }
+
     /// Both halves of a browser-extension fill.
     ///
     /// On the Chromium front end those are two different processes — the native messaging host we
@@ -322,6 +365,50 @@ struct PeerCodeSignature: Sendable {
             peer: .nativeMessagingHost,
             host: checkHost(pid: hostPid),
             browser: browserPid.map { checkBrowser(pid: $0) })
+    }
+
+    /// Check the process that **started** an agent's sidecar — the program an agent fill is
+    /// attributed to (ADR-0036 §5).
+    ///
+    /// Unlike every other check here there is no list to compare against: an agent can be any
+    /// program at all — an editor, a terminal client, an interpreter running a script — so there is
+    /// no "one of ours" and no known vendor. What this reports is only what the signature itself
+    /// establishes: *verified* means a valid signature carrying a developer team, and the evidence
+    /// names that identifier and team, so the person reading the sheet can judge whether it is the
+    /// program they meant. An ad-hoc or unsigned binary — an interpreter from a package manager, a
+    /// build from source — is attributable to nobody and says so.
+    func checkStartedBy(pid: UInt32?) -> PeerSignature {
+        guard let pid else {
+            return PeerSignature(
+                verified: false, evidence: "the kernel could not say which program started it")
+        }
+        let info: SigningInfo
+        switch inspect(pid: pid) {
+        case .signed(let value): info = value
+        case .refused(let refusal): return refusal
+        }
+        let name = info.identifier ?? "unknown identifier"
+        if info.adhoc {
+            return PeerSignature(
+                verified: false,
+                evidence: "\(name), ad-hoc signed — code signature not attributable to a developer")
+        }
+        guard let teamID = info.teamID, !teamID.isEmpty else {
+            return PeerSignature(
+                verified: false,
+                evidence: "\(name) is signed without a team — not attributable to a developer")
+        }
+        return PeerSignature(verified: true, evidence: "\(name) (team \(teamID))")
+    }
+
+    /// Every verdict an agent fill's sheet shows: the agent's side and the browser's.
+    func checkAgentFill(_ facts: AgentFillFactsView) -> AgentFillSignature {
+        AgentFillSignature(
+            sidecar: check(pid: facts.sidecarPid),
+            startedBy: checkStartedBy(pid: facts.parentPid),
+            browser: checkFill(
+                hostPid: facts.hostPid, browserPid: facts.browserPid,
+                isAppExtension: facts.browserIsAppExtension))
     }
 
     /// This app's own team identifier, or `nil` when it has none (an ad-hoc build).

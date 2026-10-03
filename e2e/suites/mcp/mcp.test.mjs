@@ -34,13 +34,22 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-import { canary, cli, cliOk, runDir, scratch, startDaemon, Sidecar, waitFor } from "../../lib/harness.mjs";
+import {
+  canary,
+  cli,
+  cliOk,
+  scratch,
+  socketPath,
+  startDaemon,
+  Sidecar,
+  waitFor,
+  CHEAP_KDF,
+} from "../../lib/harness.mjs";
 import { recordText } from "../../lib/artifacts.mjs";
 
 const PASSWORD = "correct horse battery staple";
-const CHEAP_KDF = ["--kdf-m-kib", "8", "--kdf-t", "1"];
 
-/** The nine tools, and no tenth. `docs/mcp-server.md` §2 is the list this is held to. */
+/** The ten tools, and no eleventh. `docs/mcp-server.md` §2 is the list this is held to. */
 const EXPECTED_TOOLS = [
   "add_variables",
   "create_environment",
@@ -48,6 +57,7 @@ const EXPECTED_TOOLS = [
   "list_environments",
   "list_items",
   "list_vaults",
+  "request_fill",
   "revoke_env_file",
   "run_with_env",
   "write_env_file",
@@ -71,7 +81,7 @@ async function fixture(t, { daemonArgs = ["--auto-approve"], label = "mcp" } = {
   const name = `${label}-${counter}`;
   const dir = scratch(name);
   const vault = path.join(dir, "test.kagivault");
-  const socket = path.join(runDir(), `${name}.sock`);
+  const socket = socketPath(name);
   const project = path.join(dir, "project");
   fs.mkdirSync(project, { recursive: true });
 
@@ -172,7 +182,7 @@ async function fixture(t, { daemonArgs = ["--auto-approve"], label = "mcp" } = {
 // The tool surface
 // -------------------------------------------------------------------------------------------
 
-test("the sidecar exposes exactly nine tools, and none of them can take a value", async (t) => {
+test("the sidecar exposes exactly ten tools, and none of them can take a value", async (t) => {
   const fx = await fixture(t, { label: "tools" });
 
   const tools = await fx.sidecar.tools();
@@ -180,17 +190,36 @@ test("the sidecar exposes exactly nine tools, and none of them can take a value"
   assert.deepEqual(
     names,
     EXPECTED_TOOLS,
-    "the tool surface is a fixed list; a tenth tool is a design change, not a patch",
+    "the tool surface is a fixed list; an eleventh tool is a design change, not a patch",
   );
 
   // The invariant ADR-0002 exists for: there is no property anywhere in any schema that a secret
-  // value could be passed in or asked for by. `add_variables` is the one people reach for.
+  // value could be passed in or asked for by. `add_variables` is the one people reach for. The
+  // walk is over property *names*, at every depth: `request_fill` names the field it fills as an
+  // enum member ("password"), which is a choice of field, not a place for a value.
   const schemas = JSON.stringify(tools.map((tool) => tool.inputSchema));
-  for (const forbidden of ["\"value\"", "\"secret\"", "\"password\"", "\"reveal\""]) {
-    assert.ok(
-      !schemas.includes(forbidden),
-      `no tool schema may offer a ${forbidden} property; found one in the tool list`,
-    );
+  const properties = [];
+  const walk = (node) => {
+    if (Array.isArray(node)) {
+      node.forEach(walk);
+    } else if (node && typeof node === "object") {
+      for (const [key, child] of Object.entries(node)) {
+        if (key === "properties" && child && typeof child === "object") {
+          properties.push(...Object.keys(child));
+        }
+        walk(child);
+      }
+    }
+  };
+  tools.forEach((tool) => walk(tool.inputSchema));
+  assert.ok(properties.length > 10, `the walk found only ${properties.length} properties`);
+  for (const property of properties) {
+    for (const forbidden of ["value", "secret", "password", "reveal"]) {
+      assert.ok(
+        !property.toLowerCase().includes(forbidden),
+        `no tool schema may offer a property named like ${forbidden}; found ${property}`,
+      );
+    }
   }
 
   assert.equal(fx.sidecar.serverInfo.name, "kagisecure-mcp");
@@ -204,7 +233,7 @@ test("the sidecar exposes exactly nine tools, and none of them can take a value"
     t.name,
     "tools.txt",
     tools.map((tool) => `${tool.name}\n  ${tool.description}`).join("\n\n"),
-    "the nine tools as the model sees them",
+    "the ten tools as the model sees them",
   );
   fx.assertNoLeak(schemas);
 });
@@ -249,7 +278,7 @@ test("list_vaults, list_items and list_environments respect the default-deny rul
   fx.assertNoLeak(vaults.text, items.text, environments.text);
 });
 
-test("an item the user has not shared is NOT_AGENT_VISIBLE, not NOT_FOUND", async (t) => {
+test("an item the user has not shared is indistinguishable from one that does not exist", async (t) => {
   const fx = await fixture(t, { label: "not-visible" });
 
   // The agent has to name the hidden item somehow. It cannot get the id from `list_items`, which
@@ -262,18 +291,24 @@ test("an item the user has not shared is NOT_AGENT_VISIBLE, not NOT_FOUND", asyn
 
   const described = await fx.sidecar.call("describe_item", { item_id: hiddenId });
   assert.equal(described.ok, false, `a hidden item must not be described: ${described.text}`);
-  assert.equal(
-    described.structured.code,
-    "NOT_AGENT_VISIBLE",
-    "the two are deliberately distinguishable: the user's configuration is not a secret, and a " +
-      "confusing NOT_FOUND causes bad agent behaviour (docs/mcp-server.md §7)",
-  );
 
   const missing = await fx.sidecar.call("describe_item", {
     item_id: "00000000-0000-4000-8000-000000000000",
   });
   assert.equal(missing.ok, false);
+
+  // One answer for both, code and message. A distinguishable pair would let a caller walk ids
+  // and learn which ones name something real in a vault it is not allowed to read — the
+  // enumeration `agent_visible` exists to prevent (threat-model M-8, docs/mcp-server.md §7).
+  // An earlier draft deliberately separated them; that was an oracle, and the code
+  // `NOT_AGENT_VISIBLE` no longer exists.
+  assert.equal(described.structured.code, "NOT_FOUND");
   assert.equal(missing.structured.code, "NOT_FOUND");
+  assert.equal(
+    described.structured.message,
+    missing.structured.message,
+    "the message must not distinguish a real item from an imaginary one either",
+  );
 
   fx.assertNoLeak(described.text, missing.text);
 });
@@ -344,7 +379,24 @@ test("create_environment then add_variables leaves the value for the human to ty
   );
 
   // A variable bound to an existing field is not pending: the value already exists in the vault
-  // and the agent still never sees it.
+  // and the agent still never sees it. `bind_to`'s target must itself be marked visible to
+  // agents (docs/mcp-server.md §2.6) — a stricter, per-field grant the item-level
+  // `--allow --item` the fixture already ran does not imply, so the human shares this one field
+  // explicitly first, the same way `VaultSession.setFieldAgentVisible` does in the app.
+  cliOk(
+    [
+      "env",
+      "agent-access",
+      "--password-stdin",
+      "--allow",
+      "--item",
+      "Acme staging",
+      "--field",
+      "token",
+    ],
+    { vault: fx.vault, stdin: [PASSWORD] },
+  );
+
   const items = await fx.sidecar.call("list_items");
   const item = items.structured.items.find((i) => i.title === "Acme staging");
   const described = await fx.sidecar.call("describe_item", { item_id: item.id });
@@ -792,7 +844,7 @@ test("lock kills every lease and every later call is VAULT_LOCKED", async (t) =>
 });
 
 test("with no daemon at all the answer is APP_NOT_RUNNING, immediately", async (t) => {
-  const socket = path.join(runDir(), "nobody-is-listening.sock");
+  const socket = socketPath("nobody-is-listening");
   const sidecar = new Sidecar(socket);
   t.after(() => sidecar.stop());
 
@@ -906,6 +958,75 @@ test("a refused caller is audited too, and the daemon says the signature is unve
 });
 
 // -------------------------------------------------------------------------------------------
+// request_fill, where there is no browser
+// -------------------------------------------------------------------------------------------
+
+test("request_fill is FILL_UNAVAILABLE on the headless daemon", async (t) => {
+  const fx = await fixture(t, { label: "fill" });
+  const items = await fx.sidecar.call("list_items");
+  const visible = items.structured.items.find((i) => i.title === "Acme staging");
+  assert.ok(visible, items.text);
+  // The hidden item's id, read by the CLI — the agent itself cannot see it, which is the point.
+  const all = JSON.parse(
+    cliOk(["item", "list", "--password-stdin", "--json"], { vault: fx.vault, stdin: [PASSWORD] }).stdout,
+  );
+  const hidden = (Array.isArray(all) ? all : all.items).find((i) => i.title === "Private thing");
+  assert.ok(hidden, "the fixture's hidden item");
+
+  // The daemon has no browser listener and no agent-fill broker, so the tool is refused at its
+  // first gate — before the item is looked up (ADR-0036 §11.1). An agent-visible item, a hidden
+  // one and an id that exists nowhere therefore get the byte-identical answer, and so does a
+  // request for a one-time code.
+  const asks = [
+    { item_id: visible.id, origin: "https://api.acme.example" },
+    { item_id: hidden.id, origin: "https://api.acme.example" },
+    { item_id: "00000000-0000-4000-8000-000000000000", origin: "https://api.acme.example" },
+    { item_id: visible.id, origin: "https://api.acme.example", fields: ["one_time_code"] },
+  ];
+  const answers = [];
+  for (const args of asks) {
+    const answer = await fx.sidecar.call("request_fill", args);
+    assert.equal(answer.ok, false, answer.text);
+    assert.equal(answer.structured.code, "FILL_UNAVAILABLE", answer.text);
+    answers.push(answer);
+  }
+  for (const answer of answers.slice(1)) {
+    assert.equal(
+      answer.structured.message,
+      answers[0].structured.message,
+      "the answer cannot depend on the item it names",
+    );
+  }
+  assert.match(
+    answers[0].structured.message,
+    /do not retry/i,
+    "the message tells the model what to do next",
+  );
+
+  // Nothing was asked of anybody, and nothing about the request was looked at, so nothing is
+  // recorded (implementation decision 37: the switch off leaves no entry).
+  const entries = fx.audit();
+  assert.ok(
+    !entries.some((e) => e.tool === "request_fill" || e.tool === "totp_code"),
+    `a refusal at the first gate writes no audit entry: ${JSON.stringify(entries)}`,
+  );
+
+  // Locked, the answer is the same: gate 1 comes before the lock check.
+  cliOk(["lock"], { env: { KAGISECURE_SOCKET: fx.socket } });
+  const locked = await fx.sidecar.call("request_fill", asks[0]);
+  assert.equal(locked.structured.code, "FILL_UNAVAILABLE", locked.text);
+  assert.equal(locked.structured.message, answers[0].structured.message);
+
+  recordText(
+    t.name,
+    "fill-unavailable.txt",
+    answers.map((a, i) => `${JSON.stringify(asks[i])}\n→ ${a.text}`).join("\n\n"),
+    "four requests, one answer",
+  );
+  fx.assertNoLeak(...answers, locked);
+});
+
+// -------------------------------------------------------------------------------------------
 // The canary, on its own
 // -------------------------------------------------------------------------------------------
 
@@ -945,8 +1066,16 @@ test("the canary never appears in any tool result or on the sidecar's streams", 
   everything.push(
     await fx.sidecar.call("revoke_env_file", { lease_id: written.structured.lease_id }),
   );
+  // The headless daemon has no browser to ask, so this is FILL_UNAVAILABLE; it is here so the
+  // sweep names every tool, including the one whose purpose is to put a value somewhere.
+  const fill = await fx.sidecar.call("request_fill", {
+    item_id: item.id,
+    origin: "https://api.acme.example",
+  });
+  everything.push(fill);
+  assert.equal(fill.structured.code, "FILL_UNAVAILABLE", fill.text);
 
-  assert.equal(everything.length, 9, "one call per tool");
+  assert.equal(everything.length, 10, "one call per tool");
   for (const [index, result] of everything.entries()) {
     assert.ok(
       !JSON.stringify(result).includes(fx.marker),

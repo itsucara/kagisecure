@@ -460,7 +460,13 @@ fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
 
 
 // Public interface members begin here.
-
+// Magic number for the Rust proxy to call using the same mechanism as every other method,
+// to free the callback once it's dropped by Rust.
+private let IDX_CALLBACK_FREE: Int32 = 0
+// Callback return codes
+private let UNIFFI_CALLBACK_SUCCESS: Int32 = 0
+private let UNIFFI_CALLBACK_ERROR: Int32 = 1
+private let UNIFFI_CALLBACK_UNEXPECTED_ERROR: Int32 = 2
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -474,6 +480,22 @@ fileprivate struct FfiConverterUInt8: FfiConverterPrimitive {
     }
 
     public static func write(_ value: UInt8, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterUInt16: FfiConverterPrimitive {
+    typealias FfiType = UInt16
+    typealias SwiftType = UInt16
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt16 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         writeInt(&buf, lower(value))
     }
 }
@@ -618,6 +640,283 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 
 
 /**
+ * One concealed field's value, released by one presence check ([`VaultSession::release_field`]).
+ *
+ * Holds no value: [`FieldRelease::value`] reads the field from the vault each time, and fails
+ * once the vault is locked, after five minutes, after [`FieldRelease::close`] — and, for a
+ * [`ReleasePurpose::Copy`] or [`ReleasePurpose::QuickAccessCopy`] release, after its one use.
+ */
+public protocol FieldReleaseProtocol: AnyObject, Sendable {
+    
+    /**
+     * End this release now — on deselect, on hide. Idempotent.
+     */
+    func close() 
+    
+    /**
+     * The value again, for the clipboard — the copy of a shown value that needs no new touch
+     * (user decision 1). Recorded as `copy_field` with `SHOWN_EARLIER`.
+     *
+     * # Errors
+     *
+     * As [`FieldRelease::value`], and [`FfiError::Invalid`] for a release that was never shown
+     * (a copy's own release: a second copy is a second touch).
+     */
+    func copyShownValue() throws  -> String
+    
+    /**
+     * The field it is bound to.
+     */
+    func fieldId()  -> String
+    
+    /**
+     * Whether a use would still be allowed (the vault may still refuse it if the field has gone).
+     */
+    func isLive()  -> Bool
+    
+    /**
+     * The item it is bound to.
+     */
+    func itemId()  -> String
+    
+    /**
+     * What this release was granted for.
+     */
+    func purpose()  -> ReleasePurpose
+    
+    /**
+     * Seconds left before the five-minute cap ends this release.
+     */
+    func secondsRemaining()  -> UInt32
+    
+    /**
+     * The field's value, as it is in the vault now.
+     *
+     * # Errors
+     *
+     * [`FfiError::ReleaseEnded`], [`FfiError::VaultLocked`], [`FfiError::NotPresent`] if the item
+     * or field has gone, [`FfiError::Invalid`] if the value is not text.
+     */
+    func value() throws  -> String
+    
+}
+/**
+ * One concealed field's value, released by one presence check ([`VaultSession::release_field`]).
+ *
+ * Holds no value: [`FieldRelease::value`] reads the field from the vault each time, and fails
+ * once the vault is locked, after five minutes, after [`FieldRelease::close`] — and, for a
+ * [`ReleasePurpose::Copy`] or [`ReleasePurpose::QuickAccessCopy`] release, after its one use.
+ */
+open class FieldRelease: FieldReleaseProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_kagisecure_ffi_fn_clone_fieldrelease(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_kagisecure_ffi_fn_free_fieldrelease(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * End this release now — on deselect, on hide. Idempotent.
+     */
+open func close()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_fieldrelease_close(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The value again, for the clipboard — the copy of a shown value that needs no new touch
+     * (user decision 1). Recorded as `copy_field` with `SHOWN_EARLIER`.
+     *
+     * # Errors
+     *
+     * As [`FieldRelease::value`], and [`FfiError::Invalid`] for a release that was never shown
+     * (a copy's own release: a second copy is a second touch).
+     */
+open func copyShownValue()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_fieldrelease_copy_shown_value(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The field it is bound to.
+     */
+open func fieldId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_fieldrelease_field_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Whether a use would still be allowed (the vault may still refuse it if the field has gone).
+     */
+open func isLive() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_fieldrelease_is_live(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The item it is bound to.
+     */
+open func itemId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_fieldrelease_item_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * What this release was granted for.
+     */
+open func purpose() -> ReleasePurpose  {
+    return try!  FfiConverterTypeReleasePurpose_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_fieldrelease_purpose(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Seconds left before the five-minute cap ends this release.
+     */
+open func secondsRemaining() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_fieldrelease_seconds_remaining(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The field's value, as it is in the vault now.
+     *
+     * # Errors
+     *
+     * [`FfiError::ReleaseEnded`], [`FfiError::VaultLocked`], [`FfiError::NotPresent`] if the item
+     * or field has gone, [`FfiError::Invalid`] if the value is not text.
+     */
+open func value()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_fieldrelease_value(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeFieldRelease: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = FieldRelease
+
+    public static func lift(_ handle: UInt64) throws -> FieldRelease {
+        return FieldRelease(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: FieldRelease) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FieldRelease {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: FieldRelease, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFieldRelease_lift(_ handle: UInt64) throws -> FieldRelease {
+    return try FfiConverterTypeFieldRelease.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFieldRelease_lower(_ value: FieldRelease) -> UInt64 {
+    return FfiConverterTypeFieldRelease.lower(value)
+}
+
+
+
+
+
+
+/**
  * A parsed import, held on the Rust side.
  *
  * Swift holds a reference to this and can ask it for a [`ImportReportView`]. It cannot ask it
@@ -627,7 +926,8 @@ fileprivate struct FfiConverterData: FfiConverterRustBuffer {
 public protocol ImportPlanHandleProtocol: AnyObject, Sendable {
     
     /**
-     * Whether this plan has been committed and can no longer be used.
+     * Whether this plan has been committed and can no longer be used. `false` while a commit is
+     * still running: it may yet fail and give the plan back.
      */
     func isSpent()  -> Bool
     
@@ -711,7 +1011,8 @@ open class ImportPlanHandle: ImportPlanHandleProtocol, @unchecked Sendable {
 
     
     /**
-     * Whether this plan has been committed and can no longer be used.
+     * Whether this plan has been committed and can no longer be used. `false` while a commit is
+     * still running: it may yet fail and give the plan back.
      */
 open func isSpent() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
@@ -805,6 +1106,1911 @@ public func FfiConverterTypeImportPlanHandle_lower(_ value: ImportPlanHandle) ->
 
 
 /**
+ * One item's notes, released by one presence check ([`VaultSession::release_notes`]). Ends as
+ * [`FieldRelease`] does.
+ */
+public protocol NotesReleaseProtocol: AnyObject, Sendable {
+    
+    /**
+     * End this release now. Idempotent.
+     */
+    func close() 
+    
+    /**
+     * The notes again, for the clipboard, from a release granted to show them — no new touch.
+     * Recorded as `copy_field` (label `notes`) with `SHOWN_EARLIER`.
+     *
+     * # Errors
+     *
+     * As [`NotesRelease::text`], and [`FfiError::Invalid`] for a release that was never shown.
+     */
+    func copyShownText() throws  -> String
+    
+    /**
+     * Whether a use would still be allowed.
+     */
+    func isLive()  -> Bool
+    
+    /**
+     * The item it is bound to.
+     */
+    func itemId()  -> String
+    
+    /**
+     * What this release was granted for.
+     */
+    func purpose()  -> ReleasePurpose
+    
+    /**
+     * Seconds left before the five-minute cap ends this release.
+     */
+    func secondsRemaining()  -> UInt32
+    
+    /**
+     * The notes, as they are in the vault now.
+     *
+     * # Errors
+     *
+     * [`FfiError::ReleaseEnded`], [`FfiError::VaultLocked`], [`FfiError::NotPresent`] if the item
+     * or its notes have gone.
+     */
+    func text() throws  -> String
+    
+}
+/**
+ * One item's notes, released by one presence check ([`VaultSession::release_notes`]). Ends as
+ * [`FieldRelease`] does.
+ */
+open class NotesRelease: NotesReleaseProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_kagisecure_ffi_fn_clone_notesrelease(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_kagisecure_ffi_fn_free_notesrelease(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * End this release now. Idempotent.
+     */
+open func close()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_notesrelease_close(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The notes again, for the clipboard, from a release granted to show them — no new touch.
+     * Recorded as `copy_field` (label `notes`) with `SHOWN_EARLIER`.
+     *
+     * # Errors
+     *
+     * As [`NotesRelease::text`], and [`FfiError::Invalid`] for a release that was never shown.
+     */
+open func copyShownText()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_notesrelease_copy_shown_text(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Whether a use would still be allowed.
+     */
+open func isLive() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_notesrelease_is_live(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The item it is bound to.
+     */
+open func itemId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_notesrelease_item_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * What this release was granted for.
+     */
+open func purpose() -> ReleasePurpose  {
+    return try!  FfiConverterTypeReleasePurpose_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_notesrelease_purpose(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Seconds left before the five-minute cap ends this release.
+     */
+open func secondsRemaining() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_notesrelease_seconds_remaining(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The notes, as they are in the vault now.
+     *
+     * # Errors
+     *
+     * [`FfiError::ReleaseEnded`], [`FfiError::VaultLocked`], [`FfiError::NotPresent`] if the item
+     * or its notes have gone.
+     */
+open func text()throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_notesrelease_text(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNotesRelease: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = NotesRelease
+
+    public static func lift(_ handle: UInt64) throws -> NotesRelease {
+        return NotesRelease(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: NotesRelease) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NotesRelease {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: NotesRelease, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNotesRelease_lift(_ handle: UInt64) throws -> NotesRelease {
+    return try FfiConverterTypeNotesRelease.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNotesRelease_lower(_ value: NotesRelease) -> UInt64 {
+    return FfiConverterTypeNotesRelease.lower(value)
+}
+
+
+
+
+
+
+/**
+ * The app's presence check, implemented in Swift and awaited from Rust.
+ *
+ * `reason` is the whole sentence to show, built and sanitised by this crate from vault facts; the
+ * implementation shows it as it is (for `LocalAuthentication`, as the `localizedReason`, which
+ * the system renders after "“Kagisecure” is trying to").
+ *
+ * The contract an implementation keeps (ADR-0038 §6, the same rules ADR-0037 states for fills):
+ * a fresh check every call, with no reuse window; only a real, completed check answers
+ * [`PresenceOutcome::Confirmed`]; a check that is cancelled, times out or is invalidated by a
+ * lock never does; and a second call while one prompt is up answers [`PresenceOutcome::Busy`]
+ * rather than waiting its turn.
+ *
+ * `#[async_trait]` because `Arc<dyn PresenceGate>` needs the trait to be dyn-compatible, which a
+ * native `async fn` in a trait is not on stable Rust (ADR-0038, "Spike result").
+ */
+public protocol PresenceGate: AnyObject, Sendable {
+    
+    /**
+     * Ask a person to prove they are present and meant `reason`.
+     */
+    func confirm(reason: String) async  -> PresenceOutcome
+    
+}
+/**
+ * The app's presence check, implemented in Swift and awaited from Rust.
+ *
+ * `reason` is the whole sentence to show, built and sanitised by this crate from vault facts; the
+ * implementation shows it as it is (for `LocalAuthentication`, as the `localizedReason`, which
+ * the system renders after "“Kagisecure” is trying to").
+ *
+ * The contract an implementation keeps (ADR-0038 §6, the same rules ADR-0037 states for fills):
+ * a fresh check every call, with no reuse window; only a real, completed check answers
+ * [`PresenceOutcome::Confirmed`]; a check that is cancelled, times out or is invalidated by a
+ * lock never does; and a second call while one prompt is up answers [`PresenceOutcome::Busy`]
+ * rather than waiting its turn.
+ *
+ * `#[async_trait]` because `Arc<dyn PresenceGate>` needs the trait to be dyn-compatible, which a
+ * native `async fn` in a trait is not on stable Rust (ADR-0038, "Spike result").
+ */
+open class PresenceGateImpl: PresenceGate, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_kagisecure_ffi_fn_clone_presencegate(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_kagisecure_ffi_fn_free_presencegate(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Ask a person to prove they are present and meant `reason`.
+     */
+open func confirm(reason: String)async  -> PresenceOutcome  {
+    return
+        try!  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_kagisecure_ffi_fn_method_presencegate_confirm(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(reason)
+                )
+            },
+            pollFunc: ffi_kagisecure_ffi_rust_future_poll_rust_buffer,
+            completeFunc: ffi_kagisecure_ffi_rust_future_complete_rust_buffer,
+            freeFunc: ffi_kagisecure_ffi_rust_future_free_rust_buffer,
+            liftFunc: FfiConverterTypePresenceOutcome_lift,
+            errorHandler: nil
+            
+        )
+}
+    
+
+    
+}
+
+
+
+// Put the implementation in a struct so we don't pollute the top-level namespace
+fileprivate struct UniffiCallbackInterfacePresenceGate {
+
+    // Create the VTable using a series of closures.
+    // Swift automatically converts these into C callback functions.
+    //
+    // Store the vtable directly.
+    static let vtable: UniffiVTableCallbackInterfacePresenceGate = UniffiVTableCallbackInterfacePresenceGate(
+        uniffiFree: { (uniffiHandle: UInt64) -> () in
+            do {
+                try FfiConverterTypePresenceGate.handleMap.remove(handle: uniffiHandle)
+            } catch {
+                print("Uniffi callback interface PresenceGate: handle missing in uniffiFree")
+            }
+        },
+        uniffiClone: { (uniffiHandle: UInt64) -> UInt64 in
+            do {
+                return try FfiConverterTypePresenceGate.handleMap.clone(handle: uniffiHandle)
+            } catch {
+                fatalError("Uniffi callback interface PresenceGate: handle missing in uniffiClone")
+            }
+        },
+        confirm: { (
+            uniffiHandle: UInt64,
+            reason: RustBuffer,
+            uniffiFutureCallback: @escaping UniffiForeignFutureCompleteRustBuffer,
+            uniffiCallbackData: UInt64,
+            uniffiOutDroppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+        ) in
+            let makeCall = {
+                () async throws -> PresenceOutcome in
+                guard let uniffiObj = try? FfiConverterTypePresenceGate.handleMap.get(handle: uniffiHandle) else {
+                    throw UniffiInternalError.unexpectedStaleHandle
+                }
+                return await uniffiObj.confirm(
+                     reason: try FfiConverterString.lift(reason)
+                )
+            }
+
+            let uniffiHandleSuccess = { (returnValue: PresenceOutcome) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: FfiConverterTypePresenceOutcome_lower(returnValue),
+                        callStatus: RustCallStatus()
+                    )
+                )
+            }
+            let uniffiHandleError = { (statusCode, errorBuf) in
+                uniffiFutureCallback(
+                    uniffiCallbackData,
+                    UniffiForeignFutureResultRustBuffer(
+                        returnValue: RustBuffer.empty(),
+                        callStatus: RustCallStatus(code: statusCode, errorBuf: errorBuf)
+                    )
+                )
+            }
+            uniffiTraitInterfaceCallAsync(
+                makeCall: makeCall,
+                handleSuccess: uniffiHandleSuccess,
+                handleError: uniffiHandleError,
+                droppedCallback: uniffiOutDroppedCallback
+            )
+        }
+    )
+
+    // Rust stores this pointer for future callback invocations, so it must live
+    // for the process lifetime (not just for the init function call).
+    //
+    // `nonisolated(unsafe)` is needed under Swift 6 strict concurrency.
+    // This is safe because the pointee is initialized once during static init
+    // and never mutated by either side of the FFI.  Its fields are C function pointers.
+    nonisolated(unsafe) static let vtablePtr: UnsafePointer<UniffiVTableCallbackInterfacePresenceGate> = {
+        let ptr = UnsafeMutablePointer<UniffiVTableCallbackInterfacePresenceGate>.allocate(capacity: 1)
+        ptr.initialize(to: vtable)
+        return UnsafePointer(ptr)
+    }()
+}
+
+private func uniffiCallbackInitPresenceGate() {
+    uniffi_kagisecure_ffi_fn_init_callback_vtable_presencegate(UniffiCallbackInterfacePresenceGate.vtablePtr)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePresenceGate: FfiConverter {
+    fileprivate static let handleMap = UniffiHandleMap<PresenceGate>()
+
+    typealias FfiType = UInt64
+    typealias SwiftType = PresenceGate
+
+    public static func lift(_ handle: UInt64) throws -> PresenceGate {
+        if ((handle & 1) == 0) {
+            // Rust-generated handle, construct a new class that uses the handle to implement the
+            // interface
+            return PresenceGateImpl(unsafeFromHandle: handle)
+        } else {
+            // Swift-generated handle, get the object from the handle map
+            return try handleMap.remove(handle: handle)
+        }
+    }
+
+    public static func lower(_ value: PresenceGate) -> UInt64 {
+         if let rustImpl = value as? PresenceGateImpl {
+             // Rust-implemented object.  Clone the handle and return it
+            return rustImpl.uniffiCloneHandle()
+         } else {
+            // Swift object, generate a new vtable handle and return that.
+            return handleMap.insert(obj: value)
+         }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PresenceGate {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: PresenceGate, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePresenceGate_lift(_ handle: UInt64) throws -> PresenceGate {
+    return try FfiConverterTypePresenceGate.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePresenceGate_lower(_ value: PresenceGate) -> UInt64 {
+    return FfiConverterTypePresenceGate.lower(value)
+}
+
+
+
+
+
+
+/**
+ * One shared vault, open for as long as the personal vault is unlocked (module documentation).
+ */
+public protocol SharedVaultSessionProtocol: AnyObject, Sendable {
+    
+    /**
+     * Bind a variable to a field of an item of this same shared vault (module documentation:
+     * "references stay inside the vault") — the preferred shape, as
+     * [`VaultSession::bind_variable`] is for the personal vault.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for a name that is not an identifier, or if this device may not
+     * write; [`FfiError::NotPresent`] if the environment, item or field does not exist;
+     * [`FfiError::VaultLocked`].
+     */
+    func bindVariable(environmentId: String, name: String, itemId: String, fieldId: String) throws  -> EnvironmentView
+    
+    /**
+     * Create an empty environment, invisible to agents until this device shares it
+     * ([`SharedVaultSession::set_environment_agent_visible`]) — as
+     * [`VaultSession::create_environment`], for this shared vault.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for an empty or over-long name, or if this device may not write;
+     * [`FfiError::VaultLocked`].
+     */
+    func createEnvironment(name: String, description: String?) throws  -> EnvironmentView
+    
+    /**
+     * Create an item from its category's template, and write it.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] if this device may not write (a reader), and as a write.
+     */
+    func createItem(category: String, title: String) throws  -> ItemView
+    
+    /**
+     * Delete an environment for everyone, as [`VaultSession::delete_environment`] does for the
+     * personal vault.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], or if this device may not write; [`FfiError::VaultLocked`].
+     */
+    func deleteEnvironment(environmentId: String) throws 
+    
+    /**
+     * Delete an item for everyone. `revision` is not checked (last writer wins).
+     *
+     * # Errors
+     *
+     * As [`SharedVaultSession::save_item`].
+     */
+    func deleteItem(itemId: String, revision: String) throws 
+    
+    /**
+     * One environment by id.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], [`FfiError::VaultLocked`].
+     */
+    func environment(environmentId: String) throws  -> EnvironmentView
+    
+    /**
+     * Every environment in this shared vault, names only (ui-spec.md §16), the same shape
+     * [`VaultSession::environments`] answers for the personal vault. Empty once locked, or if
+     * the vault cannot be read.
+     */
+    func environments()  -> [EnvironmentView]
+    
+    /**
+     * The folder this vault syncs through, if one is set.
+     */
+    func folder()  -> String?
+    
+    /**
+     * Invite another computer of an existing member: as [`SharedVaultSession::invite_member`],
+     * with the member's role.
+     *
+     * # Errors
+     *
+     * As [`SharedVaultSession::invite_member`], and [`FfiError::Invalid`] for someone who is
+     * not a member.
+     */
+    func inviteDevice(memberId: String, outPath: String, kdfMKib: UInt32?, kdfT: UInt32?) throws  -> SharedInvitation
+    
+    /**
+     * Invite a new member called `name` with `role`: writes the invitation file to `out_path`
+     * and answers the passphrase that opens it (decision 86). The name becomes the member's
+     * name on this device and the joining computer's device-key label. No presence check
+     * (decision 86): the personal vault being unlocked is enough.
+     *
+     * `kdf_m_kib` and `kdf_t` override the passphrase's Argon2id cost, as
+     * [`VaultSession::create`]'s do; pass `None` for the personal vault's default.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] unless this device is an admin, or for an empty name;
+     * [`FfiError::Io`] if the file cannot be written.
+     */
+    func inviteMember(name: String, role: SharedRole, outPath: String, kdfMKib: UInt32?, kdfT: UInt32?) throws  -> SharedInvitation
+    
+    /**
+     * One item by id.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], [`FfiError::VaultLocked`].
+     */
+    func item(itemId: String) throws  -> ItemView
+    
+    /**
+     * The items for one section, as [`VaultSession::list_items`] lists the personal vault's.
+     * Empty once locked, or if the vault cannot be read.
+     */
+    func listItems(filter: ItemFilter, query: String?, sort: ItemSort)  -> [ItemView]
+    
+    /**
+     * The members now, this device's first, then by name. Empty if the vault cannot be read.
+     */
+    func members()  -> [SharedMemberView]
+    
+    /**
+     * Rebuild this vault's copy on this Mac from its folder, when it no longer opens
+     * (decision 85). The damaged file is kept beside the new one.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] if no key on this Mac is a device of the vault in that folder;
+     * [`FfiError::Io`]; [`FfiError::VaultLocked`].
+     */
+    func rebuild(folder: String) throws 
+    
+    /**
+     * [`VaultSession::release_field`], for an item of this shared vault. The same presence
+     * gate, the same five-minute cap, recorded in the personal vault's audit log.
+     *
+     * # Errors
+     *
+     * As [`VaultSession::release_field`].
+     */
+    func releaseField(itemId: String, fieldId: String, purpose: ReleasePurpose) async throws  -> FieldRelease
+    
+    /**
+     * [`VaultSession::release_notes`], for an item of this shared vault.
+     *
+     * # Errors
+     *
+     * As [`VaultSession::release_notes`].
+     */
+    func releaseNotes(itemId: String, purpose: ReleasePurpose) async throws  -> NotesRelease
+    
+    /**
+     * [`VaultSession::release_totp`], for an item of this shared vault.
+     *
+     * # Errors
+     *
+     * As [`VaultSession::release_totp`].
+     */
+    func releaseTotp(itemId: String, fieldId: String?, purpose: ReleasePurpose) async throws  -> TotpRelease
+    
+    /**
+     * Remove a member and every computer of theirs: nothing written from now on reaches them
+     * (decision 83). What they could read before is listed by
+     * [`SharedVaultSession::rotation_list`].
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] unless this device is an admin, for this device's own member, or if
+     * no admin would be left.
+     */
+    func removeMember(memberId: String) throws 
+    
+    /**
+     * Remove one variable from an environment, as [`VaultSession::remove_variable`] does.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], or if this device may not write; [`FfiError::VaultLocked`].
+     */
+    func removeVariable(environmentId: String, name: String) throws  -> EnvironmentView
+    
+    /**
+     * Rename the vault on this device. The name is this device's own (decision 81): other
+     * members keep theirs.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for an empty or over-long name; [`FfiError::VaultLocked`].
+     */
+    func rename(name: String) throws 
+    
+    /**
+     * Rename the environment on every member's copy. Unlike a shared vault's own name
+     * ([`SharedVaultSession::rename`]), this is a record every member sees the same way — an
+     * environment has one name, not one per Mac.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for an empty or over-long name, or if this device may not write;
+     * [`FfiError::NotPresent`]; [`FfiError::VaultLocked`].
+     */
+    func renameEnvironment(environmentId: String, name: String) throws  -> EnvironmentView
+    
+    /**
+     * What removed members could have read: the items to consider changing at their source
+     * (decision 84). Informational only.
+     */
+    func rotationList()  -> [SharedExposure]
+    
+    /**
+     * Save what the edit sheet produced, as [`VaultSession::save_item`] does — but with no
+     * conflict check: the last writer wins (decision 80), so `draft.revision` is not compared
+     * and [`FfiError::ItemChangedElsewhere`] is never answered.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for a draft [`VaultSession::save_item`] would refuse, or if this
+     * device may not write; [`FfiError::NotPresent`]; [`FfiError::VaultLocked`].
+     */
+    func saveItem(draft: ItemDraft) throws  -> ItemView
+    
+    /**
+     * Let this device's agents see an item, or not (decision 22: this device's own setting).
+     * Turning an item off turns its fields off too.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], [`FfiError::VaultLocked`].
+     */
+    func setAgentVisible(itemId: String, visible: Bool) throws  -> ItemView
+    
+    /**
+     * Archive an item, or bring it back: a new version, for everyone.
+     *
+     * # Errors
+     *
+     * As [`SharedVaultSession::save_item`].
+     */
+    func setArchived(itemId: String, archived: Bool) throws  -> ItemView
+    
+    /**
+     * Let this device's agents see the environment, or not — this device's own setting
+     * (module documentation, decision 22), like an item's agent visibility
+     * ([`SharedVaultSession::set_agent_visible`]). Written to this device's local state, never
+     * as a new version of the environment, so a reader may flip it exactly as a writer can — it
+     * changes nothing anyone else's copy holds.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], [`FfiError::VaultLocked`].
+     */
+    func setEnvironmentAgentVisible(environmentId: String, visible: Bool) throws  -> EnvironmentView
+    
+    /**
+     * Mark an item a favourite on this device, or not. Writes nothing others receive.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], [`FfiError::VaultLocked`].
+     */
+    func setFavorite(itemId: String, favorite: Bool) throws  -> ItemView
+    
+    /**
+     * One field's agent visibility on this device.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`] for an unknown item or field, [`FfiError::VaultLocked`].
+     */
+    func setFieldAgentVisible(itemId: String, fieldId: String, visible: Bool) throws  -> ItemView
+    
+    /**
+     * Sync through `folder` from now on — or through none — and sync once.
+     *
+     * # Errors
+     *
+     * [`FfiError::Io`] if the folder cannot be read or written; [`FfiError::VaultLocked`].
+     */
+    func setFolder(folder: String?) throws  -> SharedSyncSummary
+    
+    /**
+     * Name a member on this device.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for an empty or over-long name.
+     */
+    func setMemberName(memberId: String, name: String) throws 
+    
+    /**
+     * Give a member another role.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] unless this device is an admin, or if no admin would be left.
+     */
+    func setRole(memberId: String, role: SharedRole) throws 
+    
+    /**
+     * Moving a shared item to the trash deletes it for everyone (module documentation); `false`
+     * clears a trash mark another build set. Answers the item as it was.
+     *
+     * # Errors
+     *
+     * As [`SharedVaultSession::save_item`].
+     */
+    func setTrashed(itemId: String, trashed: Bool) throws  -> ItemView
+    
+    /**
+     * Set a variable to a value typed here, as [`VaultSession::set_variable_value`] does for the
+     * personal vault.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for a name that is not an identifier, or if this device may not
+     * write; [`FfiError::NotPresent`]; [`FfiError::VaultLocked`].
+     */
+    func setVariableValue(environmentId: String, name: String, value: String) throws  -> EnvironmentView
+    
+    /**
+     * What the sidebar shows. Never fails: a vault that cannot be read says why in `problem`.
+     */
+    func summary()  -> SharedVaultSummary
+    
+    /**
+     * Pick up this computer's copy as it is on disk, then, with a folder set, take in every
+     * record the folder has that this device does not and hand on every record it is missing
+     * (decision 85). Cheap when nothing changed (decision 87): the app calls this on every
+     * change in the folder, when it becomes active and after each change of its own.
+     *
+     * # Errors
+     *
+     * [`FfiError::Io`] if the folder cannot be read or written; [`FfiError::VaultLocked`].
+     */
+    func sync() throws  -> SharedSyncSummary
+    
+    /**
+     * The shared vault's id, 32 lower-case hex digits.
+     */
+    func vaultId()  -> String
+    
+}
+/**
+ * One shared vault, open for as long as the personal vault is unlocked (module documentation).
+ */
+open class SharedVaultSession: SharedVaultSessionProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_kagisecure_ffi_fn_clone_sharedvaultsession(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_kagisecure_ffi_fn_free_sharedvaultsession(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * Bind a variable to a field of an item of this same shared vault (module documentation:
+     * "references stay inside the vault") — the preferred shape, as
+     * [`VaultSession::bind_variable`] is for the personal vault.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for a name that is not an identifier, or if this device may not
+     * write; [`FfiError::NotPresent`] if the environment, item or field does not exist;
+     * [`FfiError::VaultLocked`].
+     */
+open func bindVariable(environmentId: String, name: String, itemId: String, fieldId: String)throws  -> EnvironmentView  {
+    return try  FfiConverterTypeEnvironmentView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_bind_variable(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(environmentId),
+        FfiConverterString.lower(name),
+        FfiConverterString.lower(itemId),
+        FfiConverterString.lower(fieldId),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Create an empty environment, invisible to agents until this device shares it
+     * ([`SharedVaultSession::set_environment_agent_visible`]) — as
+     * [`VaultSession::create_environment`], for this shared vault.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for an empty or over-long name, or if this device may not write;
+     * [`FfiError::VaultLocked`].
+     */
+open func createEnvironment(name: String, description: String?)throws  -> EnvironmentView  {
+    return try  FfiConverterTypeEnvironmentView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_create_environment(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),
+        FfiConverterOptionString.lower(description),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Create an item from its category's template, and write it.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] if this device may not write (a reader), and as a write.
+     */
+open func createItem(category: String, title: String)throws  -> ItemView  {
+    return try  FfiConverterTypeItemView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_create_item(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(category),
+        FfiConverterString.lower(title),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Delete an environment for everyone, as [`VaultSession::delete_environment`] does for the
+     * personal vault.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], or if this device may not write; [`FfiError::VaultLocked`].
+     */
+open func deleteEnvironment(environmentId: String)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_delete_environment(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(environmentId),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Delete an item for everyone. `revision` is not checked (last writer wins).
+     *
+     * # Errors
+     *
+     * As [`SharedVaultSession::save_item`].
+     */
+open func deleteItem(itemId: String, revision: String)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_delete_item(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(itemId),
+        FfiConverterString.lower(revision),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * One environment by id.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], [`FfiError::VaultLocked`].
+     */
+open func environment(environmentId: String)throws  -> EnvironmentView  {
+    return try  FfiConverterTypeEnvironmentView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_environment(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(environmentId),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Every environment in this shared vault, names only (ui-spec.md §16), the same shape
+     * [`VaultSession::environments`] answers for the personal vault. Empty once locked, or if
+     * the vault cannot be read.
+     */
+open func environments() -> [EnvironmentView]  {
+    return try!  FfiConverterSequenceTypeEnvironmentView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_environments(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The folder this vault syncs through, if one is set.
+     */
+open func folder() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_folder(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Invite another computer of an existing member: as [`SharedVaultSession::invite_member`],
+     * with the member's role.
+     *
+     * # Errors
+     *
+     * As [`SharedVaultSession::invite_member`], and [`FfiError::Invalid`] for someone who is
+     * not a member.
+     */
+open func inviteDevice(memberId: String, outPath: String, kdfMKib: UInt32?, kdfT: UInt32?)throws  -> SharedInvitation  {
+    return try  FfiConverterTypeSharedInvitation_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_invite_device(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(memberId),
+        FfiConverterString.lower(outPath),
+        FfiConverterOptionUInt32.lower(kdfMKib),
+        FfiConverterOptionUInt32.lower(kdfT),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Invite a new member called `name` with `role`: writes the invitation file to `out_path`
+     * and answers the passphrase that opens it (decision 86). The name becomes the member's
+     * name on this device and the joining computer's device-key label. No presence check
+     * (decision 86): the personal vault being unlocked is enough.
+     *
+     * `kdf_m_kib` and `kdf_t` override the passphrase's Argon2id cost, as
+     * [`VaultSession::create`]'s do; pass `None` for the personal vault's default.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] unless this device is an admin, or for an empty name;
+     * [`FfiError::Io`] if the file cannot be written.
+     */
+open func inviteMember(name: String, role: SharedRole, outPath: String, kdfMKib: UInt32?, kdfT: UInt32?)throws  -> SharedInvitation  {
+    return try  FfiConverterTypeSharedInvitation_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_invite_member(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),
+        FfiConverterTypeSharedRole_lower(role),
+        FfiConverterString.lower(outPath),
+        FfiConverterOptionUInt32.lower(kdfMKib),
+        FfiConverterOptionUInt32.lower(kdfT),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * One item by id.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], [`FfiError::VaultLocked`].
+     */
+open func item(itemId: String)throws  -> ItemView  {
+    return try  FfiConverterTypeItemView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_item(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(itemId),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The items for one section, as [`VaultSession::list_items`] lists the personal vault's.
+     * Empty once locked, or if the vault cannot be read.
+     */
+open func listItems(filter: ItemFilter, query: String?, sort: ItemSort) -> [ItemView]  {
+    return try!  FfiConverterSequenceTypeItemView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_list_items(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeItemFilter_lower(filter),
+        FfiConverterOptionString.lower(query),
+        FfiConverterTypeItemSort_lower(sort),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The members now, this device's first, then by name. Empty if the vault cannot be read.
+     */
+open func members() -> [SharedMemberView]  {
+    return try!  FfiConverterSequenceTypeSharedMemberView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_members(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Rebuild this vault's copy on this Mac from its folder, when it no longer opens
+     * (decision 85). The damaged file is kept beside the new one.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] if no key on this Mac is a device of the vault in that folder;
+     * [`FfiError::Io`]; [`FfiError::VaultLocked`].
+     */
+open func rebuild(folder: String)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_rebuild(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(folder),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * [`VaultSession::release_field`], for an item of this shared vault. The same presence
+     * gate, the same five-minute cap, recorded in the personal vault's audit log.
+     *
+     * # Errors
+     *
+     * As [`VaultSession::release_field`].
+     */
+open func releaseField(itemId: String, fieldId: String, purpose: ReleasePurpose)async throws  -> FieldRelease  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_kagisecure_ffi_fn_method_sharedvaultsession_release_field(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(itemId),FfiConverterString.lower(fieldId),FfiConverterTypeReleasePurpose_lower(purpose)
+                )
+            },
+            pollFunc: ffi_kagisecure_ffi_rust_future_poll_u64,
+            completeFunc: ffi_kagisecure_ffi_rust_future_complete_u64,
+            freeFunc: ffi_kagisecure_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeFieldRelease_lift,
+            errorHandler: FfiConverterTypeFfiError_lift
+        )
+}
+    
+    /**
+     * [`VaultSession::release_notes`], for an item of this shared vault.
+     *
+     * # Errors
+     *
+     * As [`VaultSession::release_notes`].
+     */
+open func releaseNotes(itemId: String, purpose: ReleasePurpose)async throws  -> NotesRelease  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_kagisecure_ffi_fn_method_sharedvaultsession_release_notes(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(itemId),FfiConverterTypeReleasePurpose_lower(purpose)
+                )
+            },
+            pollFunc: ffi_kagisecure_ffi_rust_future_poll_u64,
+            completeFunc: ffi_kagisecure_ffi_rust_future_complete_u64,
+            freeFunc: ffi_kagisecure_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeNotesRelease_lift,
+            errorHandler: FfiConverterTypeFfiError_lift
+        )
+}
+    
+    /**
+     * [`VaultSession::release_totp`], for an item of this shared vault.
+     *
+     * # Errors
+     *
+     * As [`VaultSession::release_totp`].
+     */
+open func releaseTotp(itemId: String, fieldId: String?, purpose: ReleasePurpose)async throws  -> TotpRelease  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_kagisecure_ffi_fn_method_sharedvaultsession_release_totp(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(itemId),FfiConverterOptionString.lower(fieldId),FfiConverterTypeReleasePurpose_lower(purpose)
+                )
+            },
+            pollFunc: ffi_kagisecure_ffi_rust_future_poll_u64,
+            completeFunc: ffi_kagisecure_ffi_rust_future_complete_u64,
+            freeFunc: ffi_kagisecure_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeTotpRelease_lift,
+            errorHandler: FfiConverterTypeFfiError_lift
+        )
+}
+    
+    /**
+     * Remove a member and every computer of theirs: nothing written from now on reaches them
+     * (decision 83). What they could read before is listed by
+     * [`SharedVaultSession::rotation_list`].
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] unless this device is an admin, for this device's own member, or if
+     * no admin would be left.
+     */
+open func removeMember(memberId: String)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_remove_member(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(memberId),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Remove one variable from an environment, as [`VaultSession::remove_variable`] does.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], or if this device may not write; [`FfiError::VaultLocked`].
+     */
+open func removeVariable(environmentId: String, name: String)throws  -> EnvironmentView  {
+    return try  FfiConverterTypeEnvironmentView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_remove_variable(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(environmentId),
+        FfiConverterString.lower(name),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Rename the vault on this device. The name is this device's own (decision 81): other
+     * members keep theirs.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for an empty or over-long name; [`FfiError::VaultLocked`].
+     */
+open func rename(name: String)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_rename(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Rename the environment on every member's copy. Unlike a shared vault's own name
+     * ([`SharedVaultSession::rename`]), this is a record every member sees the same way — an
+     * environment has one name, not one per Mac.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for an empty or over-long name, or if this device may not write;
+     * [`FfiError::NotPresent`]; [`FfiError::VaultLocked`].
+     */
+open func renameEnvironment(environmentId: String, name: String)throws  -> EnvironmentView  {
+    return try  FfiConverterTypeEnvironmentView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_rename_environment(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(environmentId),
+        FfiConverterString.lower(name),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * What removed members could have read: the items to consider changing at their source
+     * (decision 84). Informational only.
+     */
+open func rotationList() -> [SharedExposure]  {
+    return try!  FfiConverterSequenceTypeSharedExposure.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_rotation_list(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Save what the edit sheet produced, as [`VaultSession::save_item`] does — but with no
+     * conflict check: the last writer wins (decision 80), so `draft.revision` is not compared
+     * and [`FfiError::ItemChangedElsewhere`] is never answered.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for a draft [`VaultSession::save_item`] would refuse, or if this
+     * device may not write; [`FfiError::NotPresent`]; [`FfiError::VaultLocked`].
+     */
+open func saveItem(draft: ItemDraft)throws  -> ItemView  {
+    return try  FfiConverterTypeItemView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_save_item(
+            self.uniffiCloneHandle(),
+        FfiConverterTypeItemDraft_lower(draft),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Let this device's agents see an item, or not (decision 22: this device's own setting).
+     * Turning an item off turns its fields off too.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], [`FfiError::VaultLocked`].
+     */
+open func setAgentVisible(itemId: String, visible: Bool)throws  -> ItemView  {
+    return try  FfiConverterTypeItemView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_set_agent_visible(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(itemId),
+        FfiConverterBool.lower(visible),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Archive an item, or bring it back: a new version, for everyone.
+     *
+     * # Errors
+     *
+     * As [`SharedVaultSession::save_item`].
+     */
+open func setArchived(itemId: String, archived: Bool)throws  -> ItemView  {
+    return try  FfiConverterTypeItemView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_set_archived(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(itemId),
+        FfiConverterBool.lower(archived),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Let this device's agents see the environment, or not — this device's own setting
+     * (module documentation, decision 22), like an item's agent visibility
+     * ([`SharedVaultSession::set_agent_visible`]). Written to this device's local state, never
+     * as a new version of the environment, so a reader may flip it exactly as a writer can — it
+     * changes nothing anyone else's copy holds.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], [`FfiError::VaultLocked`].
+     */
+open func setEnvironmentAgentVisible(environmentId: String, visible: Bool)throws  -> EnvironmentView  {
+    return try  FfiConverterTypeEnvironmentView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_set_environment_agent_visible(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(environmentId),
+        FfiConverterBool.lower(visible),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Mark an item a favourite on this device, or not. Writes nothing others receive.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`], [`FfiError::VaultLocked`].
+     */
+open func setFavorite(itemId: String, favorite: Bool)throws  -> ItemView  {
+    return try  FfiConverterTypeItemView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_set_favorite(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(itemId),
+        FfiConverterBool.lower(favorite),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * One field's agent visibility on this device.
+     *
+     * # Errors
+     *
+     * [`FfiError::NotPresent`] for an unknown item or field, [`FfiError::VaultLocked`].
+     */
+open func setFieldAgentVisible(itemId: String, fieldId: String, visible: Bool)throws  -> ItemView  {
+    return try  FfiConverterTypeItemView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_set_field_agent_visible(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(itemId),
+        FfiConverterString.lower(fieldId),
+        FfiConverterBool.lower(visible),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Sync through `folder` from now on — or through none — and sync once.
+     *
+     * # Errors
+     *
+     * [`FfiError::Io`] if the folder cannot be read or written; [`FfiError::VaultLocked`].
+     */
+open func setFolder(folder: String?)throws  -> SharedSyncSummary  {
+    return try  FfiConverterTypeSharedSyncSummary_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_set_folder(
+            self.uniffiCloneHandle(),
+        FfiConverterOptionString.lower(folder),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Name a member on this device.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for an empty or over-long name.
+     */
+open func setMemberName(memberId: String, name: String)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_set_member_name(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(memberId),
+        FfiConverterString.lower(name),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Give a member another role.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] unless this device is an admin, or if no admin would be left.
+     */
+open func setRole(memberId: String, role: SharedRole)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_set_role(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(memberId),
+        FfiConverterTypeSharedRole_lower(role),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Moving a shared item to the trash deletes it for everyone (module documentation); `false`
+     * clears a trash mark another build set. Answers the item as it was.
+     *
+     * # Errors
+     *
+     * As [`SharedVaultSession::save_item`].
+     */
+open func setTrashed(itemId: String, trashed: Bool)throws  -> ItemView  {
+    return try  FfiConverterTypeItemView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_set_trashed(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(itemId),
+        FfiConverterBool.lower(trashed),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Set a variable to a value typed here, as [`VaultSession::set_variable_value`] does for the
+     * personal vault.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for a name that is not an identifier, or if this device may not
+     * write; [`FfiError::NotPresent`]; [`FfiError::VaultLocked`].
+     */
+open func setVariableValue(environmentId: String, name: String, value: String)throws  -> EnvironmentView  {
+    return try  FfiConverterTypeEnvironmentView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_set_variable_value(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(environmentId),
+        FfiConverterString.lower(name),
+        FfiConverterString.lower(value),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * What the sidebar shows. Never fails: a vault that cannot be read says why in `problem`.
+     */
+open func summary() -> SharedVaultSummary  {
+    return try!  FfiConverterTypeSharedVaultSummary_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_summary(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Pick up this computer's copy as it is on disk, then, with a folder set, take in every
+     * record the folder has that this device does not and hand on every record it is missing
+     * (decision 85). Cheap when nothing changed (decision 87): the app calls this on every
+     * change in the folder, when it becomes active and after each change of its own.
+     *
+     * # Errors
+     *
+     * [`FfiError::Io`] if the folder cannot be read or written; [`FfiError::VaultLocked`].
+     */
+open func sync()throws  -> SharedSyncSummary  {
+    return try  FfiConverterTypeSharedSyncSummary_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_sync(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The shared vault's id, 32 lower-case hex digits.
+     */
+open func vaultId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_sharedvaultsession_vault_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedVaultSession: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = SharedVaultSession
+
+    public static func lift(_ handle: UInt64) throws -> SharedVaultSession {
+        return SharedVaultSession(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: SharedVaultSession) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedVaultSession {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: SharedVaultSession, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedVaultSession_lift(_ handle: UInt64) throws -> SharedVaultSession {
+    return try FfiConverterTypeSharedVaultSession.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedVaultSession_lower(_ value: SharedVaultSession) -> UInt64 {
+    return FfiConverterTypeSharedVaultSession.lower(value)
+}
+
+
+
+
+
+
+/**
+ * One item's one-time code, released by one presence check ([`VaultSession::release_totp`]).
+ *
+ * [`TotpRelease::code_at`] derives the code for the caller's own clock, so the digits and the
+ * countdown ring stay drawn from one instant, exactly as `TotpCodeView` always has been. Ends as
+ * [`FieldRelease`] does.
+ */
+public protocol TotpReleaseProtocol: AnyObject, Sendable {
+    
+    /**
+     * End this release now. Idempotent.
+     */
+    func close() 
+    
+    /**
+     * The code at Unix time `at`, from the field as it is in the vault now.
+     *
+     * # Errors
+     *
+     * [`FfiError::ReleaseEnded`], [`FfiError::VaultLocked`], [`FfiError::NotPresent`], and
+     * [`FfiError::Invalid`] if the field no longer holds a one-time-password setup.
+     */
+    func codeAt(at: UInt64) throws  -> TotpCodeView
+    
+    /**
+     * The code at `at`, for the clipboard, from a release granted to show it — no new touch
+     * (user decision 1). Recorded as `totp_copy` with `SHOWN_EARLIER`.
+     *
+     * # Errors
+     *
+     * As [`TotpRelease::code_at`], and [`FfiError::Invalid`] for a release that was never shown.
+     */
+    func copyShownCodeAt(at: UInt64) throws  -> TotpCodeView
+    
+    /**
+     * The one-time-password field it is bound to.
+     */
+    func fieldId()  -> String
+    
+    /**
+     * Whether a use would still be allowed.
+     */
+    func isLive()  -> Bool
+    
+    /**
+     * The item it is bound to.
+     */
+    func itemId()  -> String
+    
+    /**
+     * What this release was granted for.
+     */
+    func purpose()  -> ReleasePurpose
+    
+    /**
+     * Seconds left before the five-minute cap ends this release.
+     */
+    func secondsRemaining()  -> UInt32
+    
+}
+/**
+ * One item's one-time code, released by one presence check ([`VaultSession::release_totp`]).
+ *
+ * [`TotpRelease::code_at`] derives the code for the caller's own clock, so the digits and the
+ * countdown ring stay drawn from one instant, exactly as `TotpCodeView` always has been. Ends as
+ * [`FieldRelease`] does.
+ */
+open class TotpRelease: TotpReleaseProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
+
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public struct NoHandle {
+        public init() {}
+    }
+
+    // TODO: We'd like this to be `private` but for Swifty reasons,
+    // we can't implement `FfiConverter` without making this `required` and we can't
+    // make it `required` without making it `public`.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
+    }
+
+    // This constructor can be used to instantiate a fake object.
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    //
+    // - Warning:
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public init(noHandle: NoHandle) {
+        self.handle = 0
+    }
+
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_kagisecure_ffi_fn_clone_totprelease(self.handle, $0) }
+    }
+    // No primary constructor declared for this class.
+
+    deinit {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
+            return
+        }
+
+        try! rustCall { uniffi_kagisecure_ffi_fn_free_totprelease(handle, $0) }
+    }
+
+    
+
+    
+    /**
+     * End this release now. Idempotent.
+     */
+open func close()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_totprelease_close(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * The code at Unix time `at`, from the field as it is in the vault now.
+     *
+     * # Errors
+     *
+     * [`FfiError::ReleaseEnded`], [`FfiError::VaultLocked`], [`FfiError::NotPresent`], and
+     * [`FfiError::Invalid`] if the field no longer holds a one-time-password setup.
+     */
+open func codeAt(at: UInt64)throws  -> TotpCodeView  {
+    return try  FfiConverterTypeTotpCodeView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_totprelease_code_at(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(at),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The code at `at`, for the clipboard, from a release granted to show it — no new touch
+     * (user decision 1). Recorded as `totp_copy` with `SHOWN_EARLIER`.
+     *
+     * # Errors
+     *
+     * As [`TotpRelease::code_at`], and [`FfiError::Invalid`] for a release that was never shown.
+     */
+open func copyShownCodeAt(at: UInt64)throws  -> TotpCodeView  {
+    return try  FfiConverterTypeTotpCodeView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_totprelease_copy_shown_code_at(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt64.lower(at),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The one-time-password field it is bound to.
+     */
+open func fieldId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_totprelease_field_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Whether a use would still be allowed.
+     */
+open func isLive() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_totprelease_is_live(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The item it is bound to.
+     */
+open func itemId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_totprelease_item_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * What this release was granted for.
+     */
+open func purpose() -> ReleasePurpose  {
+    return try!  FfiConverterTypeReleasePurpose_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_totprelease_purpose(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Seconds left before the five-minute cap ends this release.
+     */
+open func secondsRemaining() -> UInt32  {
+    return try!  FfiConverterUInt32.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_totprelease_seconds_remaining(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+
+    
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTotpRelease: FfiConverter {
+    typealias FfiType = UInt64
+    typealias SwiftType = TotpRelease
+
+    public static func lift(_ handle: UInt64) throws -> TotpRelease {
+        return TotpRelease(unsafeFromHandle: handle)
+    }
+
+    public static func lower(_ value: TotpRelease) -> UInt64 {
+        return value.uniffiCloneHandle()
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TotpRelease {
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
+    }
+
+    public static func write(_ value: TotpRelease, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTotpRelease_lift(_ handle: UInt64) throws -> TotpRelease {
+    return try FfiConverterTypeTotpRelease.lift(handle)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTotpRelease_lower(_ value: TotpRelease) -> UInt64 {
+    return FfiConverterTypeTotpRelease.lower(value)
+}
+
+
+
+
+
+
+/**
  * An unlocked vault, owned by the app for as long as it stays unlocked.
  *
  * # Why the vault lives behind a [`VaultHandle`]
@@ -814,7 +3020,7 @@ public func FfiConverterTypeImportPlanHandle_lower(_ value: ImportPlanHandle) ->
  * [`kagisecure_agent::VaultHandle`], so there is one vault, one mutex, and one definition of
  * "locked" — the handle holding nothing.
  *
- * Dropping this object is still the lock operation, and now does two things rather than one: it
+ * Locking ([`VaultSession::lock`], and `Drop` as a backstop) does two things rather than one: it
  * takes the vault out of the handle (which zeroizes the key) **and** runs the handle's lock hook,
  * which is what kills every lease and denies every approval the agent still has in flight. There
  * is no window in which a locked vault serves an agent.
@@ -822,12 +3028,119 @@ public func FfiConverterTypeImportPlanHandle_lower(_ value: ImportPlanHandle) ->
 public protocol VaultSessionProtocol: AnyObject, Sendable {
     
     /**
+     * Install the app's presence check. Once per session: a second call is refused and the first
+     * gate stays, so nothing that runs later can swap in a gate that always says yes.
+     *
+     * Until a gate is installed, every `release_*` call fails closed with
+     * [`FfiError::NoPresenceGate`].
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] if a gate is already installed.
+     */
+    func setPresenceGate(gate: PresenceGate) throws 
+    
+    /**
+     * Check the vault's master password — the presence gate's fallback when
+     * `LocalAuthentication` cannot run at all (ADR-0038 user decision 7).
+     *
+     * Argon2id runs with no lock held: the header facts it needs are copied out first, and only
+     * the constant-time comparison of the unwrapped key against this session's happens under the
+     * vault's mutex again. So a check — deliberately slow — stalls neither the agent nor the
+     * list. Call it off the main thread for the same reason.
+     *
+     * Rate limited, per session: after a wrong password the next attempt is refused for one
+     * second, then two, four, … up to five minutes; a right one resets it. Attempts are also
+     * serialised — one running check makes every other attempt [`MasterPasswordCheck::Throttled`]
+     * — so a burst of attempts cannot all be checked before the first failure is counted.
+     *
+     * A right password while a release is waiting on its prompt marks that release, so its
+     * grant is audited `DETAIL_PRESENCE_CONFIRMED_MASTER_PASSWORD` rather than as a biometric.
+     * A wrong one is audited best-effort (`verify_master_password`, `denied`,
+     * `DETAIL_MASTER_PASSWORD_WRONG`, naming the item the waiting release is for), and so is
+     * the first throttled attempt of each back-off window
+     * (`DETAIL_MASTER_PASSWORD_THROTTLED`): a burst of guesses is exactly what an automation
+     * agent working through the app's own UI would leave, and never a reason to refuse the
+     * check itself.
+     *
+     * # Errors
+     *
+     * [`FfiError::VaultLocked`]; [`FfiError::NoSuchSlot`] if the vault has no master-password
+     * slot; KDF failures.
+     */
+    func verifyMasterPassword(password: String) throws  -> MasterPasswordCheck
+    
+    /**
+     * Release one concealed field's value, behind a fresh presence check (ADR-0038).
+     *
+     * [ADR-0008](../../../docs/decisions/0008-ffi-secret-crossings.md) crossing 2, outbound, with
+     * the fail-closed check ADR-0038 puts in front of it. One field per call and one prompt per
+     * field: showing the password and then the one-time code is two touches (user decision 1).
+     *
+     * The prompt names the field's label, the item's title and the action, sanitised. With no
+     * gate installed, nothing is asked and nothing is released.
+     *
+     * # Errors
+     *
+     * Before any prompt: [`FfiError::VaultLocked`], [`FfiError::NotPresent`] for an unknown item
+     * or field, [`FfiError::Invalid`] for a field that is not concealed (its value is already in
+     * [`crate::FieldView::value`]) or whose value is not text, [`FfiError::NoPresenceGate`],
+     * [`FfiError::PresenceBusy`] if another release is awaiting its prompt. After it:
+     * [`FfiError::PresenceCancelled`], [`FfiError::PresenceUnavailable`],
+     * [`FfiError::PresenceBusy`], [`FfiError::VaultLocked`] if the vault locked meanwhile, and
+     * [`FfiError::NotPresent`] if the item or field went.
+     */
+    func releaseField(itemId: String, fieldId: String, purpose: ReleasePurpose) async throws  -> FieldRelease
+    
+    /**
+     * Release an item's notes, behind a fresh presence check (user decision 3: every note is
+     * secret). [`ReleasePurpose::QuickAccessCopy`] is refused.
+     *
+     * # Errors
+     *
+     * As [`VaultSession::release_field`], with [`FfiError::NotPresent`] for an item with no
+     * notes.
+     */
+    func releaseNotes(itemId: String, purpose: ReleasePurpose) async throws  -> NotesRelease
+    
+    /**
+     * Release an item's one-time code, behind a fresh presence check — the named TOTP field, or
+     * with `field_id` `None` the item's first one (what the list row and Quick Access ⌥⏎ need).
+     *
+     * ADR-0008 crossing 5, outbound, behind ADR-0038's check. `purpose` is
+     * [`ReleasePurpose::Reveal`] for the detail pane's live code (`totp_show`), or a copy
+     * (`totp_copy`, `quick_access_copy`); [`ReleasePurpose::EditReveal`] is refused — editing a
+     * one-time password's setup is [`VaultSession::release_field`] on the field itself.
+     *
+     * # Errors
+     *
+     * As [`VaultSession::release_field`], with [`FfiError::NotPresent`] for an item with no
+     * one-time password and [`FfiError::Invalid`] for a field whose setup does not parse.
+     */
+    func releaseTotp(itemId: String, fieldId: String?, purpose: ReleasePurpose) async throws  -> TotpRelease
+    
+    /**
      * How many entries the audit log has, for the viewer's paging.
      */
     func auditCount()  -> UInt32
     
     /**
+     * Whether every appended audit entry has actually made it to disk.
+     *
+     * Every mutating call in this file already saves before it returns, so in the common case
+     * this is `{ unsaved_entries: 0, last_error: None }`. It stops being that the moment a save
+     * starts failing somewhere the caller could not afford to fail loudly (agent-side denials in
+     * `kagisecure-agent::service`, extension refusals in `kagisecure-agent::extension`) — this is
+     * how the app notices and tells the human, even though this process was not the one whose
+     * save failed.
+     */
+    func auditDurability()  -> AuditDurabilityView
+    
+    /**
      * Whether the audit hash chain verifies (vault-format.md §8).
+     *
+     * `true` once the vault is locked: there is no log in memory to find broken, and `false`
+     * would raise the "audit log damaged" warning over a vault that is merely locked.
      */
     func auditIntact()  -> Bool
     
@@ -853,11 +3166,55 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
     /**
      * Replace the master password (ui-spec.md §6, and required after a recovery-code unlock).
      *
+     * Argon2id runs with **no lock held** — neither the vault file's lock nor the handle's mutex,
+     * which the agent's request loop, the browser extension and every other call on this session
+     * take too. A password change used to derive under that mutex, which stalled all of them for
+     * the whole derivation (hundreds of milliseconds at the desktop profile, seconds on a slow
+     * Mac). It now runs in three short steps around the slow one:
+     *
+     * 1. under the mutex, briefly: copy out the public header facts
+     * ([`Vault::plan_master_password`]);
+     * 2. with nothing held: Argon2id ([`kagisecure_core::vault::MasterPasswordPlan::derive`]);
+     * 3. under the mutex, briefly: wrap the vault key under the derived key
+     * ([`Vault::wrap_master_password`], one AEAD, no KDF);
+     *
+     * and then the transaction installs the slot ([`Tx::install_master_password`]) with its
+     * audit entry. The plan remembers the slot and KDF descriptor it was taken against, so a
+     * password change or KDF upgrade another process made meanwhile is refused at install, not
+     * silently undone. A lock while the derivation runs makes step 3 answer
+     * [`FfiError::VaultLocked`] and nothing is installed.
+     *
      * # Errors
      *
-     * KDF, RNG and I/O failures.
+     * [`FfiError::Invalid`] (`kagisecure_core::Error::VaultConflict`) if another process changed
+     * the master password or the KDF cost first, so the prepared slot no longer replaces what is
+     * actually in the header — call this again to prepare against the fresh one;
+     * [`FfiError::VaultLocked`]; plus KDF, RNG and I/O failures.
      */
     func changeMasterPassword(newPassword: String) throws 
+    
+    /**
+     * Why writes have stopped, if they have (step 4, user decision 3). `None` the rest of the
+     * time, including while merely locked-out-briefly ([`FfiError::Busy`] is not a conflict: it
+     * clears itself the moment the other writer lets go).
+     */
+    func conflict()  -> VaultConflictKindView?
+    
+    /**
+     * What choosing "Keep this app's version (overwrite the file)" would discard, for the
+     * confirmation shown before it runs; `None` if there is no conflict (any more).
+     *
+     * Reads the file ([`Vault::examine_conflict`]) and changes nothing on disk. It does update
+     * [`VaultSession::conflict`] to match what it found — including clearing it when the file
+     * turns out to continue this session again — and remembers the full answer, so that
+     * [`VaultSession::keep_app_version_over_conflict`] acts on exactly what the person read.
+     *
+     * # Errors
+     *
+     * [`FfiError::Io`] if the file could not be read at all (which is not the same as it being
+     * missing: that is [`VaultConflictKindView::Removed`]).
+     */
+    func conflictDetails() throws  -> VaultConflictDetailsView?
     
     /**
      * Create an empty environment from the app (ui-spec.md §10.4).
@@ -903,13 +3260,30 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
     func deleteEnvironment(environmentId: String) throws 
     
     /**
-     * Delete an item for good. Only reachable from the Trash (ui-spec.md §2.2).
+     * Delete an item for good. Only reachable from the Trash (ui-spec.md §2.2), and only for
+     * the item as the person saw it there.
+     *
+     * `revision` is the [`ItemView::revision`] of the Trash row the person chose to delete. Both
+     * checks run against the file as it is inside the transaction, not against this session's
+     * memory — the same rule [`VaultSession::save_item`], the other edit that destroys data,
+     * follows:
+     *
+     * * the item must still be **in the Trash**: another window, the CLI or another process may
+     * have restored it since the row was drawn, and a restored item is one the person wants
+     * back, not one to destroy;
+     * * it must still be **the item that was shown** (`revision`): if it was changed since —
+     * restored and binned again, edited, anything — the confirmation was about something else,
+     * and nothing is deleted.
+     *
+     * By id only (`Tx::remove_item_by_id`): a title or an id prefix never names an item here.
      *
      * # Errors
      *
-     * [`FfiError::NotPresent`], plus I/O failures.
+     * [`FfiError::NotPresent`] for no such item; [`FfiError::ItemChangedElsewhere`] if it changed
+     * since `revision` was read (reload the Trash and ask again); [`FfiError::Invalid`] if it is
+     * not in the Trash; plus I/O failures. Nothing is deleted on any error.
      */
-    func deleteItem(itemId: String) throws 
+    func deleteItem(itemId: String, revision: String) throws 
     
     /**
      * One environment.
@@ -932,6 +3306,12 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
      * narrowest one: it is called once, during enrolment, and the caller is expected to pass the
      * result to `SecKeyCreateEncryptedData` and then to
      * [`VaultSession::install_platform_slot`] without holding on to it.
+     *
+     * Audited best-effort (ADR-0040 step 10), as `vault_key_export`: the key leaves the vault
+     * whether or not that entry can be written right now, and a failed write stays queued.
+     *
+     * Empty once the vault is locked — which [`VaultSession::install_platform_slot`] refuses, so
+     * an enrolment racing a lock cannot install a slot that opens nothing.
      */
     func exportVaultKeyForPlatformWrapping()  -> Data
     
@@ -956,13 +3336,18 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
      * does; with `None` each item goes where the source said. A named vault the file does not
      * have is created, and the outcome says which names those were.
      *
-     * The plan is consumed: the handle is spent afterwards and a second call fails rather than
-     * importing twice. The save is the same atomic `0600` write every other mutating method on
-     * this object performs, so the file is either the old one or the new one.
+     * The plan is spent only by a commit that reached the disk: the handle then refuses a second
+     * call rather than importing twice. A commit that did not — another writer held the lock
+     * past the app's wait ([`FfiError::Busy`]), the file diverged, the write failed — leaves the
+     * handle exactly as it was, so the sheet can say what happened and offer Import again
+     * without making the person choose the file a second time. The save is the same atomic
+     * `0600` write every other mutating method on this object performs, so the file is either
+     * the old one or the new one.
      *
      * # Errors
      *
-     * [`FfiError::Invalid`] if the plan is spent, or I/O failures from the save.
+     * [`FfiError::Invalid`] if the plan is spent or a commit of it is already running, or I/O
+     * failures from the save.
      */
     func importCommit(plan: ImportPlanHandle, policy: DuplicatePolicyView, targetVault: String?) throws  -> ImportOutcomeView
     
@@ -1013,6 +3398,11 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
     func installPlatformSlot(slotId: String, label: String, wrappedKey: Data) throws 
     
     /**
+     * Whether the vault is still unlocked — `false` once [`VaultSession::lock`] has run.
+     */
+    func isUnlocked()  -> Bool
+    
+    /**
      * One item by id.
      *
      * # Errors
@@ -1022,18 +3412,31 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
     func item(itemId: String) throws  -> ItemView
     
     /**
-     * The current one-time password for an item's first TOTP field, if it has one.
+     * "Keep this app's version (overwrite the file)" — one of the two choices the conflict alert
+     * offers, run only after the person confirmed `confirmed` (from
+     * [`VaultSession::conflict_details`]).
      *
-     * What the item list's hover action and Quick Access's ⌥⏎ need: they know an item, not a
-     * field. `None` — rather than an error — when the item has no TOTP field at all, because
-     * "this row has no code to copy" is an ordinary state for most rows.
+     * Replaces the vault file with this session's header and body
+     * ([`Vault::overwrite_with_this_session`]), writing every audit entry still waiting in this
+     * session first and then one recording what was overwritten. Because the *header* is this
+     * session's, a master password, recovery code or Touch ID enrolment that exists only in the
+     * file's version is discarded with it, and this session's ones work again — which is why
+     * [`VaultConflictDetailsView`] reports them and the confirmation must say so. A missing file
+     * is recreated.
+     *
+     * Refuses to act on anything but what was confirmed: if the file changed after
+     * `confirmed` was built, nothing is written and the outcome is
+     * [`KeepAppVersionOutcome::FileChangedAgain`] with the new details, to confirm again. If the
+     * file continues this session again, nothing needs overwriting: the session catches up with
+     * it by an ordinary transaction and the outcome is
+     * [`KeepAppVersionOutcome::NoLongerInConflict`].
      *
      * # Errors
      *
-     * [`FfiError::NotPresent`] for an unknown item, [`FfiError::Invalid`] if the field's stored
-     * URI does not parse.
+     * [`FfiError::Busy`] if another writer held the lock past the app's wait (nothing was
+     * written; the conflict stays), and I/O failures. The conflict stays set on every error.
      */
-    func itemTotpCode(itemId: String, at: UInt64) throws  -> TotpCodeView?
+    func keepAppVersionOverConflict(confirmed: VaultConflictDetailsView) throws  -> KeepAppVersionOutcome
     
     /**
      * The item list for one sidebar section, optionally filtered by the search field.
@@ -1042,8 +3445,45 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
      * (ui-spec.md §3): a concealed value is not indexed in plaintext, and a public one is not
      * searched either, so that turning a field from public to concealed cannot change what a
      * search reveals.
+     *
+     * **Nor notes** (ADR-0038 user decision 3). A note is secret now, and a search that matched
+     * its text would be an oracle: anything that can type into the search field could learn a
+     * note one guess at a time — "does any item's note contain `1234`?" — by watching which rows
+     * stay, with no presence prompt ever shown. That is the same reason field values are not
+     * searched, applied to the one secret that used to be.
+     *
+     * Empty once the vault is locked.
      */
     func listItems(filter: ItemFilter, query: String?, sort: ItemSort)  -> [ItemView]
+    
+    /**
+     * Lock the vault now (ADR-0038 §4).
+     *
+     * Takes the vault out of the shared handle: the vault key is zeroized, the agent's and the
+     * browser extension's lock hooks revoke every lease and deny every pending approval, and any
+     * audit entry still waiting is given one last chance to be written. A release still waiting
+     * on its presence prompt is recorded `VAULT_LOCKED` first and can no longer hand anything
+     * out, whatever the prompt answers. Every release object already handed out stops working.
+     *
+     * The app calls this before it lets go of the session, rather than relying on the last
+     * reference going away: a pending prompt's future holds a reference, so dropping would not
+     * lock until the prompt answered. Idempotent; afterwards every call on this object answers
+     * [`FfiError::VaultLocked`] or an empty result.
+     */
+    func lock() 
+    
+    /**
+     * Best-effort audit note that a *new* session was opened to recover from a conflict
+     * (`VaultConflictKindView`) the *previous* session detected — call once, right after a fresh
+     * `unlock_with_*`/`create` succeeds in response to "Lock and reopen from the file".
+     *
+     * Never fails outward, the same way a reveal or a copy never blocks on the audit log (user
+     * decision 1): losing this note must not stand between the human and getting back into their
+     * vault. Uses [`VaultHandle::record_best_effort`] directly rather than going through
+     * `VaultSession::transact`, because a freshly opened session has nothing to be in conflict
+     * with yet — this is a plain best-effort append, not a write that needs to itself detect one.
+     */
+    func noteReopenedAfterConflict() 
     
     /**
      * Where this vault lives.
@@ -1074,22 +3514,12 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
     func removeVariable(environmentId: String, name: String) throws  -> EnvironmentView
     
     /**
-     * Reveal one concealed field's value (ui-spec.md §4.2, ⌘R).
-     *
-     * [ADR-0008](../../../docs/decisions/0008-ffi-secret-crossings.md) crossing 2, outbound. One
-     * field at a time, on an explicit user action: there is no call that returns every value in
-     * an item, so a bug in the UI layer cannot spill a whole item into a rendered view.
-     *
-     * # Errors
-     *
-     * [`FfiError::NotPresent`] for an unknown item or field, [`FfiError::Invalid`] if the value
-     * is not valid UTF-8 (an imported binary key, say) and so cannot be shown as text.
-     */
-    func revealField(itemId: String, fieldId: String) throws  -> String
-    
-    /**
-     * Write the vault to disk. Every mutating method already does; this is for a "save now"
-     * affordance and for tests.
+     * Write the vault to disk. Every mutating method already does through its own transaction;
+     * this is for a "save now" affordance and for tests. A transaction of its own — rather than
+     * the old direct, non-transactional `Vault::save` (crate-private since ADR-0039 step 6) — so
+     * it also picks up another writer's changes and flushes anything still in the pending audit
+     * queue, instead of merely risking [`kagisecure_core::Error::VaultConflict`] against stale
+     * in-memory state.
      *
      * # Errors
      *
@@ -1106,9 +3536,32 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
      * it has its own toggles and its own methods, so an edit sheet cannot turn agent access on
      * as a side effect of a rename.
      *
+     * # `FieldDraft.value: None` (ADR-0038 step 3)
+     *
+     * Edit mode never prefills a concealed value, so most saves carry `None` for fields the user
+     * never touched: this keeps that field's stored [`kagisecure_core::model::FieldValue`]
+     * exactly as it was — moved, not re-derived from a plaintext the app never held — so an edit
+     * that only changes the title cannot, on a failed reveal or any other bug, replace a secret
+     * with an empty string. Two shapes of `None` are refused outright, before anything is
+     * written: a field with no `id` (nothing stored to keep), and a field going from concealed
+     * to public with no new value (which would otherwise turn "untick Concealed, then save" into
+     * a free release of the secret's plaintext).
+     *
+     * `Some("")` on an already-stored field that is staying (or becoming) concealed is treated
+     * exactly like `None` — see `effective_value` — so an empty string arriving through this
+     * call for any reason (a UI bug that puts the wrong row's state on this field, a person who
+     * pressed "Change" and then Save without typing) still cannot overwrite a real secret with
+     * nothing. Only this crate's own boundary can promise that; nothing about the app's UI is
+     * trusted to get an empty-versus-untouched distinction right on secret material.
+     *
      * # Errors
      *
-     * [`FfiError::NotPresent`] for an unknown item, plus I/O failures.
+     * [`FfiError::NotPresent`] for an unknown item; [`FfiError::ItemChangedElsewhere`] (user
+     * decision 4) if the item on disk is no longer the one the edit sheet started from — another
+     * window, the CLI, or another process saved it first. The app should reload the item (its
+     * fresh [`ItemView::revision`] is not returned here, precisely because nothing was written)
+     * and let the user redo their edit; [`FfiError::Invalid`] for either shape of `None` above,
+     * with nothing written; plus I/O failures.
      */
     func saveItem(draft: ItemDraft) throws  -> ItemView
     
@@ -1200,39 +3653,99 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
     func sidebarCounts()  -> SidebarCounts
     
     /**
+     * Bring this session up to date with the file, if another writer changed it since the last
+     * call ([`Vault::refresh_if_changed`], via [`VaultHandle::sync`]).
+     *
+     * The app calls this on `NSApplicationDidBecomeActive`, on a timer (~2s) while it is
+     * frontmost, and right before the Audit view re-reads the log — never on every read, because
+     * a read needs no lock and this crate's writers already start every write from the file as it
+     * is (`Vault::transact`). `true` means either the in-memory state changed (re-read the lists)
+     * or a conflict was just detected or resolved (re-read [`VaultSession::conflict`]); `false`
+     * means nothing to do, including "could not even check right now" (a transient I/O error,
+     * where the safest thing is to keep showing what is in memory and try again next tick).
+     */
+    func sync()  -> Bool
+    
+    /**
      * The one-time recovery code, if this session created the vault. Returns it once and then
      * forgets it, so a second caller cannot re-read something the user was told is one-time.
      */
     func takeRecoveryCode()  -> String?
     
     /**
-     * The current one-time password for a TOTP field (ui-spec.md §4.2).
-     *
-     * [ADR-0008](../../../docs/decisions/0008-ffi-secret-crossings.md) crossing 5, outbound. One
-     * field at a time and named explicitly, exactly like [`VaultSession::reveal_field`]: there is
-     * no call that returns every code in the vault, so the Quick Access list asks for the one row
-     * the user is on rather than being handed a screenful.
-     *
-     * `at` is the Unix time to render for. The caller passes its own clock so the code and the
-     * countdown ring around it are drawn from one instant — a ring that reached zero one tick
-     * before the code changed would be the drift the roadmap's soak-test criterion is about.
-     *
-     * # Errors
-     *
-     * [`FfiError::NotPresent`] for an unknown item or field, [`FfiError::Invalid`] if the field
-     * is not a one-time password or its stored `otpauth://` URI does not parse.
-     */
-    func totpCode(itemId: String, fieldId: String, at: UInt64) throws  -> TotpCodeView
-    
-    /**
-     * How this session unlocked.
+     * How this session unlocked — as last seen, once the vault is locked. (It can change while
+     * unlocked: setting a new master password after a recovery-code unlock makes it `Password`.)
      */
     func unlockedBy()  -> UnlockKind
+    
+    /**
+     * A stable identifier for this vault *file* — not a logical vault inside it
+     * ([`crate::types::ItemView::vault_id`], which is a different id with a different lifetime.
+     * This one is the header's own `vault_id` (vault-format §2.1), 16 random bytes minted once
+     * when [`VaultSession::create`] made the file and unchanged for the file's life, hex-encoded.
+     *
+     * Metadata, not secret material: it decides nothing about access and is safe to compare, log
+     * or persist. It exists so the app can tell "the same vault, reopened" apart from "a
+     * different vault that now happens to sit at the same path" — the same distinction
+     * [`kagisecure_core::Error::VaultReplaced`] already makes inside the core, exposed here so
+     * `AppModel`'s "lock and reopen from the file" flow can make it too (a file removed and
+     * replaced by a freshly created vault at the same path must not be recorded as a reopen of
+     * the vault that conflicted).
+     */
+    func vaultFileId()  -> String
+    
+    /**
+     * [`VaultSession::vault_file_id`] as the header's raw bytes — what a platform keystore binds
+     * its wrapped key to (ADR-0033: part of the Windows Hello blob's associated data), so a blob
+     * cannot be moved to another vault file. Not secret: it is in the plaintext header, and
+     * [`crate::platform_slot_info`] reads it without unlocking. Taken from the header this
+     * session unlocked, and unchanged for its life: a transaction refuses a file whose id differs
+     * ([`kagisecure_core::Error::VaultReplaced`]), so this is never a replaced file's id.
+     */
+    func vaultFileIdBytes()  -> Data
     
     /**
      * The logical vaults inside the file, for the sidebar's vault switcher.
      */
     func vaults()  -> [VaultView]
+    
+    /**
+     * Create a shared vault called `name`, with this Mac as its first admin — syncing through
+     * `folder` (an iCloud Drive or Dropbox folder, say) if one is given.
+     *
+     * Each vault this Mac creates gets a device key of its own in the personal vault. The first
+     * device key upgrades the personal vault file's format, keeping a `.bak-1` copy of it.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for an empty or over-long name; [`FfiError::Io`] if the folder
+     * cannot be written; [`FfiError::VaultLocked`].
+     */
+    func createSharedVault(name: String, folder: String?) throws  -> SharedVaultSession
+    
+    /**
+     * Join the shared vault an invitation file invites this Mac to, with the passphrase that
+     * came with it (decision 86) — syncing through `folder` if one is given. Joining a vault
+     * already joined adds the invitation's records to it.
+     *
+     * # Errors
+     *
+     * [`FfiError::WrongCredential`] for a wrong passphrase or an altered file;
+     * [`FfiError::Invalid`] for a file that is not an invitation; [`FfiError::Io`];
+     * [`FfiError::VaultLocked`].
+     */
+    func joinSharedVault(invitationPath: String, passphrase: String, folder: String?) throws  -> SharedVaultSession
+    
+    /**
+     * Every shared vault this personal vault has a copy of, opened (module documentation). A
+     * copy that does not open is still listed, with its `problem` in
+     * [`SharedVaultSession::summary`].
+     *
+     * # Errors
+     *
+     * [`FfiError::VaultLocked`]; [`FfiError::Io`] if the shared vaults' directory cannot be read.
+     */
+    func openSharedVaults() throws  -> [SharedVaultSession]
     
 }
 /**
@@ -1245,7 +3758,7 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
  * [`kagisecure_agent::VaultHandle`], so there is one vault, one mutex, and one definition of
  * "locked" — the handle holding nothing.
  *
- * Dropping this object is still the lock operation, and now does two things rather than one: it
+ * Locking ([`VaultSession::lock`], and `Drop` as a backstop) does two things rather than one: it
  * takes the vault out of the handle (which zeroizes the key) **and** runs the handle's lock hook,
  * which is what kills every lease and denies every approval the agent still has in flight. There
  * is no window in which a locked vault serves an agent.
@@ -1388,6 +3901,155 @@ public static func unlockWithVaultKey(path: String, vaultKey: Data)throws  -> Va
 
     
     /**
+     * Install the app's presence check. Once per session: a second call is refused and the first
+     * gate stays, so nothing that runs later can swap in a gate that always says yes.
+     *
+     * Until a gate is installed, every `release_*` call fails closed with
+     * [`FfiError::NoPresenceGate`].
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] if a gate is already installed.
+     */
+open func setPresenceGate(gate: PresenceGate)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_set_presence_gate(
+            self.uniffiCloneHandle(),
+        FfiConverterTypePresenceGate_lower(gate),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Check the vault's master password — the presence gate's fallback when
+     * `LocalAuthentication` cannot run at all (ADR-0038 user decision 7).
+     *
+     * Argon2id runs with no lock held: the header facts it needs are copied out first, and only
+     * the constant-time comparison of the unwrapped key against this session's happens under the
+     * vault's mutex again. So a check — deliberately slow — stalls neither the agent nor the
+     * list. Call it off the main thread for the same reason.
+     *
+     * Rate limited, per session: after a wrong password the next attempt is refused for one
+     * second, then two, four, … up to five minutes; a right one resets it. Attempts are also
+     * serialised — one running check makes every other attempt [`MasterPasswordCheck::Throttled`]
+     * — so a burst of attempts cannot all be checked before the first failure is counted.
+     *
+     * A right password while a release is waiting on its prompt marks that release, so its
+     * grant is audited `DETAIL_PRESENCE_CONFIRMED_MASTER_PASSWORD` rather than as a biometric.
+     * A wrong one is audited best-effort (`verify_master_password`, `denied`,
+     * `DETAIL_MASTER_PASSWORD_WRONG`, naming the item the waiting release is for), and so is
+     * the first throttled attempt of each back-off window
+     * (`DETAIL_MASTER_PASSWORD_THROTTLED`): a burst of guesses is exactly what an automation
+     * agent working through the app's own UI would leave, and never a reason to refuse the
+     * check itself.
+     *
+     * # Errors
+     *
+     * [`FfiError::VaultLocked`]; [`FfiError::NoSuchSlot`] if the vault has no master-password
+     * slot; KDF failures.
+     */
+open func verifyMasterPassword(password: String)throws  -> MasterPasswordCheck  {
+    return try  FfiConverterTypeMasterPasswordCheck_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_verify_master_password(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(password),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Release one concealed field's value, behind a fresh presence check (ADR-0038).
+     *
+     * [ADR-0008](../../../docs/decisions/0008-ffi-secret-crossings.md) crossing 2, outbound, with
+     * the fail-closed check ADR-0038 puts in front of it. One field per call and one prompt per
+     * field: showing the password and then the one-time code is two touches (user decision 1).
+     *
+     * The prompt names the field's label, the item's title and the action, sanitised. With no
+     * gate installed, nothing is asked and nothing is released.
+     *
+     * # Errors
+     *
+     * Before any prompt: [`FfiError::VaultLocked`], [`FfiError::NotPresent`] for an unknown item
+     * or field, [`FfiError::Invalid`] for a field that is not concealed (its value is already in
+     * [`crate::FieldView::value`]) or whose value is not text, [`FfiError::NoPresenceGate`],
+     * [`FfiError::PresenceBusy`] if another release is awaiting its prompt. After it:
+     * [`FfiError::PresenceCancelled`], [`FfiError::PresenceUnavailable`],
+     * [`FfiError::PresenceBusy`], [`FfiError::VaultLocked`] if the vault locked meanwhile, and
+     * [`FfiError::NotPresent`] if the item or field went.
+     */
+open func releaseField(itemId: String, fieldId: String, purpose: ReleasePurpose)async throws  -> FieldRelease  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_kagisecure_ffi_fn_method_vaultsession_release_field(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(itemId),FfiConverterString.lower(fieldId),FfiConverterTypeReleasePurpose_lower(purpose)
+                )
+            },
+            pollFunc: ffi_kagisecure_ffi_rust_future_poll_u64,
+            completeFunc: ffi_kagisecure_ffi_rust_future_complete_u64,
+            freeFunc: ffi_kagisecure_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeFieldRelease_lift,
+            errorHandler: FfiConverterTypeFfiError_lift
+        )
+}
+    
+    /**
+     * Release an item's notes, behind a fresh presence check (user decision 3: every note is
+     * secret). [`ReleasePurpose::QuickAccessCopy`] is refused.
+     *
+     * # Errors
+     *
+     * As [`VaultSession::release_field`], with [`FfiError::NotPresent`] for an item with no
+     * notes.
+     */
+open func releaseNotes(itemId: String, purpose: ReleasePurpose)async throws  -> NotesRelease  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_kagisecure_ffi_fn_method_vaultsession_release_notes(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(itemId),FfiConverterTypeReleasePurpose_lower(purpose)
+                )
+            },
+            pollFunc: ffi_kagisecure_ffi_rust_future_poll_u64,
+            completeFunc: ffi_kagisecure_ffi_rust_future_complete_u64,
+            freeFunc: ffi_kagisecure_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeNotesRelease_lift,
+            errorHandler: FfiConverterTypeFfiError_lift
+        )
+}
+    
+    /**
+     * Release an item's one-time code, behind a fresh presence check — the named TOTP field, or
+     * with `field_id` `None` the item's first one (what the list row and Quick Access ⌥⏎ need).
+     *
+     * ADR-0008 crossing 5, outbound, behind ADR-0038's check. `purpose` is
+     * [`ReleasePurpose::Reveal`] for the detail pane's live code (`totp_show`), or a copy
+     * (`totp_copy`, `quick_access_copy`); [`ReleasePurpose::EditReveal`] is refused — editing a
+     * one-time password's setup is [`VaultSession::release_field`] on the field itself.
+     *
+     * # Errors
+     *
+     * As [`VaultSession::release_field`], with [`FfiError::NotPresent`] for an item with no
+     * one-time password and [`FfiError::Invalid`] for a field whose setup does not parse.
+     */
+open func releaseTotp(itemId: String, fieldId: String?, purpose: ReleasePurpose)async throws  -> TotpRelease  {
+    return
+        try  await uniffiRustCallAsync(
+            rustFutureFunc: {
+                uniffi_kagisecure_ffi_fn_method_vaultsession_release_totp(
+                        self.uniffiCloneHandle(),FfiConverterString.lower(itemId),FfiConverterOptionString.lower(fieldId),FfiConverterTypeReleasePurpose_lower(purpose)
+                )
+            },
+            pollFunc: ffi_kagisecure_ffi_rust_future_poll_u64,
+            completeFunc: ffi_kagisecure_ffi_rust_future_complete_u64,
+            freeFunc: ffi_kagisecure_ffi_rust_future_free_u64,
+            liftFunc: FfiConverterTypeTotpRelease_lift,
+            errorHandler: FfiConverterTypeFfiError_lift
+        )
+}
+    
+    /**
      * How many entries the audit log has, for the viewer's paging.
      */
 open func auditCount() -> UInt32  {
@@ -1400,7 +4062,29 @@ open func auditCount() -> UInt32  {
 }
     
     /**
+     * Whether every appended audit entry has actually made it to disk.
+     *
+     * Every mutating call in this file already saves before it returns, so in the common case
+     * this is `{ unsaved_entries: 0, last_error: None }`. It stops being that the moment a save
+     * starts failing somewhere the caller could not afford to fail loudly (agent-side denials in
+     * `kagisecure-agent::service`, extension refusals in `kagisecure-agent::extension`) — this is
+     * how the app notices and tells the human, even though this process was not the one whose
+     * save failed.
+     */
+open func auditDurability() -> AuditDurabilityView  {
+    return try!  FfiConverterTypeAuditDurabilityView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_audit_durability(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Whether the audit hash chain verifies (vault-format.md §8).
+     *
+     * `true` once the vault is locked: there is no log in memory to find broken, and `false`
+     * would raise the "audit log damaged" warning over a vault that is merely locked.
      */
 open func auditIntact() -> Bool  {
     return try!  FfiConverterBool.lift(try! rustCall() {
@@ -1453,9 +4137,30 @@ open func bindVariable(environmentId: String, name: String, itemId: String, fiel
     /**
      * Replace the master password (ui-spec.md §6, and required after a recovery-code unlock).
      *
+     * Argon2id runs with **no lock held** — neither the vault file's lock nor the handle's mutex,
+     * which the agent's request loop, the browser extension and every other call on this session
+     * take too. A password change used to derive under that mutex, which stalled all of them for
+     * the whole derivation (hundreds of milliseconds at the desktop profile, seconds on a slow
+     * Mac). It now runs in three short steps around the slow one:
+     *
+     * 1. under the mutex, briefly: copy out the public header facts
+     * ([`Vault::plan_master_password`]);
+     * 2. with nothing held: Argon2id ([`kagisecure_core::vault::MasterPasswordPlan::derive`]);
+     * 3. under the mutex, briefly: wrap the vault key under the derived key
+     * ([`Vault::wrap_master_password`], one AEAD, no KDF);
+     *
+     * and then the transaction installs the slot ([`Tx::install_master_password`]) with its
+     * audit entry. The plan remembers the slot and KDF descriptor it was taken against, so a
+     * password change or KDF upgrade another process made meanwhile is refused at install, not
+     * silently undone. A lock while the derivation runs makes step 3 answer
+     * [`FfiError::VaultLocked`] and nothing is installed.
+     *
      * # Errors
      *
-     * KDF, RNG and I/O failures.
+     * [`FfiError::Invalid`] (`kagisecure_core::Error::VaultConflict`) if another process changed
+     * the master password or the KDF cost first, so the prepared slot no longer replaces what is
+     * actually in the header — call this again to prepare against the fresh one;
+     * [`FfiError::VaultLocked`]; plus KDF, RNG and I/O failures.
      */
 open func changeMasterPassword(newPassword: String)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
         uniffiCallStatus in
@@ -1464,6 +4169,43 @@ open func changeMasterPassword(newPassword: String)throws   {try rustCallWithErr
         FfiConverterString.lower(newPassword),uniffiCallStatus
     )
 }
+}
+    
+    /**
+     * Why writes have stopped, if they have (step 4, user decision 3). `None` the rest of the
+     * time, including while merely locked-out-briefly ([`FfiError::Busy`] is not a conflict: it
+     * clears itself the moment the other writer lets go).
+     */
+open func conflict() -> VaultConflictKindView?  {
+    return try!  FfiConverterOptionTypeVaultConflictKindView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_conflict(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * What choosing "Keep this app's version (overwrite the file)" would discard, for the
+     * confirmation shown before it runs; `None` if there is no conflict (any more).
+     *
+     * Reads the file ([`Vault::examine_conflict`]) and changes nothing on disk. It does update
+     * [`VaultSession::conflict`] to match what it found — including clearing it when the file
+     * turns out to continue this session again — and remembers the full answer, so that
+     * [`VaultSession::keep_app_version_over_conflict`] acts on exactly what the person read.
+     *
+     * # Errors
+     *
+     * [`FfiError::Io`] if the file could not be read at all (which is not the same as it being
+     * missing: that is [`VaultConflictKindView::Removed`]).
+     */
+open func conflictDetails()throws  -> VaultConflictDetailsView?  {
+    return try  FfiConverterOptionTypeVaultConflictDetailsView.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_conflict_details(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
     
     /**
@@ -1543,17 +4285,35 @@ open func deleteEnvironment(environmentId: String)throws   {try rustCallWithErro
 }
     
     /**
-     * Delete an item for good. Only reachable from the Trash (ui-spec.md §2.2).
+     * Delete an item for good. Only reachable from the Trash (ui-spec.md §2.2), and only for
+     * the item as the person saw it there.
+     *
+     * `revision` is the [`ItemView::revision`] of the Trash row the person chose to delete. Both
+     * checks run against the file as it is inside the transaction, not against this session's
+     * memory — the same rule [`VaultSession::save_item`], the other edit that destroys data,
+     * follows:
+     *
+     * * the item must still be **in the Trash**: another window, the CLI or another process may
+     * have restored it since the row was drawn, and a restored item is one the person wants
+     * back, not one to destroy;
+     * * it must still be **the item that was shown** (`revision`): if it was changed since —
+     * restored and binned again, edited, anything — the confirmation was about something else,
+     * and nothing is deleted.
+     *
+     * By id only (`Tx::remove_item_by_id`): a title or an id prefix never names an item here.
      *
      * # Errors
      *
-     * [`FfiError::NotPresent`], plus I/O failures.
+     * [`FfiError::NotPresent`] for no such item; [`FfiError::ItemChangedElsewhere`] if it changed
+     * since `revision` was read (reload the Trash and ask again); [`FfiError::Invalid`] if it is
+     * not in the Trash; plus I/O failures. Nothing is deleted on any error.
      */
-open func deleteItem(itemId: String)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+open func deleteItem(itemId: String, revision: String)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
         uniffiCallStatus in
     uniffi_kagisecure_ffi_fn_method_vaultsession_delete_item(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(itemId),uniffiCallStatus
+        FfiConverterString.lower(itemId),
+        FfiConverterString.lower(revision),uniffiCallStatus
     )
 }
 }
@@ -1594,6 +4354,12 @@ open func environments() -> [EnvironmentView]  {
      * narrowest one: it is called once, during enrolment, and the caller is expected to pass the
      * result to `SecKeyCreateEncryptedData` and then to
      * [`VaultSession::install_platform_slot`] without holding on to it.
+     *
+     * Audited best-effort (ADR-0040 step 10), as `vault_key_export`: the key leaves the vault
+     * whether or not that entry can be written right now, and a failed write stays queued.
+     *
+     * Empty once the vault is locked — which [`VaultSession::install_platform_slot`] refuses, so
+     * an enrolment racing a lock cannot install a slot that opens nothing.
      */
 open func exportVaultKeyForPlatformWrapping() -> Data  {
     return try!  FfiConverterData.lift(try! rustCall() {
@@ -1641,13 +4407,18 @@ open func hasPlatformSlot() -> Bool  {
      * does; with `None` each item goes where the source said. A named vault the file does not
      * have is created, and the outcome says which names those were.
      *
-     * The plan is consumed: the handle is spent afterwards and a second call fails rather than
-     * importing twice. The save is the same atomic `0600` write every other mutating method on
-     * this object performs, so the file is either the old one or the new one.
+     * The plan is spent only by a commit that reached the disk: the handle then refuses a second
+     * call rather than importing twice. A commit that did not — another writer held the lock
+     * past the app's wait ([`FfiError::Busy`]), the file diverged, the write failed — leaves the
+     * handle exactly as it was, so the sheet can say what happened and offer Import again
+     * without making the person choose the file a second time. The save is the same atomic
+     * `0600` write every other mutating method on this object performs, so the file is either
+     * the old one or the new one.
      *
      * # Errors
      *
-     * [`FfiError::Invalid`] if the plan is spent, or I/O failures from the save.
+     * [`FfiError::Invalid`] if the plan is spent or a commit of it is already running, or I/O
+     * failures from the save.
      */
 open func importCommit(plan: ImportPlanHandle, policy: DuplicatePolicyView, targetVault: String?)throws  -> ImportOutcomeView  {
     return try  FfiConverterTypeImportOutcomeView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
@@ -1735,6 +4506,18 @@ open func installPlatformSlot(slotId: String, label: String, wrappedKey: Data)th
 }
     
     /**
+     * Whether the vault is still unlocked — `false` once [`VaultSession::lock`] has run.
+     */
+open func isUnlocked() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_is_unlocked(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * One item by id.
      *
      * # Errors
@@ -1752,24 +4535,36 @@ open func item(itemId: String)throws  -> ItemView  {
 }
     
     /**
-     * The current one-time password for an item's first TOTP field, if it has one.
+     * "Keep this app's version (overwrite the file)" — one of the two choices the conflict alert
+     * offers, run only after the person confirmed `confirmed` (from
+     * [`VaultSession::conflict_details`]).
      *
-     * What the item list's hover action and Quick Access's ⌥⏎ need: they know an item, not a
-     * field. `None` — rather than an error — when the item has no TOTP field at all, because
-     * "this row has no code to copy" is an ordinary state for most rows.
+     * Replaces the vault file with this session's header and body
+     * ([`Vault::overwrite_with_this_session`]), writing every audit entry still waiting in this
+     * session first and then one recording what was overwritten. Because the *header* is this
+     * session's, a master password, recovery code or Touch ID enrolment that exists only in the
+     * file's version is discarded with it, and this session's ones work again — which is why
+     * [`VaultConflictDetailsView`] reports them and the confirmation must say so. A missing file
+     * is recreated.
+     *
+     * Refuses to act on anything but what was confirmed: if the file changed after
+     * `confirmed` was built, nothing is written and the outcome is
+     * [`KeepAppVersionOutcome::FileChangedAgain`] with the new details, to confirm again. If the
+     * file continues this session again, nothing needs overwriting: the session catches up with
+     * it by an ordinary transaction and the outcome is
+     * [`KeepAppVersionOutcome::NoLongerInConflict`].
      *
      * # Errors
      *
-     * [`FfiError::NotPresent`] for an unknown item, [`FfiError::Invalid`] if the field's stored
-     * URI does not parse.
+     * [`FfiError::Busy`] if another writer held the lock past the app's wait (nothing was
+     * written; the conflict stays), and I/O failures. The conflict stays set on every error.
      */
-open func itemTotpCode(itemId: String, at: UInt64)throws  -> TotpCodeView?  {
-    return try  FfiConverterOptionTypeTotpCodeView.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+open func keepAppVersionOverConflict(confirmed: VaultConflictDetailsView)throws  -> KeepAppVersionOutcome  {
+    return try  FfiConverterTypeKeepAppVersionOutcome_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
         uniffiCallStatus in
-    uniffi_kagisecure_ffi_fn_method_vaultsession_item_totp_code(
+    uniffi_kagisecure_ffi_fn_method_vaultsession_keep_app_version_over_conflict(
             self.uniffiCloneHandle(),
-        FfiConverterString.lower(itemId),
-        FfiConverterUInt64.lower(at),uniffiCallStatus
+        FfiConverterTypeVaultConflictDetailsView_lower(confirmed),uniffiCallStatus
     )
 })
 }
@@ -1781,6 +4576,14 @@ open func itemTotpCode(itemId: String, at: UInt64)throws  -> TotpCodeView?  {
      * (ui-spec.md §3): a concealed value is not indexed in plaintext, and a public one is not
      * searched either, so that turning a field from public to concealed cannot change what a
      * search reveals.
+     *
+     * **Nor notes** (ADR-0038 user decision 3). A note is secret now, and a search that matched
+     * its text would be an oracle: anything that can type into the search field could learn a
+     * note one guess at a time — "does any item's note contain `1234`?" — by watching which rows
+     * stay, with no presence prompt ever shown. That is the same reason field values are not
+     * searched, applied to the one secret that used to be.
+     *
+     * Empty once the vault is locked.
      */
 open func listItems(filter: ItemFilter, query: String?, sort: ItemSort) -> [ItemView]  {
     return try!  FfiConverterSequenceTypeItemView.lift(try! rustCall() {
@@ -1792,6 +4595,47 @@ open func listItems(filter: ItemFilter, query: String?, sort: ItemSort) -> [Item
         FfiConverterTypeItemSort_lower(sort),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Lock the vault now (ADR-0038 §4).
+     *
+     * Takes the vault out of the shared handle: the vault key is zeroized, the agent's and the
+     * browser extension's lock hooks revoke every lease and deny every pending approval, and any
+     * audit entry still waiting is given one last chance to be written. A release still waiting
+     * on its presence prompt is recorded `VAULT_LOCKED` first and can no longer hand anything
+     * out, whatever the prompt answers. Every release object already handed out stops working.
+     *
+     * The app calls this before it lets go of the session, rather than relying on the last
+     * reference going away: a pending prompt's future holds a reference, so dropping would not
+     * lock until the prompt answered. Idempotent; afterwards every call on this object answers
+     * [`FfiError::VaultLocked`] or an empty result.
+     */
+open func lock()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_lock(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
+}
+    
+    /**
+     * Best-effort audit note that a *new* session was opened to recover from a conflict
+     * (`VaultConflictKindView`) the *previous* session detected — call once, right after a fresh
+     * `unlock_with_*`/`create` succeeds in response to "Lock and reopen from the file".
+     *
+     * Never fails outward, the same way a reveal or a copy never blocks on the audit log (user
+     * decision 1): losing this note must not stand between the human and getting back into their
+     * vault. Uses [`VaultHandle::record_best_effort`] directly rather than going through
+     * `VaultSession::transact`, because a freshly opened session has nothing to be in conflict
+     * with yet — this is a plain best-effort append, not a write that needs to itself detect one.
+     */
+open func noteReopenedAfterConflict()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_note_reopened_after_conflict(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+}
 }
     
     /**
@@ -1853,31 +4697,12 @@ open func removeVariable(environmentId: String, name: String)throws  -> Environm
 }
     
     /**
-     * Reveal one concealed field's value (ui-spec.md §4.2, ⌘R).
-     *
-     * [ADR-0008](../../../docs/decisions/0008-ffi-secret-crossings.md) crossing 2, outbound. One
-     * field at a time, on an explicit user action: there is no call that returns every value in
-     * an item, so a bug in the UI layer cannot spill a whole item into a rendered view.
-     *
-     * # Errors
-     *
-     * [`FfiError::NotPresent`] for an unknown item or field, [`FfiError::Invalid`] if the value
-     * is not valid UTF-8 (an imported binary key, say) and so cannot be shown as text.
-     */
-open func revealField(itemId: String, fieldId: String)throws  -> String  {
-    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
-        uniffiCallStatus in
-    uniffi_kagisecure_ffi_fn_method_vaultsession_reveal_field(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(itemId),
-        FfiConverterString.lower(fieldId),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * Write the vault to disk. Every mutating method already does; this is for a "save now"
-     * affordance and for tests.
+     * Write the vault to disk. Every mutating method already does through its own transaction;
+     * this is for a "save now" affordance and for tests. A transaction of its own — rather than
+     * the old direct, non-transactional `Vault::save` (crate-private since ADR-0039 step 6) — so
+     * it also picks up another writer's changes and flushes anything still in the pending audit
+     * queue, instead of merely risking [`kagisecure_core::Error::VaultConflict`] against stale
+     * in-memory state.
      *
      * # Errors
      *
@@ -1900,9 +4725,32 @@ open func save()throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
      * it has its own toggles and its own methods, so an edit sheet cannot turn agent access on
      * as a side effect of a rename.
      *
+     * # `FieldDraft.value: None` (ADR-0038 step 3)
+     *
+     * Edit mode never prefills a concealed value, so most saves carry `None` for fields the user
+     * never touched: this keeps that field's stored [`kagisecure_core::model::FieldValue`]
+     * exactly as it was — moved, not re-derived from a plaintext the app never held — so an edit
+     * that only changes the title cannot, on a failed reveal or any other bug, replace a secret
+     * with an empty string. Two shapes of `None` are refused outright, before anything is
+     * written: a field with no `id` (nothing stored to keep), and a field going from concealed
+     * to public with no new value (which would otherwise turn "untick Concealed, then save" into
+     * a free release of the secret's plaintext).
+     *
+     * `Some("")` on an already-stored field that is staying (or becoming) concealed is treated
+     * exactly like `None` — see `effective_value` — so an empty string arriving through this
+     * call for any reason (a UI bug that puts the wrong row's state on this field, a person who
+     * pressed "Change" and then Save without typing) still cannot overwrite a real secret with
+     * nothing. Only this crate's own boundary can promise that; nothing about the app's UI is
+     * trusted to get an empty-versus-untouched distinction right on secret material.
+     *
      * # Errors
      *
-     * [`FfiError::NotPresent`] for an unknown item, plus I/O failures.
+     * [`FfiError::NotPresent`] for an unknown item; [`FfiError::ItemChangedElsewhere`] (user
+     * decision 4) if the item on disk is no longer the one the edit sheet started from — another
+     * window, the CLI, or another process saved it first. The app should reload the item (its
+     * fresh [`ItemView::revision`] is not returned here, precisely because nothing was written)
+     * and let the user redo their edit; [`FfiError::Invalid`] for either shape of `None` above,
+     * with nothing written; plus I/O failures.
      */
 open func saveItem(draft: ItemDraft)throws  -> ItemView  {
     return try  FfiConverterTypeItemView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
@@ -2083,6 +4931,27 @@ open func sidebarCounts() -> SidebarCounts  {
 }
     
     /**
+     * Bring this session up to date with the file, if another writer changed it since the last
+     * call ([`Vault::refresh_if_changed`], via [`VaultHandle::sync`]).
+     *
+     * The app calls this on `NSApplicationDidBecomeActive`, on a timer (~2s) while it is
+     * frontmost, and right before the Audit view re-reads the log — never on every read, because
+     * a read needs no lock and this crate's writers already start every write from the file as it
+     * is (`Vault::transact`). `true` means either the in-memory state changed (re-read the lists)
+     * or a conflict was just detected or resolved (re-read [`VaultSession::conflict`]); `false`
+     * means nothing to do, including "could not even check right now" (a transient I/O error,
+     * where the safest thing is to keep showing what is in memory and try again next tick).
+     */
+open func sync() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_sync(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * The one-time recovery code, if this session created the vault. Returns it once and then
      * forgets it, so a second caller cannot re-read something the user was told is one-time.
      */
@@ -2096,41 +4965,53 @@ open func takeRecoveryCode() -> String?  {
 }
     
     /**
-     * The current one-time password for a TOTP field (ui-spec.md §4.2).
-     *
-     * [ADR-0008](../../../docs/decisions/0008-ffi-secret-crossings.md) crossing 5, outbound. One
-     * field at a time and named explicitly, exactly like [`VaultSession::reveal_field`]: there is
-     * no call that returns every code in the vault, so the Quick Access list asks for the one row
-     * the user is on rather than being handed a screenful.
-     *
-     * `at` is the Unix time to render for. The caller passes its own clock so the code and the
-     * countdown ring around it are drawn from one instant — a ring that reached zero one tick
-     * before the code changed would be the drift the roadmap's soak-test criterion is about.
-     *
-     * # Errors
-     *
-     * [`FfiError::NotPresent`] for an unknown item or field, [`FfiError::Invalid`] if the field
-     * is not a one-time password or its stored `otpauth://` URI does not parse.
-     */
-open func totpCode(itemId: String, fieldId: String, at: UInt64)throws  -> TotpCodeView  {
-    return try  FfiConverterTypeTotpCodeView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
-        uniffiCallStatus in
-    uniffi_kagisecure_ffi_fn_method_vaultsession_totp_code(
-            self.uniffiCloneHandle(),
-        FfiConverterString.lower(itemId),
-        FfiConverterString.lower(fieldId),
-        FfiConverterUInt64.lower(at),uniffiCallStatus
-    )
-})
-}
-    
-    /**
-     * How this session unlocked.
+     * How this session unlocked — as last seen, once the vault is locked. (It can change while
+     * unlocked: setting a new master password after a recovery-code unlock makes it `Password`.)
      */
 open func unlockedBy() -> UnlockKind  {
     return try!  FfiConverterTypeUnlockKind_lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_kagisecure_ffi_fn_method_vaultsession_unlocked_by(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * A stable identifier for this vault *file* — not a logical vault inside it
+     * ([`crate::types::ItemView::vault_id`], which is a different id with a different lifetime.
+     * This one is the header's own `vault_id` (vault-format §2.1), 16 random bytes minted once
+     * when [`VaultSession::create`] made the file and unchanged for the file's life, hex-encoded.
+     *
+     * Metadata, not secret material: it decides nothing about access and is safe to compare, log
+     * or persist. It exists so the app can tell "the same vault, reopened" apart from "a
+     * different vault that now happens to sit at the same path" — the same distinction
+     * [`kagisecure_core::Error::VaultReplaced`] already makes inside the core, exposed here so
+     * `AppModel`'s "lock and reopen from the file" flow can make it too (a file removed and
+     * replaced by a freshly created vault at the same path must not be recorded as a reopen of
+     * the vault that conflicted).
+     */
+open func vaultFileId() -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_vault_file_id(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * [`VaultSession::vault_file_id`] as the header's raw bytes — what a platform keystore binds
+     * its wrapped key to (ADR-0033: part of the Windows Hello blob's associated data), so a blob
+     * cannot be moved to another vault file. Not secret: it is in the plaintext header, and
+     * [`crate::platform_slot_info`] reads it without unlocking. Taken from the header this
+     * session unlocked, and unchanged for its life: a transaction refuses a file whose id differs
+     * ([`kagisecure_core::Error::VaultReplaced`]), so this is never a replaced file's id.
+     */
+open func vaultFileIdBytes() -> Data  {
+    return try!  FfiConverterData.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_vault_file_id_bytes(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -2143,6 +5024,70 @@ open func vaults() -> [VaultView]  {
     return try!  FfiConverterSequenceTypeVaultView.lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_kagisecure_ffi_fn_method_vaultsession_vaults(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Create a shared vault called `name`, with this Mac as its first admin — syncing through
+     * `folder` (an iCloud Drive or Dropbox folder, say) if one is given.
+     *
+     * Each vault this Mac creates gets a device key of its own in the personal vault. The first
+     * device key upgrades the personal vault file's format, keeping a `.bak-1` copy of it.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`] for an empty or over-long name; [`FfiError::Io`] if the folder
+     * cannot be written; [`FfiError::VaultLocked`].
+     */
+open func createSharedVault(name: String, folder: String?)throws  -> SharedVaultSession  {
+    return try  FfiConverterTypeSharedVaultSession_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_create_shared_vault(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(name),
+        FfiConverterOptionString.lower(folder),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Join the shared vault an invitation file invites this Mac to, with the passphrase that
+     * came with it (decision 86) — syncing through `folder` if one is given. Joining a vault
+     * already joined adds the invitation's records to it.
+     *
+     * # Errors
+     *
+     * [`FfiError::WrongCredential`] for a wrong passphrase or an altered file;
+     * [`FfiError::Invalid`] for a file that is not an invitation; [`FfiError::Io`];
+     * [`FfiError::VaultLocked`].
+     */
+open func joinSharedVault(invitationPath: String, passphrase: String, folder: String?)throws  -> SharedVaultSession  {
+    return try  FfiConverterTypeSharedVaultSession_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_join_shared_vault(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(invitationPath),
+        FfiConverterString.lower(passphrase),
+        FfiConverterOptionString.lower(folder),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * Every shared vault this personal vault has a copy of, opened (module documentation). A
+     * copy that does not open is still listed, with its `problem` in
+     * [`SharedVaultSession::summary`].
+     *
+     * # Errors
+     *
+     * [`FfiError::VaultLocked`]; [`FfiError::Io`] if the shared vaults' directory cannot be read.
+     */
+open func openSharedVaults()throws  -> [SharedVaultSession]  {
+    return try  FfiConverterSequenceTypeSharedVaultSession.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_open_shared_vaults(
             self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
@@ -2194,6 +5139,487 @@ public func FfiConverterTypeVaultSession_lower(_ value: VaultSession) -> UInt64 
 }
 
 
+
+
+/**
+ * One blocked agent, for the blocks list in Agent access (ADR-0036 §9.3). Metadata only.
+ */
+public struct AgentFillBlockView: Equatable, Hashable {
+    /**
+     * What the block is keyed on — the agent's kernel-resolved parent executable — and what
+     * [`agent_fill_unblock`] takes. Every client under the same program shares it.
+     */
+    public var key: String
+    /**
+     * The self-reported name of the agent whose request set the block. Render it as a
+     * quotation; it is unverified.
+     */
+    public var agentName: String
+    /**
+     * Why.
+     */
+    public var reason: AgentFillBlockReasonView
+    /**
+     * Unix seconds it lifts at, for a live countdown; `None` for a block that lasts until the
+     * human unblocks it.
+     */
+    public var until: UInt64?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * What the block is keyed on — the agent's kernel-resolved parent executable — and what
+         * [`agent_fill_unblock`] takes. Every client under the same program shares it.
+         */key: String, 
+        /**
+         * The self-reported name of the agent whose request set the block. Render it as a
+         * quotation; it is unverified.
+         */agentName: String, 
+        /**
+         * Why.
+         */reason: AgentFillBlockReasonView, 
+        /**
+         * Unix seconds it lifts at, for a live countdown; `None` for a block that lasts until the
+         * human unblocks it.
+         */until: UInt64?) {
+        self.key = key
+        self.agentName = agentName
+        self.reason = reason
+        self.until = until
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AgentFillBlockView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentFillBlockView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentFillBlockView {
+        return
+            try AgentFillBlockView(
+                key: FfiConverterString.read(from: &buf), 
+                agentName: FfiConverterString.read(from: &buf), 
+                reason: FfiConverterTypeAgentFillBlockReasonView.read(from: &buf), 
+                until: FfiConverterOptionUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AgentFillBlockView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.key, into: &buf)
+        FfiConverterString.write(value.agentName, into: &buf)
+        FfiConverterTypeAgentFillBlockReasonView.write(value.reason, into: &buf)
+        FfiConverterOptionUInt64.write(value.until, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentFillBlockView_lift(_ buf: RustBuffer) throws -> AgentFillBlockView {
+    return try FfiConverterTypeAgentFillBlockView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentFillBlockView_lower(_ value: AgentFillBlockView) -> RustBuffer {
+    return FfiConverterTypeAgentFillBlockView.lower(value)
+}
+
+
+/**
+ * [`kagisecure_agent::AgentFillFacts`]: the agent, the item, the page and the browser, as the
+ * agent-fill sheet states them. Metadata only — names, paths, pids, flags and an origin.
+ *
+ * Two identity stories: the **agent** (`agent_name` is self-reported and must be quoted; the
+ * pids and executables are the kernel's) and the **browser** (the same facts the fill sheet
+ * already shows for a fill the human started).
+ */
+public struct AgentFillFactsView: Equatable, Hashable {
+    /**
+     * The agent's self-reported name. Render it as a quotation; it is unverified.
+     */
+    public var agentName: String
+    /**
+     * The sidecar's pid, from the kernel.
+     */
+    public var sidecarPid: UInt32
+    /**
+     * The sidecar's executable.
+     */
+    public var sidecarExecutable: String?
+    /**
+     * The sidecar's parent pid, from the kernel — what the "started by" signature check runs on.
+     */
+    public var parentPid: UInt32?
+    /**
+     * The sidecar's parent executable, from the kernel: what "this agent" means for blocking.
+     */
+    public var parentExecutable: String?
+    /**
+     * The item that would be filled.
+     */
+    public var itemId: String
+    /**
+     * Its title.
+     */
+    public var itemTitle: String
+    /**
+     * Which fields would be written. Names. `[oneTimeCode]` alone is a one-time-code request,
+     * which always has a sheet of its own (ADR-0036 §7.4).
+     */
+    public var fields: [AgentFillFieldView]
+    /**
+     * Page one of an identifier-first sign-in (ADR-0036 §7.3): the username is written now and
+     * the password on the next page, in the same tab, without another sheet. The sheet says
+     * *"username now, password on the next page"*.
+     */
+    public var twoStep: Bool
+    /**
+     * The page's origin, split for rendering.
+     */
+    public var pageOrigin: AgentOriginView
+    /**
+     * The saved website that covered the page, in ASCII serialization.
+     */
+    public var savedWebsite: String
+    /**
+     * Whether the page's host differs from the saved website's: "this page is a subdomain of it".
+     */
+    public var pageHostDiffers: Bool
+    /**
+     * The browser the app established from the native host's ancestry.
+     */
+    public var browser: String?
+    /**
+     * That browser's pid.
+     */
+    public var browserPid: UInt32?
+    /**
+     * That browser's executable path.
+     */
+    public var browserExecutable: String?
+    /**
+     * Whether the extension-side peer is an app extension we ship (Safari; never in practice).
+     */
+    public var browserIsAppExtension: Bool
+    /**
+     * The native messaging host's pid — "our helper".
+     */
+    public var hostPid: UInt32?
+    /**
+     * The native messaging host's executable.
+     */
+    public var hostExecutable: String?
+    /**
+     * The extension's self-reported id.
+     */
+    public var extensionId: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The agent's self-reported name. Render it as a quotation; it is unverified.
+         */agentName: String, 
+        /**
+         * The sidecar's pid, from the kernel.
+         */sidecarPid: UInt32, 
+        /**
+         * The sidecar's executable.
+         */sidecarExecutable: String?, 
+        /**
+         * The sidecar's parent pid, from the kernel — what the "started by" signature check runs on.
+         */parentPid: UInt32?, 
+        /**
+         * The sidecar's parent executable, from the kernel: what "this agent" means for blocking.
+         */parentExecutable: String?, 
+        /**
+         * The item that would be filled.
+         */itemId: String, 
+        /**
+         * Its title.
+         */itemTitle: String, 
+        /**
+         * Which fields would be written. Names. `[oneTimeCode]` alone is a one-time-code request,
+         * which always has a sheet of its own (ADR-0036 §7.4).
+         */fields: [AgentFillFieldView], 
+        /**
+         * Page one of an identifier-first sign-in (ADR-0036 §7.3): the username is written now and
+         * the password on the next page, in the same tab, without another sheet. The sheet says
+         * *"username now, password on the next page"*.
+         */twoStep: Bool = false, 
+        /**
+         * The page's origin, split for rendering.
+         */pageOrigin: AgentOriginView, 
+        /**
+         * The saved website that covered the page, in ASCII serialization.
+         */savedWebsite: String, 
+        /**
+         * Whether the page's host differs from the saved website's: "this page is a subdomain of it".
+         */pageHostDiffers: Bool, 
+        /**
+         * The browser the app established from the native host's ancestry.
+         */browser: String?, 
+        /**
+         * That browser's pid.
+         */browserPid: UInt32?, 
+        /**
+         * That browser's executable path.
+         */browserExecutable: String?, 
+        /**
+         * Whether the extension-side peer is an app extension we ship (Safari; never in practice).
+         */browserIsAppExtension: Bool, 
+        /**
+         * The native messaging host's pid — "our helper".
+         */hostPid: UInt32?, 
+        /**
+         * The native messaging host's executable.
+         */hostExecutable: String?, 
+        /**
+         * The extension's self-reported id.
+         */extensionId: String?) {
+        self.agentName = agentName
+        self.sidecarPid = sidecarPid
+        self.sidecarExecutable = sidecarExecutable
+        self.parentPid = parentPid
+        self.parentExecutable = parentExecutable
+        self.itemId = itemId
+        self.itemTitle = itemTitle
+        self.fields = fields
+        self.twoStep = twoStep
+        self.pageOrigin = pageOrigin
+        self.savedWebsite = savedWebsite
+        self.pageHostDiffers = pageHostDiffers
+        self.browser = browser
+        self.browserPid = browserPid
+        self.browserExecutable = browserExecutable
+        self.browserIsAppExtension = browserIsAppExtension
+        self.hostPid = hostPid
+        self.hostExecutable = hostExecutable
+        self.extensionId = extensionId
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AgentFillFactsView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentFillFactsView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentFillFactsView {
+        return
+            try AgentFillFactsView(
+                agentName: FfiConverterString.read(from: &buf), 
+                sidecarPid: FfiConverterUInt32.read(from: &buf), 
+                sidecarExecutable: FfiConverterOptionString.read(from: &buf), 
+                parentPid: FfiConverterOptionUInt32.read(from: &buf), 
+                parentExecutable: FfiConverterOptionString.read(from: &buf), 
+                itemId: FfiConverterString.read(from: &buf), 
+                itemTitle: FfiConverterString.read(from: &buf), 
+                fields: FfiConverterSequenceTypeAgentFillFieldView.read(from: &buf), 
+                twoStep: FfiConverterBool.read(from: &buf), 
+                pageOrigin: FfiConverterTypeAgentOriginView.read(from: &buf), 
+                savedWebsite: FfiConverterString.read(from: &buf), 
+                pageHostDiffers: FfiConverterBool.read(from: &buf), 
+                browser: FfiConverterOptionString.read(from: &buf), 
+                browserPid: FfiConverterOptionUInt32.read(from: &buf), 
+                browserExecutable: FfiConverterOptionString.read(from: &buf), 
+                browserIsAppExtension: FfiConverterBool.read(from: &buf), 
+                hostPid: FfiConverterOptionUInt32.read(from: &buf), 
+                hostExecutable: FfiConverterOptionString.read(from: &buf), 
+                extensionId: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AgentFillFactsView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.agentName, into: &buf)
+        FfiConverterUInt32.write(value.sidecarPid, into: &buf)
+        FfiConverterOptionString.write(value.sidecarExecutable, into: &buf)
+        FfiConverterOptionUInt32.write(value.parentPid, into: &buf)
+        FfiConverterOptionString.write(value.parentExecutable, into: &buf)
+        FfiConverterString.write(value.itemId, into: &buf)
+        FfiConverterString.write(value.itemTitle, into: &buf)
+        FfiConverterSequenceTypeAgentFillFieldView.write(value.fields, into: &buf)
+        FfiConverterBool.write(value.twoStep, into: &buf)
+        FfiConverterTypeAgentOriginView.write(value.pageOrigin, into: &buf)
+        FfiConverterString.write(value.savedWebsite, into: &buf)
+        FfiConverterBool.write(value.pageHostDiffers, into: &buf)
+        FfiConverterOptionString.write(value.browser, into: &buf)
+        FfiConverterOptionUInt32.write(value.browserPid, into: &buf)
+        FfiConverterOptionString.write(value.browserExecutable, into: &buf)
+        FfiConverterBool.write(value.browserIsAppExtension, into: &buf)
+        FfiConverterOptionUInt32.write(value.hostPid, into: &buf)
+        FfiConverterOptionString.write(value.hostExecutable, into: &buf)
+        FfiConverterOptionString.write(value.extensionId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentFillFactsView_lift(_ buf: RustBuffer) throws -> AgentFillFactsView {
+    return try FfiConverterTypeAgentFillFactsView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentFillFactsView_lower(_ value: AgentFillFactsView) -> RustBuffer {
+    return FfiConverterTypeAgentFillFactsView.lower(value)
+}
+
+
+/**
+ * A page origin split for the agent-fill sheet, so a look-alike is obvious (ADR-0036 §5):
+ * [`kagisecure_extension_ipc::origin::AgentOriginRendering`], plus the pieces put back together.
+ */
+public struct AgentOriginView: Equatable, Hashable {
+    /**
+     * `scheme://` + `dimmed_prefix` + `emphasized` + `:port` — exactly the ASCII serialization
+     * the origin rule compared and the audit log records.
+     */
+    public var ascii: String
+    /**
+     * `http` or `https`.
+     */
+    public var scheme: String
+    /**
+     * The labels before the registrable domain, with their trailing dot, to be dimmed. May be
+     * empty.
+     */
+    public var dimmedPrefix: String
+    /**
+     * The registrable domain (or the whole host when there is none), to be emphasized. ASCII.
+     */
+    public var emphasized: String
+    /**
+     * The port, when it is not the scheme's default. Always shown when present.
+     */
+    public var port: UInt16?
+    /**
+     * The host with its `xn--` labels decoded, when there are any: shown *beside* the ASCII
+     * form, labelled "shown by the browser as", never instead of it.
+     */
+    public var unicodeHost: String?
+    /**
+     * Whether the decoded host mixes scripts, or has a punycode label that does not decode.
+     */
+    public var mixedScript: Bool
+    /**
+     * Whether the scheme is `http`: shown in red as "not encrypted".
+     */
+    public var notEncrypted: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `scheme://` + `dimmed_prefix` + `emphasized` + `:port` — exactly the ASCII serialization
+         * the origin rule compared and the audit log records.
+         */ascii: String, 
+        /**
+         * `http` or `https`.
+         */scheme: String, 
+        /**
+         * The labels before the registrable domain, with their trailing dot, to be dimmed. May be
+         * empty.
+         */dimmedPrefix: String, 
+        /**
+         * The registrable domain (or the whole host when there is none), to be emphasized. ASCII.
+         */emphasized: String, 
+        /**
+         * The port, when it is not the scheme's default. Always shown when present.
+         */port: UInt16?, 
+        /**
+         * The host with its `xn--` labels decoded, when there are any: shown *beside* the ASCII
+         * form, labelled "shown by the browser as", never instead of it.
+         */unicodeHost: String?, 
+        /**
+         * Whether the decoded host mixes scripts, or has a punycode label that does not decode.
+         */mixedScript: Bool, 
+        /**
+         * Whether the scheme is `http`: shown in red as "not encrypted".
+         */notEncrypted: Bool) {
+        self.ascii = ascii
+        self.scheme = scheme
+        self.dimmedPrefix = dimmedPrefix
+        self.emphasized = emphasized
+        self.port = port
+        self.unicodeHost = unicodeHost
+        self.mixedScript = mixedScript
+        self.notEncrypted = notEncrypted
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AgentOriginView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentOriginView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentOriginView {
+        return
+            try AgentOriginView(
+                ascii: FfiConverterString.read(from: &buf), 
+                scheme: FfiConverterString.read(from: &buf), 
+                dimmedPrefix: FfiConverterString.read(from: &buf), 
+                emphasized: FfiConverterString.read(from: &buf), 
+                port: FfiConverterOptionUInt16.read(from: &buf), 
+                unicodeHost: FfiConverterOptionString.read(from: &buf), 
+                mixedScript: FfiConverterBool.read(from: &buf), 
+                notEncrypted: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AgentOriginView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.ascii, into: &buf)
+        FfiConverterString.write(value.scheme, into: &buf)
+        FfiConverterString.write(value.dimmedPrefix, into: &buf)
+        FfiConverterString.write(value.emphasized, into: &buf)
+        FfiConverterOptionUInt16.write(value.port, into: &buf)
+        FfiConverterOptionString.write(value.unicodeHost, into: &buf)
+        FfiConverterBool.write(value.mixedScript, into: &buf)
+        FfiConverterBool.write(value.notEncrypted, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentOriginView_lift(_ buf: RustBuffer) throws -> AgentOriginView {
+    return try FfiConverterTypeAgentOriginView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentOriginView_lower(_ value: AgentOriginView) -> RustBuffer {
+    return FfiConverterTypeAgentOriginView.lower(value)
+}
 
 
 /**
@@ -2363,6 +5789,20 @@ public struct ApprovalRequestView: Equatable, Hashable {
      */
     public var gitignored: Bool?
     /**
+     * Whether the caller asked for an existing file to be replaced (`overwrite: true`).
+     */
+    public var overwriteRequested: Bool
+    /**
+     * Whether a file is already at [`Self::target_path`]. `None` when this is not a file write.
+     */
+    public var targetExists: Bool?
+    /**
+     * When a file is already there, whether kagisecure wrote it in this unlock session.
+     * `Some(false)` is the destructive case: the bytes are the user's own and nothing can bring
+     * them back (threat-model M-16).
+     */
+    public var targetWrittenByUs: Bool?
+    /**
      * The TTL the agent asked for. The user may shorten it, never lengthen it.
      */
     public var requestedTtlSeconds: UInt64
@@ -2388,10 +5828,18 @@ public struct ApprovalRequestView: Equatable, Hashable {
      */
     public var origin: String?
     /**
-     * The top-level page's origin when it differs from [`Self::origin`] — the signal the sheet
+     * The top-level page's origin when this is not a plain top-frame load — the signal the sheet
      * turns into "this form is inside a frame on another site".
+     *
+     * May be the literal `"null"`, the serialization of an opaque origin. Never render it
+     * verbatim: when [`Self::top_origin_unknown`] is true the sheet says "an unknown site".
      */
     public var topOrigin: String?
+    /**
+     * Whether the embedder of the frame could not be established — the browser did not report
+     * that this request came from frame 0 (D-7).
+     */
+    public var topOriginUnknown: Bool
     /**
      * The item that would be filled.
      */
@@ -2428,6 +5876,44 @@ public struct ApprovalRequestView: Equatable, Hashable {
      * The extension's self-reported id. Only ever the pinned one; anything else never got here.
      */
     public var extensionId: String?
+    /**
+     * Ask only for a fresh LocalAuthentication check, **not** the sheet.
+     *
+     * Set for a fill whose exact origin, item and fields the human already reviewed at a full
+     * sheet in this unlock session and allowed for the session. The app runs the check with a
+     * reason naming the item and the site and answers **Allow once** on success; a cancelled or
+     * unavailable check is a denial. The check is the one thing that tells a person from an
+     * automation agent clicking in the page
+     * ([ADR-0037](../../../docs/decisions/0037-every-fill-needs-a-fresh-presence-proof.md)).
+     *
+     * The one exception is the macOS app's presence grace window (ADR-0037's amendment of
+     * 2026-09-27): if a check for a fill of this item on this exact origin passed less than ten
+     * minutes ago in this unlock session, the app answers **Allow once** without asking again.
+     * Rust cannot see either way; the rule and its clock live in the app.
+     *
+     * Always `false` for [`ApprovalAction::AgentFill`]; the app treats an agent fill as a full
+     * sheet even if it ever arrived `true`.
+     */
+    public var presenceOnly: Bool
+    /**
+     * What the agent-fill sheet shows beyond the fields above. `Some` exactly when
+     * [`Self::action`] is [`ApprovalAction::AgentFill`].
+     *
+     * `#[uniffi(default = None)]` so the Swift call sites that build a request by hand — the
+     * unit tests do, many times — keep compiling and read `nil`.
+     */
+    public var agentFill: AgentFillFactsView?
+    /**
+     * Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
+     * members` — to be shown as a fact on the sheet. `None` for the personal vault.
+     */
+    public var sharedSource: String?
+    /**
+     * One line per value about to be released that changed since this Mac last approved
+     * releasing it, or was never released from this Mac, naming who changed it and when.
+     * Names, labels and times only. Empty for the personal vault and when nothing changed.
+     */
+    public var changedSinceApproval: [String]
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2478,6 +5964,17 @@ public struct ApprovalRequestView: Equatable, Hashable {
          * `Some(false)` is the red "not gitignored" callout; `None` means not in a work tree.
          */gitignored: Bool?, 
         /**
+         * Whether the caller asked for an existing file to be replaced (`overwrite: true`).
+         */overwriteRequested: Bool, 
+        /**
+         * Whether a file is already at [`Self::target_path`]. `None` when this is not a file write.
+         */targetExists: Bool?, 
+        /**
+         * When a file is already there, whether kagisecure wrote it in this unlock session.
+         * `Some(false)` is the destructive case: the bytes are the user's own and nothing can bring
+         * them back (threat-model M-16).
+         */targetWrittenByUs: Bool?, 
+        /**
          * The TTL the agent asked for. The user may shorten it, never lengthen it.
          */requestedTtlSeconds: UInt64, 
         /**
@@ -2497,9 +5994,16 @@ public struct ApprovalRequestView: Equatable, Hashable {
          * *matched*, so for a cross-origin iframe it is the frame's, not the page's.
          */origin: String?, 
         /**
-         * The top-level page's origin when it differs from [`Self::origin`] — the signal the sheet
+         * The top-level page's origin when this is not a plain top-frame load — the signal the sheet
          * turns into "this form is inside a frame on another site".
+         *
+         * May be the literal `"null"`, the serialization of an opaque origin. Never render it
+         * verbatim: when [`Self::top_origin_unknown`] is true the sheet says "an unknown site".
          */topOrigin: String?, 
+        /**
+         * Whether the embedder of the frame could not be established — the browser did not report
+         * that this request came from frame 0 (D-7).
+         */topOriginUnknown: Bool, 
         /**
          * The item that would be filled.
          */itemId: String?, 
@@ -2527,7 +6031,41 @@ public struct ApprovalRequestView: Equatable, Hashable {
          */browserIsAppExtension: Bool, 
         /**
          * The extension's self-reported id. Only ever the pinned one; anything else never got here.
-         */extensionId: String?) {
+         */extensionId: String?, 
+        /**
+         * Ask only for a fresh LocalAuthentication check, **not** the sheet.
+         *
+         * Set for a fill whose exact origin, item and fields the human already reviewed at a full
+         * sheet in this unlock session and allowed for the session. The app runs the check with a
+         * reason naming the item and the site and answers **Allow once** on success; a cancelled or
+         * unavailable check is a denial. The check is the one thing that tells a person from an
+         * automation agent clicking in the page
+         * ([ADR-0037](../../../docs/decisions/0037-every-fill-needs-a-fresh-presence-proof.md)).
+         *
+         * The one exception is the macOS app's presence grace window (ADR-0037's amendment of
+         * 2026-09-27): if a check for a fill of this item on this exact origin passed less than ten
+         * minutes ago in this unlock session, the app answers **Allow once** without asking again.
+         * Rust cannot see either way; the rule and its clock live in the app.
+         *
+         * Always `false` for [`ApprovalAction::AgentFill`]; the app treats an agent fill as a full
+         * sheet even if it ever arrived `true`.
+         */presenceOnly: Bool, 
+        /**
+         * What the agent-fill sheet shows beyond the fields above. `Some` exactly when
+         * [`Self::action`] is [`ApprovalAction::AgentFill`].
+         *
+         * `#[uniffi(default = None)]` so the Swift call sites that build a request by hand — the
+         * unit tests do, many times — keep compiling and read `nil`.
+         */agentFill: AgentFillFactsView? = nil, 
+        /**
+         * Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
+         * members` — to be shown as a fact on the sheet. `None` for the personal vault.
+         */sharedSource: String? = nil, 
+        /**
+         * One line per value about to be released that changed since this Mac last approved
+         * releasing it, or was never released from this Mac, naming who changed it and when.
+         * Names, labels and times only. Empty for the personal vault and when nothing changed.
+         */changedSinceApproval: [String] = []) {
         self.id = id
         self.action = action
         self.mintsLease = mintsLease
@@ -2543,6 +6081,9 @@ public struct ApprovalRequestView: Equatable, Hashable {
         self.variables = variables
         self.command = command
         self.gitignored = gitignored
+        self.overwriteRequested = overwriteRequested
+        self.targetExists = targetExists
+        self.targetWrittenByUs = targetWrittenByUs
         self.requestedTtlSeconds = requestedTtlSeconds
         self.requestedUses = requestedUses
         self.maxTtlSeconds = maxTtlSeconds
@@ -2550,6 +6091,7 @@ public struct ApprovalRequestView: Equatable, Hashable {
         self.expiresAt = expiresAt
         self.origin = origin
         self.topOrigin = topOrigin
+        self.topOriginUnknown = topOriginUnknown
         self.itemId = itemId
         self.itemTitle = itemTitle
         self.fillFields = fillFields
@@ -2558,6 +6100,10 @@ public struct ApprovalRequestView: Equatable, Hashable {
         self.browserExecutable = browserExecutable
         self.browserIsAppExtension = browserIsAppExtension
         self.extensionId = extensionId
+        self.presenceOnly = presenceOnly
+        self.agentFill = agentFill
+        self.sharedSource = sharedSource
+        self.changedSinceApproval = changedSinceApproval
     }
 
     
@@ -2591,6 +6137,9 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
                 variables: FfiConverterSequenceString.read(from: &buf), 
                 command: FfiConverterSequenceString.read(from: &buf), 
                 gitignored: FfiConverterOptionBool.read(from: &buf), 
+                overwriteRequested: FfiConverterBool.read(from: &buf), 
+                targetExists: FfiConverterOptionBool.read(from: &buf), 
+                targetWrittenByUs: FfiConverterOptionBool.read(from: &buf), 
                 requestedTtlSeconds: FfiConverterUInt64.read(from: &buf), 
                 requestedUses: FfiConverterUInt32.read(from: &buf), 
                 maxTtlSeconds: FfiConverterUInt64.read(from: &buf), 
@@ -2598,6 +6147,7 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
                 expiresAt: FfiConverterUInt64.read(from: &buf), 
                 origin: FfiConverterOptionString.read(from: &buf), 
                 topOrigin: FfiConverterOptionString.read(from: &buf), 
+                topOriginUnknown: FfiConverterBool.read(from: &buf), 
                 itemId: FfiConverterOptionString.read(from: &buf), 
                 itemTitle: FfiConverterOptionString.read(from: &buf), 
                 fillFields: FfiConverterSequenceString.read(from: &buf), 
@@ -2605,7 +6155,11 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
                 browserPid: FfiConverterOptionUInt32.read(from: &buf), 
                 browserExecutable: FfiConverterOptionString.read(from: &buf), 
                 browserIsAppExtension: FfiConverterBool.read(from: &buf), 
-                extensionId: FfiConverterOptionString.read(from: &buf)
+                extensionId: FfiConverterOptionString.read(from: &buf), 
+                presenceOnly: FfiConverterBool.read(from: &buf), 
+                agentFill: FfiConverterOptionTypeAgentFillFactsView.read(from: &buf), 
+                sharedSource: FfiConverterOptionString.read(from: &buf), 
+                changedSinceApproval: FfiConverterSequenceString.read(from: &buf)
         )
     }
 
@@ -2625,6 +6179,9 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
         FfiConverterSequenceString.write(value.variables, into: &buf)
         FfiConverterSequenceString.write(value.command, into: &buf)
         FfiConverterOptionBool.write(value.gitignored, into: &buf)
+        FfiConverterBool.write(value.overwriteRequested, into: &buf)
+        FfiConverterOptionBool.write(value.targetExists, into: &buf)
+        FfiConverterOptionBool.write(value.targetWrittenByUs, into: &buf)
         FfiConverterUInt64.write(value.requestedTtlSeconds, into: &buf)
         FfiConverterUInt32.write(value.requestedUses, into: &buf)
         FfiConverterUInt64.write(value.maxTtlSeconds, into: &buf)
@@ -2632,6 +6189,7 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.expiresAt, into: &buf)
         FfiConverterOptionString.write(value.origin, into: &buf)
         FfiConverterOptionString.write(value.topOrigin, into: &buf)
+        FfiConverterBool.write(value.topOriginUnknown, into: &buf)
         FfiConverterOptionString.write(value.itemId, into: &buf)
         FfiConverterOptionString.write(value.itemTitle, into: &buf)
         FfiConverterSequenceString.write(value.fillFields, into: &buf)
@@ -2640,6 +6198,10 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.browserExecutable, into: &buf)
         FfiConverterBool.write(value.browserIsAppExtension, into: &buf)
         FfiConverterOptionString.write(value.extensionId, into: &buf)
+        FfiConverterBool.write(value.presenceOnly, into: &buf)
+        FfiConverterOptionTypeAgentFillFactsView.write(value.agentFill, into: &buf)
+        FfiConverterOptionString.write(value.sharedSource, into: &buf)
+        FfiConverterSequenceString.write(value.changedSinceApproval, into: &buf)
     }
 }
 
@@ -2656,6 +6218,85 @@ public func FfiConverterTypeApprovalRequestView_lift(_ buf: RustBuffer) throws -
 #endif
 public func FfiConverterTypeApprovalRequestView_lower(_ value: ApprovalRequestView) -> RustBuffer {
     return FfiConverterTypeApprovalRequestView.lower(value)
+}
+
+
+/**
+ * Whether the audit log is fully written to disk, for the Audit viewer and Settings.
+ *
+ * Separate from [`AuditRowView`]'s chain-verification concern: the chain check
+ * (`VaultSession::audit_intact`) asks "is what's on disk internally consistent?", while this
+ * asks "does disk even have everything that has been appended in memory?" — the failure mode a
+ * save that keeps erroring (a hostile `chflags uchg` on the vault directory, a full disk)
+ * produces, and the whole reason a denial is appended before it is ever allowed to be lost.
+ */
+public struct AuditDurabilityView: Equatable, Hashable {
+    /**
+     * How many appended audit entries have not yet survived a successful save. Zero means the
+     * log on disk is fully caught up.
+     */
+    public var unsavedEntries: UInt32
+    /**
+     * The most recent save failure, if any — a short, value-free message safe to show as-is.
+     * `None` means either no save has failed, or a later save has since succeeded.
+     */
+    public var lastError: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * How many appended audit entries have not yet survived a successful save. Zero means the
+         * log on disk is fully caught up.
+         */unsavedEntries: UInt32, 
+        /**
+         * The most recent save failure, if any — a short, value-free message safe to show as-is.
+         * `None` means either no save has failed, or a later save has since succeeded.
+         */lastError: String?) {
+        self.unsavedEntries = unsavedEntries
+        self.lastError = lastError
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AuditDurabilityView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAuditDurabilityView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AuditDurabilityView {
+        return
+            try AuditDurabilityView(
+                unsavedEntries: FfiConverterUInt32.read(from: &buf), 
+                lastError: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AuditDurabilityView, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.unsavedEntries, into: &buf)
+        FfiConverterOptionString.write(value.lastError, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAuditDurabilityView_lift(_ buf: RustBuffer) throws -> AuditDurabilityView {
+    return try FfiConverterTypeAuditDurabilityView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAuditDurabilityView_lower(_ value: AuditDurabilityView) -> RustBuffer {
+    return FfiConverterTypeAuditDurabilityView.lower(value)
 }
 
 
@@ -2832,6 +6473,23 @@ public struct BrowserManifestView: Equatable, Hashable {
      * Whether that exact file is already in place.
      */
     public var installed: Bool
+    /**
+     * Windows only: the registry subkey (relative to `HKEY_CURRENT_USER`) the install button
+     * will also set, mirroring [`kagisecure_agent::browser_setup::BrowserManifest::registry_key`]
+     * — see that field's own doc comment for the shape and for how a Windows browser finds this
+     * manifest at all, since it never scans a directory for one the way macOS does. `None` on
+     * macOS, which has nothing to register, and `None` here too until a build actually runs this
+     * screen on Windows.
+     *
+     * `#[uniffi(default = None)]` on purpose: this field was added after `BrowserManifestView`
+     * first shipped, and without a default an existing Swift call site that builds one of these
+     * by hand (`apps/macos/KagisecureTests/FillApprovalTests.swift` does, twice, as of this
+     * writing) would stop compiling over a field that means nothing on macOS. With the default,
+     * it keeps compiling and reads `nil`. Not independently verified against a Swift build from
+     * this session — there is no Xcode on the machine this was written on — so re-check this the
+     * first time a Windows-porting session runs `cargo xtask bindgen` and builds the Swift side.
+     */
+    public var registryKey: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2850,12 +6508,29 @@ public struct BrowserManifestView: Equatable, Hashable {
          */browserInstalled: Bool, 
         /**
          * Whether that exact file is already in place.
-         */installed: Bool) {
+         */installed: Bool, 
+        /**
+         * Windows only: the registry subkey (relative to `HKEY_CURRENT_USER`) the install button
+         * will also set, mirroring [`kagisecure_agent::browser_setup::BrowserManifest::registry_key`]
+         * — see that field's own doc comment for the shape and for how a Windows browser finds this
+         * manifest at all, since it never scans a directory for one the way macOS does. `None` on
+         * macOS, which has nothing to register, and `None` here too until a build actually runs this
+         * screen on Windows.
+         *
+         * `#[uniffi(default = None)]` on purpose: this field was added after `BrowserManifestView`
+         * first shipped, and without a default an existing Swift call site that builds one of these
+         * by hand (`apps/macos/KagisecureTests/FillApprovalTests.swift` does, twice, as of this
+         * writing) would stop compiling over a field that means nothing on macOS. With the default,
+         * it keeps compiling and reads `nil`. Not independently verified against a Swift build from
+         * this session — there is no Xcode on the machine this was written on — so re-check this the
+         * first time a Windows-porting session runs `cargo xtask bindgen` and builds the Swift side.
+         */registryKey: String? = nil) {
         self.browser = browser
         self.path = path
         self.body = body
         self.browserInstalled = browserInstalled
         self.installed = installed
+        self.registryKey = registryKey
     }
 
     
@@ -2878,7 +6553,8 @@ public struct FfiConverterTypeBrowserManifestView: FfiConverterRustBuffer {
                 path: FfiConverterString.read(from: &buf), 
                 body: FfiConverterString.read(from: &buf), 
                 browserInstalled: FfiConverterBool.read(from: &buf), 
-                installed: FfiConverterBool.read(from: &buf)
+                installed: FfiConverterBool.read(from: &buf), 
+                registryKey: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -2888,6 +6564,7 @@ public struct FfiConverterTypeBrowserManifestView: FfiConverterRustBuffer {
         FfiConverterString.write(value.body, into: &buf)
         FfiConverterBool.write(value.browserInstalled, into: &buf)
         FfiConverterBool.write(value.installed, into: &buf)
+        FfiConverterOptionString.write(value.registryKey, into: &buf)
     }
 }
 
@@ -3059,6 +6736,149 @@ public func FfiConverterTypeClientVerificationView_lift(_ buf: RustBuffer) throw
 #endif
 public func FfiConverterTypeClientVerificationView_lower(_ value: ClientVerificationView) -> RustBuffer {
     return FfiConverterTypeClientVerificationView.lower(value)
+}
+
+
+/**
+ * [`kagisecure_core::vault::DivergedFile`], for the confirmation copy.
+ */
+public struct DivergedFileView: Equatable, Hashable {
+    /**
+     * Audit entries in the file's log that this session's log does not have.
+     */
+    public var auditEntriesOnlyInFile: UInt64
+    /**
+     * Items in the file that this session does not have: deleted by the overwrite.
+     */
+    public var itemsOnlyInFile: UInt64
+    /**
+     * Items both have, with different contents: the file's version is replaced.
+     */
+    public var itemsDiffering: UInt64
+    /**
+     * Environments only in the file.
+     */
+    public var environmentsOnlyInFile: UInt64
+    /**
+     * Environments both have, with different contents.
+     */
+    public var environmentsDiffering: UInt64
+    /**
+     * Logical vaults only in the file, or differing (a name, an agent-sharing switch).
+     */
+    public var vaultsOnlyInFileOrDiffering: UInt64
+    /**
+     * The master password (or its KDF cost) differs: the one that opens the file now stops
+     * working, and the one this app's session last wrote works again.
+     */
+    public var masterPasswordDiffers: Bool
+    /**
+     * The recovery code differs: the one that opens the file now stops working, and the one in
+     * this app's session — perhaps one that was replaced in the file's version — works again.
+     */
+    public var recoveryCodeDiffers: Bool
+    /**
+     * Touch ID enrolment differs between the two.
+     */
+    public var touchIdDiffers: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Audit entries in the file's log that this session's log does not have.
+         */auditEntriesOnlyInFile: UInt64, 
+        /**
+         * Items in the file that this session does not have: deleted by the overwrite.
+         */itemsOnlyInFile: UInt64, 
+        /**
+         * Items both have, with different contents: the file's version is replaced.
+         */itemsDiffering: UInt64, 
+        /**
+         * Environments only in the file.
+         */environmentsOnlyInFile: UInt64, 
+        /**
+         * Environments both have, with different contents.
+         */environmentsDiffering: UInt64, 
+        /**
+         * Logical vaults only in the file, or differing (a name, an agent-sharing switch).
+         */vaultsOnlyInFileOrDiffering: UInt64, 
+        /**
+         * The master password (or its KDF cost) differs: the one that opens the file now stops
+         * working, and the one this app's session last wrote works again.
+         */masterPasswordDiffers: Bool, 
+        /**
+         * The recovery code differs: the one that opens the file now stops working, and the one in
+         * this app's session — perhaps one that was replaced in the file's version — works again.
+         */recoveryCodeDiffers: Bool, 
+        /**
+         * Touch ID enrolment differs between the two.
+         */touchIdDiffers: Bool) {
+        self.auditEntriesOnlyInFile = auditEntriesOnlyInFile
+        self.itemsOnlyInFile = itemsOnlyInFile
+        self.itemsDiffering = itemsDiffering
+        self.environmentsOnlyInFile = environmentsOnlyInFile
+        self.environmentsDiffering = environmentsDiffering
+        self.vaultsOnlyInFileOrDiffering = vaultsOnlyInFileOrDiffering
+        self.masterPasswordDiffers = masterPasswordDiffers
+        self.recoveryCodeDiffers = recoveryCodeDiffers
+        self.touchIdDiffers = touchIdDiffers
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension DivergedFileView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeDivergedFileView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> DivergedFileView {
+        return
+            try DivergedFileView(
+                auditEntriesOnlyInFile: FfiConverterUInt64.read(from: &buf), 
+                itemsOnlyInFile: FfiConverterUInt64.read(from: &buf), 
+                itemsDiffering: FfiConverterUInt64.read(from: &buf), 
+                environmentsOnlyInFile: FfiConverterUInt64.read(from: &buf), 
+                environmentsDiffering: FfiConverterUInt64.read(from: &buf), 
+                vaultsOnlyInFileOrDiffering: FfiConverterUInt64.read(from: &buf), 
+                masterPasswordDiffers: FfiConverterBool.read(from: &buf), 
+                recoveryCodeDiffers: FfiConverterBool.read(from: &buf), 
+                touchIdDiffers: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: DivergedFileView, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.auditEntriesOnlyInFile, into: &buf)
+        FfiConverterUInt64.write(value.itemsOnlyInFile, into: &buf)
+        FfiConverterUInt64.write(value.itemsDiffering, into: &buf)
+        FfiConverterUInt64.write(value.environmentsOnlyInFile, into: &buf)
+        FfiConverterUInt64.write(value.environmentsDiffering, into: &buf)
+        FfiConverterUInt64.write(value.vaultsOnlyInFileOrDiffering, into: &buf)
+        FfiConverterBool.write(value.masterPasswordDiffers, into: &buf)
+        FfiConverterBool.write(value.recoveryCodeDiffers, into: &buf)
+        FfiConverterBool.write(value.touchIdDiffers, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDivergedFileView_lift(_ buf: RustBuffer) throws -> DivergedFileView {
+    return try FfiConverterTypeDivergedFileView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeDivergedFileView_lower(_ value: DivergedFileView) -> RustBuffer {
+    return FfiConverterTypeDivergedFileView.lower(value)
 }
 
 
@@ -3607,6 +7427,21 @@ public func FfiConverterTypeExtensionStatusView_lower(_ value: ExtensionStatusVi
  * `id` is `None` for a field the user has just added; the core mints one. `value` is the
  * plaintext the user typed — see [ADR-0008](../../../docs/decisions/0008-ffi-secret-crossings.md)
  * crossing 2 — and is interpreted as secret material when `concealed` is set.
+ *
+ * # `value: None` (ADR-0038 step 3)
+ *
+ * Edit mode never prefills a concealed value (user decision 4), so most fields round-trip
+ * through the sheet without the app ever holding their plaintext. `None` means "keep the stored
+ * value of the field with this id" — [`crate::VaultSession::save_item`] leaves that field's
+ * [`kagisecure_core::model::FieldValue`] exactly as it was, byte for byte, rather than
+ * reconstructing it from a value that was never released to the app.
+ *
+ * Two things `None` cannot mean, and `save_item` refuses both:
+ * * on a field with no `id` (one the user just added in this edit session) — there is no stored
+ * value to keep, so a new field always needs one;
+ * * on a field being changed from concealed to public — "untick Concealed, then save" must not
+ * become a way to release a secret's plaintext into the public, agent-visible slot without
+ * ever supplying a new value.
  */
 public struct FieldDraft: Equatable, Hashable {
     /**
@@ -3626,9 +7461,9 @@ public struct FieldDraft: Equatable, Hashable {
      */
     public var concealed: Bool
     /**
-     * The value.
+     * The new value, or `None` to keep the field's stored value unchanged.
      */
-    public var value: String
+    public var value: String?
     /**
      * Optional section name.
      */
@@ -3654,8 +7489,8 @@ public struct FieldDraft: Equatable, Hashable {
          * Whether the value is secret material.
          */concealed: Bool, 
         /**
-         * The value.
-         */value: String, 
+         * The new value, or `None` to keep the field's stored value unchanged.
+         */value: String?, 
         /**
          * Optional section name.
          */section: String?, 
@@ -3691,7 +7526,7 @@ public struct FfiConverterTypeFieldDraft: FfiConverterRustBuffer {
                 label: FfiConverterString.read(from: &buf), 
                 kind: FfiConverterTypeFieldKind.read(from: &buf), 
                 concealed: FfiConverterBool.read(from: &buf), 
-                value: FfiConverterString.read(from: &buf), 
+                value: FfiConverterOptionString.read(from: &buf), 
                 section: FfiConverterOptionString.read(from: &buf), 
                 agentVisible: FfiConverterBool.read(from: &buf)
         )
@@ -3702,7 +7537,7 @@ public struct FfiConverterTypeFieldDraft: FfiConverterRustBuffer {
         FfiConverterString.write(value.label, into: &buf)
         FfiConverterTypeFieldKind.write(value.kind, into: &buf)
         FfiConverterBool.write(value.concealed, into: &buf)
-        FfiConverterString.write(value.value, into: &buf)
+        FfiConverterOptionString.write(value.value, into: &buf)
         FfiConverterOptionString.write(value.section, into: &buf)
         FfiConverterBool.write(value.agentVisible, into: &buf)
     }
@@ -3751,8 +7586,8 @@ public struct FieldView: Equatable, Hashable {
     public var hasValue: Bool
     /**
      * The value, for a field that is not secret material. `None` for a concealed field: the
-     * plaintext is fetched on demand through `VaultSession::reveal_field`, so a rendered list of
-     * fields never carries every secret in the item.
+     * plaintext comes only from a presence-gated release (`VaultSession::release_field`,
+     * ADR-0038), one field at a time, so a rendered list of fields never carries a secret.
      */
     public var value: String?
     /**
@@ -3785,8 +7620,8 @@ public struct FieldView: Equatable, Hashable {
          */hasValue: Bool, 
         /**
          * The value, for a field that is not secret material. `None` for a concealed field: the
-         * plaintext is fetched on demand through `VaultSession::reveal_field`, so a rendered list of
-         * fields never carries every secret in the item.
+         * plaintext comes only from a presence-gated release (`VaultSession::release_field`,
+         * ADR-0038), one field at a time, so a rendered list of fields never carries a secret.
          */value: String?, 
         /**
          * Optional section name.
@@ -3880,6 +7715,11 @@ public struct FillLeaseView: Equatable, Hashable {
      */
     public var itemTitle: String
     /**
+     * **What** the lease covers: `username`, `password`, `one-time password`. A lease covers
+     * only the fields the sheet named, so the table must show them (D-3).
+     */
+    public var fields: [String]
+    /**
      * The browser it was minted for, as this process rendered it.
      */
     public var clientIdentity: String
@@ -3901,6 +7741,10 @@ public struct FillLeaseView: Equatable, Hashable {
          * That item's title.
          */itemTitle: String, 
         /**
+         * **What** the lease covers: `username`, `password`, `one-time password`. A lease covers
+         * only the fields the sheet named, so the table must show them (D-3).
+         */fields: [String], 
+        /**
          * The browser it was minted for, as this process rendered it.
          */clientIdentity: String, 
         /**
@@ -3909,6 +7753,7 @@ public struct FillLeaseView: Equatable, Hashable {
         self.origin = origin
         self.itemId = itemId
         self.itemTitle = itemTitle
+        self.fields = fields
         self.clientIdentity = clientIdentity
         self.expiresAt = expiresAt
     }
@@ -3932,6 +7777,7 @@ public struct FfiConverterTypeFillLeaseView: FfiConverterRustBuffer {
                 origin: FfiConverterString.read(from: &buf), 
                 itemId: FfiConverterString.read(from: &buf), 
                 itemTitle: FfiConverterString.read(from: &buf), 
+                fields: FfiConverterSequenceString.read(from: &buf), 
                 clientIdentity: FfiConverterString.read(from: &buf), 
                 expiresAt: FfiConverterUInt64.read(from: &buf)
         )
@@ -3941,6 +7787,7 @@ public struct FfiConverterTypeFillLeaseView: FfiConverterRustBuffer {
         FfiConverterString.write(value.origin, into: &buf)
         FfiConverterString.write(value.itemId, into: &buf)
         FfiConverterString.write(value.itemTitle, into: &buf)
+        FfiConverterSequenceString.write(value.fields, into: &buf)
         FfiConverterString.write(value.clientIdentity, into: &buf)
         FfiConverterUInt64.write(value.expiresAt, into: &buf)
     }
@@ -5062,9 +8909,21 @@ public struct ItemDraft: Equatable, Hashable {
      */
     public var urls: [String]
     /**
-     * Free-form note.
+     * The note: `None` keeps the stored note unchanged, `Some("")` removes it, and any other
+     * string replaces it.
+     *
+     * `None` means "keep" for the same reason [`FieldDraft::value`]'s `None` does: the sheet is
+     * never handed the note ([`ItemView::has_notes`] is all it gets), so an edit that never
+     * touched it must not be able to erase it by leaving it out.
      */
     public var notes: String?
+    /**
+     * [`ItemView::revision`] as it stood when the edit sheet opened. The sheet copies it in
+     * unchanged; [`crate::VaultSession::save_item`] compares it against the live item's own
+     * fingerprint, computed fresh inside the write transaction, and refuses the save with
+     * `FfiError::ItemChangedElsewhere` if they differ.
+     */
+    public var revision: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -5088,8 +8947,19 @@ public struct ItemDraft: Equatable, Hashable {
          * Associated URLs.
          */urls: [String], 
         /**
-         * Free-form note.
-         */notes: String?) {
+         * The note: `None` keeps the stored note unchanged, `Some("")` removes it, and any other
+         * string replaces it.
+         *
+         * `None` means "keep" for the same reason [`FieldDraft::value`]'s `None` does: the sheet is
+         * never handed the note ([`ItemView::has_notes`] is all it gets), so an edit that never
+         * touched it must not be able to erase it by leaving it out.
+         */notes: String?, 
+        /**
+         * [`ItemView::revision`] as it stood when the edit sheet opened. The sheet copies it in
+         * unchanged; [`crate::VaultSession::save_item`] compares it against the live item's own
+         * fingerprint, computed fresh inside the write transaction, and refuses the save with
+         * `FfiError::ItemChangedElsewhere` if they differ.
+         */revision: String) {
         self.id = id
         self.category = category
         self.title = title
@@ -5097,6 +8967,7 @@ public struct ItemDraft: Equatable, Hashable {
         self.tags = tags
         self.urls = urls
         self.notes = notes
+        self.revision = revision
     }
 
     
@@ -5121,7 +8992,8 @@ public struct FfiConverterTypeItemDraft: FfiConverterRustBuffer {
                 fields: FfiConverterSequenceTypeFieldDraft.read(from: &buf), 
                 tags: FfiConverterSequenceString.read(from: &buf), 
                 urls: FfiConverterSequenceString.read(from: &buf), 
-                notes: FfiConverterOptionString.read(from: &buf)
+                notes: FfiConverterOptionString.read(from: &buf), 
+                revision: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -5133,6 +9005,7 @@ public struct FfiConverterTypeItemDraft: FfiConverterRustBuffer {
         FfiConverterSequenceString.write(value.tags, into: &buf)
         FfiConverterSequenceString.write(value.urls, into: &buf)
         FfiConverterOptionString.write(value.notes, into: &buf)
+        FfiConverterString.write(value.revision, into: &buf)
     }
 }
 
@@ -5193,9 +9066,13 @@ public struct ItemView: Equatable, Hashable {
      */
     public var urls: [String]
     /**
-     * Free-form note.
+     * Whether the item has a note — never the note itself (ADR-0038 user decision 3).
+     *
+     * Notes are secret, like a concealed field's value, so this view carries only whether there
+     * is one, exactly as [`FieldView::has_value`] does for a concealed field. The text comes out
+     * through `VaultSession::release_notes`, behind a presence check.
      */
-    public var notes: String?
+    public var hasNotes: Bool
     /**
      * Favourited.
      */
@@ -5226,9 +9103,38 @@ public struct ItemView: Equatable, Hashable {
      * Computed here rather than in Swift so that the "username for a Login, hostname for a
      * Server, masked last four for a card" rule has one implementation. It is never a secret: a
      * concealed field contributes nothing to it, except a card number's last four digits, which
-     * ui-spec.md §3 asks for explicitly.
+     * ui-spec.md §3 asks for explicitly — taken only from a field whose *kind* is
+     * `CreditCardNumber`, never from one found by its label (see `subtitle`).
+     *
+     * A display string, not a value to copy: it may be a URL, a hostname or those masked digits.
+     * Copying a username reads [`ItemView::username`].
      */
     public var subtitle: String?
+    /**
+     * The item's username — a public field labelled `username`, or failing that `email` — or
+     * `None`. What ⌘⏎ in Quick Access and Item ▸ Copy Username copy; there is no fallback to the
+     * subtitle, which may be something else entirely.
+     */
+    public var username: String?
+    /**
+     * The id of the item's primary secret — the field "Copy password" (⇧⌘C, Quick Access ⏎)
+     * copies and ⌘R reveals when nothing is focused — or `None` when it has none.
+     *
+     * Designated by field id in the vault (`Item::primary_secret`), so a relabel or a reorder in
+     * the edit sheet, neither of which asks for presence, cannot move it; the app must not pick
+     * "the password" any other way (not by label, not as the first concealed field).
+     */
+    public var primarySecretFieldId: String?
+    /**
+     * A fingerprint of everything an edit sheet can change about this item, as it was when this
+     * view was built — an HMAC under a random key private to this session, so it says whether the
+     * item changed and nothing about what it holds (not an unkeyed hash a guess could be checked
+     * against). Round-trips through the edit sheet as [`ItemDraft::revision`], and
+     * [`crate::VaultSession::save_item`] refuses to write if the live item's fingerprint no
+     * longer matches (`FfiError::ItemChangedElsewhere`) — see `item_revision`
+     * for what goes into it and why a hash rather than `updated_at`.
+     */
+    public var revision: String
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -5261,8 +9167,12 @@ public struct ItemView: Equatable, Hashable {
          * Associated URLs.
          */urls: [String], 
         /**
-         * Free-form note.
-         */notes: String?, 
+         * Whether the item has a note — never the note itself (ADR-0038 user decision 3).
+         *
+         * Notes are secret, like a concealed field's value, so this view carries only whether there
+         * is one, exactly as [`FieldView::has_value`] does for a concealed field. The text comes out
+         * through `VaultSession::release_notes`, behind a presence check.
+         */hasNotes: Bool, 
         /**
          * Favourited.
          */favorite: Bool, 
@@ -5287,8 +9197,34 @@ public struct ItemView: Equatable, Hashable {
          * Computed here rather than in Swift so that the "username for a Login, hostname for a
          * Server, masked last four for a card" rule has one implementation. It is never a secret: a
          * concealed field contributes nothing to it, except a card number's last four digits, which
-         * ui-spec.md §3 asks for explicitly.
-         */subtitle: String?) {
+         * ui-spec.md §3 asks for explicitly — taken only from a field whose *kind* is
+         * `CreditCardNumber`, never from one found by its label (see `subtitle`).
+         *
+         * A display string, not a value to copy: it may be a URL, a hostname or those masked digits.
+         * Copying a username reads [`ItemView::username`].
+         */subtitle: String?, 
+        /**
+         * The item's username — a public field labelled `username`, or failing that `email` — or
+         * `None`. What ⌘⏎ in Quick Access and Item ▸ Copy Username copy; there is no fallback to the
+         * subtitle, which may be something else entirely.
+         */username: String?, 
+        /**
+         * The id of the item's primary secret — the field "Copy password" (⇧⌘C, Quick Access ⏎)
+         * copies and ⌘R reveals when nothing is focused — or `None` when it has none.
+         *
+         * Designated by field id in the vault (`Item::primary_secret`), so a relabel or a reorder in
+         * the edit sheet, neither of which asks for presence, cannot move it; the app must not pick
+         * "the password" any other way (not by label, not as the first concealed field).
+         */primarySecretFieldId: String?, 
+        /**
+         * A fingerprint of everything an edit sheet can change about this item, as it was when this
+         * view was built — an HMAC under a random key private to this session, so it says whether the
+         * item changed and nothing about what it holds (not an unkeyed hash a guess could be checked
+         * against). Round-trips through the edit sheet as [`ItemDraft::revision`], and
+         * [`crate::VaultSession::save_item`] refuses to write if the live item's fingerprint no
+         * longer matches (`FfiError::ItemChangedElsewhere`) — see `item_revision`
+         * for what goes into it and why a hash rather than `updated_at`.
+         */revision: String) {
         self.id = id
         self.vaultId = vaultId
         self.category = category
@@ -5298,7 +9234,7 @@ public struct ItemView: Equatable, Hashable {
         self.fields = fields
         self.tags = tags
         self.urls = urls
-        self.notes = notes
+        self.hasNotes = hasNotes
         self.favorite = favorite
         self.archived = archived
         self.trashed = trashed
@@ -5306,6 +9242,9 @@ public struct ItemView: Equatable, Hashable {
         self.createdAt = createdAt
         self.updatedAt = updatedAt
         self.subtitle = subtitle
+        self.username = username
+        self.primarySecretFieldId = primarySecretFieldId
+        self.revision = revision
     }
 
     
@@ -5333,14 +9272,17 @@ public struct FfiConverterTypeItemView: FfiConverterRustBuffer {
                 fields: FfiConverterSequenceTypeFieldView.read(from: &buf), 
                 tags: FfiConverterSequenceString.read(from: &buf), 
                 urls: FfiConverterSequenceString.read(from: &buf), 
-                notes: FfiConverterOptionString.read(from: &buf), 
+                hasNotes: FfiConverterBool.read(from: &buf), 
                 favorite: FfiConverterBool.read(from: &buf), 
                 archived: FfiConverterBool.read(from: &buf), 
                 trashed: FfiConverterBool.read(from: &buf), 
                 agentVisible: FfiConverterBool.read(from: &buf), 
                 createdAt: FfiConverterUInt64.read(from: &buf), 
                 updatedAt: FfiConverterUInt64.read(from: &buf), 
-                subtitle: FfiConverterOptionString.read(from: &buf)
+                subtitle: FfiConverterOptionString.read(from: &buf), 
+                username: FfiConverterOptionString.read(from: &buf), 
+                primarySecretFieldId: FfiConverterOptionString.read(from: &buf), 
+                revision: FfiConverterString.read(from: &buf)
         )
     }
 
@@ -5354,7 +9296,7 @@ public struct FfiConverterTypeItemView: FfiConverterRustBuffer {
         FfiConverterSequenceTypeFieldView.write(value.fields, into: &buf)
         FfiConverterSequenceString.write(value.tags, into: &buf)
         FfiConverterSequenceString.write(value.urls, into: &buf)
-        FfiConverterOptionString.write(value.notes, into: &buf)
+        FfiConverterBool.write(value.hasNotes, into: &buf)
         FfiConverterBool.write(value.favorite, into: &buf)
         FfiConverterBool.write(value.archived, into: &buf)
         FfiConverterBool.write(value.trashed, into: &buf)
@@ -5362,6 +9304,9 @@ public struct FfiConverterTypeItemView: FfiConverterRustBuffer {
         FfiConverterUInt64.write(value.createdAt, into: &buf)
         FfiConverterUInt64.write(value.updatedAt, into: &buf)
         FfiConverterOptionString.write(value.subtitle, into: &buf)
+        FfiConverterOptionString.write(value.username, into: &buf)
+        FfiConverterOptionString.write(value.primarySecretFieldId, into: &buf)
+        FfiConverterString.write(value.revision, into: &buf)
     }
 }
 
@@ -5507,6 +9452,224 @@ public func FfiConverterTypeLeaseView_lift(_ buf: RustBuffer) throws -> LeaseVie
 #endif
 public func FfiConverterTypeLeaseView_lower(_ value: LeaseView) -> RustBuffer {
     return FfiConverterTypeLeaseView.lower(value)
+}
+
+
+/**
+ * An environment in the machine vault.
+ */
+public struct MachineEnvironmentView: Equatable, Hashable {
+    /**
+     * Identifier.
+     */
+    public var id: String
+    /**
+     * Display name.
+     */
+    public var name: String
+    /**
+     * Variable names.
+     */
+    public var variableNames: [String]
+    /**
+     * The personal environment it was copied from, if it was.
+     */
+    public var copiedFrom: String?
+    /**
+     * Unix seconds of the last change.
+     */
+    public var updatedAt: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Identifier.
+         */id: String, 
+        /**
+         * Display name.
+         */name: String, 
+        /**
+         * Variable names.
+         */variableNames: [String], 
+        /**
+         * The personal environment it was copied from, if it was.
+         */copiedFrom: String?, 
+        /**
+         * Unix seconds of the last change.
+         */updatedAt: UInt64) {
+        self.id = id
+        self.name = name
+        self.variableNames = variableNames
+        self.copiedFrom = copiedFrom
+        self.updatedAt = updatedAt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MachineEnvironmentView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMachineEnvironmentView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MachineEnvironmentView {
+        return
+            try MachineEnvironmentView(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                variableNames: FfiConverterSequenceString.read(from: &buf), 
+                copiedFrom: FfiConverterOptionString.read(from: &buf), 
+                updatedAt: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MachineEnvironmentView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterSequenceString.write(value.variableNames, into: &buf)
+        FfiConverterOptionString.write(value.copiedFrom, into: &buf)
+        FfiConverterUInt64.write(value.updatedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMachineEnvironmentView_lift(_ buf: RustBuffer) throws -> MachineEnvironmentView {
+    return try FfiConverterTypeMachineEnvironmentView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMachineEnvironmentView_lower(_ value: MachineEnvironmentView) -> RustBuffer {
+    return FfiConverterTypeMachineEnvironmentView.lower(value)
+}
+
+
+/**
+ * A Login item of the machine vault.
+ */
+public struct MachineLoginView: Equatable, Hashable {
+    /**
+     * Identifier.
+     */
+    public var id: String
+    /**
+     * Title.
+     */
+    public var title: String
+    /**
+     * The username, if it has a public one.
+     */
+    public var username: String?
+    /**
+     * The exact https origins a login grant may name.
+     */
+    public var origins: [String]
+    /**
+     * Whether it holds a one-time-password seed.
+     */
+    public var hasOneTimeCode: Bool
+    /**
+     * The personal item it was copied from, if it was.
+     */
+    public var copiedFrom: String?
+    /**
+     * Unix seconds of the last change.
+     */
+    public var updatedAt: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Identifier.
+         */id: String, 
+        /**
+         * Title.
+         */title: String, 
+        /**
+         * The username, if it has a public one.
+         */username: String?, 
+        /**
+         * The exact https origins a login grant may name.
+         */origins: [String], 
+        /**
+         * Whether it holds a one-time-password seed.
+         */hasOneTimeCode: Bool, 
+        /**
+         * The personal item it was copied from, if it was.
+         */copiedFrom: String?, 
+        /**
+         * Unix seconds of the last change.
+         */updatedAt: UInt64) {
+        self.id = id
+        self.title = title
+        self.username = username
+        self.origins = origins
+        self.hasOneTimeCode = hasOneTimeCode
+        self.copiedFrom = copiedFrom
+        self.updatedAt = updatedAt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension MachineLoginView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMachineLoginView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MachineLoginView {
+        return
+            try MachineLoginView(
+                id: FfiConverterString.read(from: &buf), 
+                title: FfiConverterString.read(from: &buf), 
+                username: FfiConverterOptionString.read(from: &buf), 
+                origins: FfiConverterSequenceString.read(from: &buf), 
+                hasOneTimeCode: FfiConverterBool.read(from: &buf), 
+                copiedFrom: FfiConverterOptionString.read(from: &buf), 
+                updatedAt: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: MachineLoginView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
+        FfiConverterOptionString.write(value.username, into: &buf)
+        FfiConverterSequenceString.write(value.origins, into: &buf)
+        FfiConverterBool.write(value.hasOneTimeCode, into: &buf)
+        FfiConverterOptionString.write(value.copiedFrom, into: &buf)
+        FfiConverterUInt64.write(value.updatedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMachineLoginView_lift(_ buf: RustBuffer) throws -> MachineLoginView {
+    return try FfiConverterTypeMachineLoginView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMachineLoginView_lower(_ value: MachineLoginView) -> RustBuffer {
+    return FfiConverterTypeMachineLoginView.lower(value)
 }
 
 
@@ -5669,6 +9832,86 @@ public func FfiConverterTypeMcpSnippetView_lower(_ value: McpSnippetView) -> Rus
 
 
 /**
+ * What a platform keystore needs from a vault's header before unlocking it, read in **one** read
+ * of the file: the vault file's id, and the platform slot's id and wrapped key if there is one.
+ */
+public struct PlatformSlotInfo: Equatable, Hashable {
+    /**
+     * The header's random vault-file identifier (see [`VaultSession::vault_file_id`]).
+     */
+    public var vaultId: Data
+    /**
+     * The platform slot's identifier, or `None` when there is no platform slot.
+     */
+    public var slotId: String?
+    /**
+     * The platform slot's opaque wrapped key, or `None` when there is no platform slot.
+     */
+    public var wrappedKey: Data?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The header's random vault-file identifier (see [`VaultSession::vault_file_id`]).
+         */vaultId: Data, 
+        /**
+         * The platform slot's identifier, or `None` when there is no platform slot.
+         */slotId: String?, 
+        /**
+         * The platform slot's opaque wrapped key, or `None` when there is no platform slot.
+         */wrappedKey: Data?) {
+        self.vaultId = vaultId
+        self.slotId = slotId
+        self.wrappedKey = wrappedKey
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension PlatformSlotInfo: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePlatformSlotInfo: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PlatformSlotInfo {
+        return
+            try PlatformSlotInfo(
+                vaultId: FfiConverterData.read(from: &buf), 
+                slotId: FfiConverterOptionString.read(from: &buf), 
+                wrappedKey: FfiConverterOptionData.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: PlatformSlotInfo, into buf: inout [UInt8]) {
+        FfiConverterData.write(value.vaultId, into: &buf)
+        FfiConverterOptionString.write(value.slotId, into: &buf)
+        FfiConverterOptionData.write(value.wrappedKey, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformSlotInfo_lift(_ buf: RustBuffer) throws -> PlatformSlotInfo {
+    return try FfiConverterTypePlatformSlotInfo.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePlatformSlotInfo_lower(_ value: PlatformSlotInfo) -> RustBuffer {
+    return FfiConverterTypePlatformSlotInfo.lower(value)
+}
+
+
+/**
  * The Safari half of the setup screen — facts, and no button that writes a file (M6b).
  */
 public struct SafariSetupView: Equatable, Hashable {
@@ -5754,6 +9997,737 @@ public func FfiConverterTypeSafariSetupView_lift(_ buf: RustBuffer) throws -> Sa
 #endif
 public func FfiConverterTypeSafariSetupView_lower(_ value: SafariSetupView) -> RustBuffer {
     return FfiConverterTypeSafariSetupView.lower(value)
+}
+
+
+/**
+ * One device of a member.
+ */
+public struct SharedDeviceView: Equatable, Hashable {
+    /**
+     * The device key's id, 64 lower-case hex digits.
+     */
+    public var id: String
+    /**
+     * Its fingerprint, ten groups of five digits (ADR-0035 §10).
+     */
+    public var fingerprint: String
+    /**
+     * Whether it is this computer.
+     */
+    public var isThisDevice: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The device key's id, 64 lower-case hex digits.
+         */id: String, 
+        /**
+         * Its fingerprint, ten groups of five digits (ADR-0035 §10).
+         */fingerprint: String, 
+        /**
+         * Whether it is this computer.
+         */isThisDevice: Bool) {
+        self.id = id
+        self.fingerprint = fingerprint
+        self.isThisDevice = isThisDevice
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedDeviceView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedDeviceView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedDeviceView {
+        return
+            try SharedDeviceView(
+                id: FfiConverterString.read(from: &buf), 
+                fingerprint: FfiConverterString.read(from: &buf), 
+                isThisDevice: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedDeviceView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.fingerprint, into: &buf)
+        FfiConverterBool.write(value.isThisDevice, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedDeviceView_lift(_ buf: RustBuffer) throws -> SharedDeviceView {
+    return try FfiConverterTypeSharedDeviceView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedDeviceView_lower(_ value: SharedDeviceView) -> RustBuffer {
+    return FfiConverterTypeSharedDeviceView.lower(value)
+}
+
+
+/**
+ * A shared vault's environment, as "Add an Environment…" offers it.
+ */
+public struct SharedEnvironmentChoice: Equatable, Hashable {
+    /**
+     * Identifier.
+     */
+    public var id: String
+    /**
+     * Display name.
+     */
+    public var name: String
+    /**
+     * Variable names.
+     */
+    public var variableNames: [String]
+    /**
+     * Whether a variable is a login's field: such an environment is never copied.
+     */
+    public var loginBound: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Identifier.
+         */id: String, 
+        /**
+         * Display name.
+         */name: String, 
+        /**
+         * Variable names.
+         */variableNames: [String], 
+        /**
+         * Whether a variable is a login's field: such an environment is never copied.
+         */loginBound: Bool) {
+        self.id = id
+        self.name = name
+        self.variableNames = variableNames
+        self.loginBound = loginBound
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedEnvironmentChoice: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedEnvironmentChoice: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedEnvironmentChoice {
+        return
+            try SharedEnvironmentChoice(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                variableNames: FfiConverterSequenceString.read(from: &buf), 
+                loginBound: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedEnvironmentChoice, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterSequenceString.write(value.variableNames, into: &buf)
+        FfiConverterBool.write(value.loginBound, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedEnvironmentChoice_lift(_ buf: RustBuffer) throws -> SharedEnvironmentChoice {
+    return try FfiConverterTypeSharedEnvironmentChoice.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedEnvironmentChoice_lower(_ value: SharedEnvironmentChoice) -> RustBuffer {
+    return FfiConverterTypeSharedEnvironmentChoice.lower(value)
+}
+
+
+/**
+ * What a removed member's device could have read (decision 84): informational only.
+ */
+public struct SharedExposure: Equatable, Hashable {
+    /**
+     * Who it was.
+     */
+    public var memberName: String
+    /**
+     * The items with a version it held the key to.
+     */
+    public var itemTitles: [String]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Who it was.
+         */memberName: String, 
+        /**
+         * The items with a version it held the key to.
+         */itemTitles: [String]) {
+        self.memberName = memberName
+        self.itemTitles = itemTitles
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedExposure: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedExposure: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedExposure {
+        return
+            try SharedExposure(
+                memberName: FfiConverterString.read(from: &buf), 
+                itemTitles: FfiConverterSequenceString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedExposure, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.memberName, into: &buf)
+        FfiConverterSequenceString.write(value.itemTitles, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedExposure_lift(_ buf: RustBuffer) throws -> SharedExposure {
+    return try FfiConverterTypeSharedExposure.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedExposure_lower(_ value: SharedExposure) -> RustBuffer {
+    return FfiConverterTypeSharedExposure.lower(value)
+}
+
+
+/**
+ * An invitation just written: where, and the passphrase that opens it.
+ *
+ * `Debug` is not derived: the passphrase is a secret, shown once and never logged.
+ */
+public struct SharedInvitation: Equatable, Hashable {
+    /**
+     * Where the invitation file was written.
+     */
+    public var path: String
+    /**
+     * The six words that open it — to be handed over another way than the file.
+     */
+    public var passphrase: String
+    /**
+     * The member it invites.
+     */
+    public var memberId: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Where the invitation file was written.
+         */path: String, 
+        /**
+         * The six words that open it — to be handed over another way than the file.
+         */passphrase: String, 
+        /**
+         * The member it invites.
+         */memberId: String) {
+        self.path = path
+        self.passphrase = passphrase
+        self.memberId = memberId
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedInvitation: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedInvitation: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedInvitation {
+        return
+            try SharedInvitation(
+                path: FfiConverterString.read(from: &buf), 
+                passphrase: FfiConverterString.read(from: &buf), 
+                memberId: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedInvitation, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.path, into: &buf)
+        FfiConverterString.write(value.passphrase, into: &buf)
+        FfiConverterString.write(value.memberId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedInvitation_lift(_ buf: RustBuffer) throws -> SharedInvitation {
+    return try FfiConverterTypeSharedInvitation.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedInvitation_lower(_ value: SharedInvitation) -> RustBuffer {
+    return FfiConverterTypeSharedInvitation.lower(value)
+}
+
+
+/**
+ * One member of a shared vault.
+ */
+public struct SharedMemberView: Equatable, Hashable {
+    /**
+     * The member's id, 32 lower-case hex digits.
+     */
+    public var id: String
+    /**
+     * The name this device knows them by.
+     */
+    public var name: String
+    /**
+     * Their role.
+     */
+    public var role: SharedRole
+    /**
+     * Whether this computer is one of their devices.
+     */
+    public var isYou: Bool
+    /**
+     * Their devices in the vault now.
+     */
+    public var devices: [SharedDeviceView]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The member's id, 32 lower-case hex digits.
+         */id: String, 
+        /**
+         * The name this device knows them by.
+         */name: String, 
+        /**
+         * Their role.
+         */role: SharedRole, 
+        /**
+         * Whether this computer is one of their devices.
+         */isYou: Bool, 
+        /**
+         * Their devices in the vault now.
+         */devices: [SharedDeviceView]) {
+        self.id = id
+        self.name = name
+        self.role = role
+        self.isYou = isYou
+        self.devices = devices
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedMemberView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedMemberView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedMemberView {
+        return
+            try SharedMemberView(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                role: FfiConverterTypeSharedRole.read(from: &buf), 
+                isYou: FfiConverterBool.read(from: &buf), 
+                devices: FfiConverterSequenceTypeSharedDeviceView.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedMemberView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterTypeSharedRole.write(value.role, into: &buf)
+        FfiConverterBool.write(value.isYou, into: &buf)
+        FfiConverterSequenceTypeSharedDeviceView.write(value.devices, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedMemberView_lift(_ buf: RustBuffer) throws -> SharedMemberView {
+    return try FfiConverterTypeSharedMemberView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedMemberView_lower(_ value: SharedMemberView) -> RustBuffer {
+    return FfiConverterTypeSharedMemberView.lower(value)
+}
+
+
+/**
+ * What a sync brought in, by name only (decision 85).
+ */
+public struct SharedSyncSummary: Equatable, Hashable {
+    /**
+     * How many records were new to this device.
+     */
+    public var recordsAdded: UInt32
+    /**
+     * The titles of the items that changed.
+     */
+    public var itemsChanged: [String]
+    /**
+     * Whether someone was added or removed, or a role changed.
+     */
+    public var membersChanged: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * How many records were new to this device.
+         */recordsAdded: UInt32, 
+        /**
+         * The titles of the items that changed.
+         */itemsChanged: [String], 
+        /**
+         * Whether someone was added or removed, or a role changed.
+         */membersChanged: Bool) {
+        self.recordsAdded = recordsAdded
+        self.itemsChanged = itemsChanged
+        self.membersChanged = membersChanged
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedSyncSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedSyncSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedSyncSummary {
+        return
+            try SharedSyncSummary(
+                recordsAdded: FfiConverterUInt32.read(from: &buf), 
+                itemsChanged: FfiConverterSequenceString.read(from: &buf), 
+                membersChanged: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedSyncSummary, into buf: inout [UInt8]) {
+        FfiConverterUInt32.write(value.recordsAdded, into: &buf)
+        FfiConverterSequenceString.write(value.itemsChanged, into: &buf)
+        FfiConverterBool.write(value.membersChanged, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedSyncSummary_lift(_ buf: RustBuffer) throws -> SharedSyncSummary {
+    return try FfiConverterTypeSharedSyncSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedSyncSummary_lower(_ value: SharedSyncSummary) -> RustBuffer {
+    return FfiConverterTypeSharedSyncSummary.lower(value)
+}
+
+
+/**
+ * A device holding an unattended copy of a shared vault's environment (ADR-0042 §13), for the
+ * members view and the rotation list.
+ */
+public struct SharedUnattendedCopyView: Equatable, Hashable {
+    /**
+     * How the holder describes itself.
+     */
+    public var holder: String
+    /**
+     * Whether the holder is still in the vault. A removed device keeps its copy: rotate the
+     * values at their service.
+     */
+    public var holderActive: Bool
+    /**
+     * The environment's name when copied.
+     */
+    public var environmentName: String
+    /**
+     * The variable names copied.
+     */
+    public var variables: [String]
+    /**
+     * When the holder copied it, unix seconds.
+     */
+    public var copiedAt: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * How the holder describes itself.
+         */holder: String, 
+        /**
+         * Whether the holder is still in the vault. A removed device keeps its copy: rotate the
+         * values at their service.
+         */holderActive: Bool, 
+        /**
+         * The environment's name when copied.
+         */environmentName: String, 
+        /**
+         * The variable names copied.
+         */variables: [String], 
+        /**
+         * When the holder copied it, unix seconds.
+         */copiedAt: UInt64) {
+        self.holder = holder
+        self.holderActive = holderActive
+        self.environmentName = environmentName
+        self.variables = variables
+        self.copiedAt = copiedAt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedUnattendedCopyView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedUnattendedCopyView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedUnattendedCopyView {
+        return
+            try SharedUnattendedCopyView(
+                holder: FfiConverterString.read(from: &buf), 
+                holderActive: FfiConverterBool.read(from: &buf), 
+                environmentName: FfiConverterString.read(from: &buf), 
+                variables: FfiConverterSequenceString.read(from: &buf), 
+                copiedAt: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedUnattendedCopyView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.holder, into: &buf)
+        FfiConverterBool.write(value.holderActive, into: &buf)
+        FfiConverterString.write(value.environmentName, into: &buf)
+        FfiConverterSequenceString.write(value.variables, into: &buf)
+        FfiConverterUInt64.write(value.copiedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedUnattendedCopyView_lift(_ buf: RustBuffer) throws -> SharedUnattendedCopyView {
+    return try FfiConverterTypeSharedUnattendedCopyView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedUnattendedCopyView_lower(_ value: SharedUnattendedCopyView) -> RustBuffer {
+    return FfiConverterTypeSharedUnattendedCopyView.lower(value)
+}
+
+
+/**
+ * One shared vault, for the sidebar and its header.
+ */
+public struct SharedVaultSummary: Equatable, Hashable {
+    /**
+     * The shared vault's id, 32 lower-case hex digits.
+     */
+    public var id: String
+    /**
+     * Its name, as this device knows it.
+     */
+    public var name: String
+    /**
+     * This device's role; `None` once this device was removed from the vault.
+     */
+    public var myRole: SharedRole?
+    /**
+     * How many members it has now.
+     */
+    public var memberCount: UInt32
+    /**
+     * How many items it has now.
+     */
+    public var itemCount: UInt32
+    /**
+     * The folder it syncs through, if one is set.
+     */
+    public var folder: String?
+    /**
+     * Why it cannot be read right now, if it cannot: a damaged local copy (rebuild it from its
+     * folder, [`SharedVaultSession::rebuild`]), or a locked vault. Metadata only.
+     */
+    public var problem: String?
+    /**
+     * Something about the roster worth telling this device's person, if there is anything:
+     * empty while it cannot be read (`problem` says why instead).
+     */
+    public var warnings: [SharedRosterWarning]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The shared vault's id, 32 lower-case hex digits.
+         */id: String, 
+        /**
+         * Its name, as this device knows it.
+         */name: String, 
+        /**
+         * This device's role; `None` once this device was removed from the vault.
+         */myRole: SharedRole?, 
+        /**
+         * How many members it has now.
+         */memberCount: UInt32, 
+        /**
+         * How many items it has now.
+         */itemCount: UInt32, 
+        /**
+         * The folder it syncs through, if one is set.
+         */folder: String?, 
+        /**
+         * Why it cannot be read right now, if it cannot: a damaged local copy (rebuild it from its
+         * folder, [`SharedVaultSession::rebuild`]), or a locked vault. Metadata only.
+         */problem: String?, 
+        /**
+         * Something about the roster worth telling this device's person, if there is anything:
+         * empty while it cannot be read (`problem` says why instead).
+         */warnings: [SharedRosterWarning]) {
+        self.id = id
+        self.name = name
+        self.myRole = myRole
+        self.memberCount = memberCount
+        self.itemCount = itemCount
+        self.folder = folder
+        self.problem = problem
+        self.warnings = warnings
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension SharedVaultSummary: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedVaultSummary: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedVaultSummary {
+        return
+            try SharedVaultSummary(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                myRole: FfiConverterOptionTypeSharedRole.read(from: &buf), 
+                memberCount: FfiConverterUInt32.read(from: &buf), 
+                itemCount: FfiConverterUInt32.read(from: &buf), 
+                folder: FfiConverterOptionString.read(from: &buf), 
+                problem: FfiConverterOptionString.read(from: &buf), 
+                warnings: FfiConverterSequenceTypeSharedRosterWarning.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: SharedVaultSummary, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterOptionTypeSharedRole.write(value.myRole, into: &buf)
+        FfiConverterUInt32.write(value.memberCount, into: &buf)
+        FfiConverterUInt32.write(value.itemCount, into: &buf)
+        FfiConverterOptionString.write(value.folder, into: &buf)
+        FfiConverterOptionString.write(value.problem, into: &buf)
+        FfiConverterSequenceTypeSharedRosterWarning.write(value.warnings, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedVaultSummary_lift(_ buf: RustBuffer) throws -> SharedVaultSummary {
+    return try FfiConverterTypeSharedVaultSummary.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedVaultSummary_lower(_ value: SharedVaultSummary) -> RustBuffer {
+    return FfiConverterTypeSharedVaultSummary.lower(value)
 }
 
 
@@ -6296,6 +11270,1383 @@ public func FfiConverterTypeTotpParamsView_lower(_ value: TotpParamsView) -> Rus
 
 
 /**
+ * A command grant, for Agent access.
+ */
+public struct UnattendedGrantView: Equatable, Hashable {
+    /**
+     * Identifier.
+     */
+    public var id: String
+    /**
+     * The environment it releases from.
+     */
+    public var environmentId: String
+    /**
+     * Its name, or empty when it is gone.
+     */
+    public var environmentName: String
+    /**
+     * The variable names it releases.
+     */
+    public var variables: [String]
+    /**
+     * The command it lets run.
+     */
+    public var command: String
+    /**
+     * Its arguments.
+     */
+    public var arguments: [String]
+    /**
+     * Its working directory.
+     */
+    public var workingDir: String
+    /**
+     * Uses so far.
+     */
+    public var uses: UInt32
+    /**
+     * Uses allowed in total.
+     */
+    public var totalUses: UInt32
+    /**
+     * Releases allowed per run.
+     */
+    public var perRun: UInt32
+    /**
+     * Unix seconds when it expires.
+     */
+    public var expiresAt: UInt64
+    /**
+     * Why it is suspended, if it is.
+     */
+    public var suspendedReason: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Identifier.
+         */id: String, 
+        /**
+         * The environment it releases from.
+         */environmentId: String, 
+        /**
+         * Its name, or empty when it is gone.
+         */environmentName: String, 
+        /**
+         * The variable names it releases.
+         */variables: [String], 
+        /**
+         * The command it lets run.
+         */command: String, 
+        /**
+         * Its arguments.
+         */arguments: [String], 
+        /**
+         * Its working directory.
+         */workingDir: String, 
+        /**
+         * Uses so far.
+         */uses: UInt32, 
+        /**
+         * Uses allowed in total.
+         */totalUses: UInt32, 
+        /**
+         * Releases allowed per run.
+         */perRun: UInt32, 
+        /**
+         * Unix seconds when it expires.
+         */expiresAt: UInt64, 
+        /**
+         * Why it is suspended, if it is.
+         */suspendedReason: String?) {
+        self.id = id
+        self.environmentId = environmentId
+        self.environmentName = environmentName
+        self.variables = variables
+        self.command = command
+        self.arguments = arguments
+        self.workingDir = workingDir
+        self.uses = uses
+        self.totalUses = totalUses
+        self.perRun = perRun
+        self.expiresAt = expiresAt
+        self.suspendedReason = suspendedReason
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedGrantView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedGrantView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedGrantView {
+        return
+            try UnattendedGrantView(
+                id: FfiConverterString.read(from: &buf), 
+                environmentId: FfiConverterString.read(from: &buf), 
+                environmentName: FfiConverterString.read(from: &buf), 
+                variables: FfiConverterSequenceString.read(from: &buf), 
+                command: FfiConverterString.read(from: &buf), 
+                arguments: FfiConverterSequenceString.read(from: &buf), 
+                workingDir: FfiConverterString.read(from: &buf), 
+                uses: FfiConverterUInt32.read(from: &buf), 
+                totalUses: FfiConverterUInt32.read(from: &buf), 
+                perRun: FfiConverterUInt32.read(from: &buf), 
+                expiresAt: FfiConverterUInt64.read(from: &buf), 
+                suspendedReason: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedGrantView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.environmentId, into: &buf)
+        FfiConverterString.write(value.environmentName, into: &buf)
+        FfiConverterSequenceString.write(value.variables, into: &buf)
+        FfiConverterString.write(value.command, into: &buf)
+        FfiConverterSequenceString.write(value.arguments, into: &buf)
+        FfiConverterString.write(value.workingDir, into: &buf)
+        FfiConverterUInt32.write(value.uses, into: &buf)
+        FfiConverterUInt32.write(value.totalUses, into: &buf)
+        FfiConverterUInt32.write(value.perRun, into: &buf)
+        FfiConverterUInt64.write(value.expiresAt, into: &buf)
+        FfiConverterOptionString.write(value.suspendedReason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedGrantView_lift(_ buf: RustBuffer) throws -> UnattendedGrantView {
+    return try FfiConverterTypeUnattendedGrantView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedGrantView_lower(_ value: UnattendedGrantView) -> RustBuffer {
+    return FfiConverterTypeUnattendedGrantView.lower(value)
+}
+
+
+/**
+ * A new job and the command grant it runs under, from the one "New job" sheet.
+ */
+public struct UnattendedJobDraft: Equatable, Hashable {
+    /**
+     * Display name.
+     */
+    public var name: String
+    /**
+     * The program the job starts, by absolute path.
+     */
+    public var program: String
+    /**
+     * Its arguments.
+     */
+    public var arguments: [String]
+    /**
+     * Its working directory, absolute.
+     */
+    public var workingDir: String
+    /**
+     * When it runs; at least one time.
+     */
+    public var schedule: [UnattendedTimeView]
+    /**
+     * The machine-vault environment the grant releases from.
+     */
+    public var environmentId: String
+    /**
+     * The variables it releases; all of the environment's when empty.
+     */
+    public var variables: [String]
+    /**
+     * The command the job may run with them; the program itself when `None`.
+     */
+    public var command: String?
+    /**
+     * That command's arguments; the program's own when `None`.
+     */
+    public var commandArguments: [String]?
+    /**
+     * Days until the grant expires; 30 when 0, at most 90.
+     */
+    public var expiresInDays: UInt32
+    /**
+     * The run browser, by absolute path, for a job that signs in (ADR-0042 §12.3); the default
+     * run browser when `None` and there are logins.
+     */
+    public var runBrowser: String?
+    /**
+     * Login grants (ADR-0042 §12.2). With logins, `environment_id` may be empty: a job that only
+     * signs in.
+     */
+    public var logins: [UnattendedLoginDraft]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Display name.
+         */name: String, 
+        /**
+         * The program the job starts, by absolute path.
+         */program: String, 
+        /**
+         * Its arguments.
+         */arguments: [String], 
+        /**
+         * Its working directory, absolute.
+         */workingDir: String, 
+        /**
+         * When it runs; at least one time.
+         */schedule: [UnattendedTimeView], 
+        /**
+         * The machine-vault environment the grant releases from.
+         */environmentId: String, 
+        /**
+         * The variables it releases; all of the environment's when empty.
+         */variables: [String], 
+        /**
+         * The command the job may run with them; the program itself when `None`.
+         */command: String?, 
+        /**
+         * That command's arguments; the program's own when `None`.
+         */commandArguments: [String]?, 
+        /**
+         * Days until the grant expires; 30 when 0, at most 90.
+         */expiresInDays: UInt32, 
+        /**
+         * The run browser, by absolute path, for a job that signs in (ADR-0042 §12.3); the default
+         * run browser when `None` and there are logins.
+         */runBrowser: String? = nil, 
+        /**
+         * Login grants (ADR-0042 §12.2). With logins, `environment_id` may be empty: a job that only
+         * signs in.
+         */logins: [UnattendedLoginDraft] = []) {
+        self.name = name
+        self.program = program
+        self.arguments = arguments
+        self.workingDir = workingDir
+        self.schedule = schedule
+        self.environmentId = environmentId
+        self.variables = variables
+        self.command = command
+        self.commandArguments = commandArguments
+        self.expiresInDays = expiresInDays
+        self.runBrowser = runBrowser
+        self.logins = logins
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedJobDraft: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedJobDraft: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedJobDraft {
+        return
+            try UnattendedJobDraft(
+                name: FfiConverterString.read(from: &buf), 
+                program: FfiConverterString.read(from: &buf), 
+                arguments: FfiConverterSequenceString.read(from: &buf), 
+                workingDir: FfiConverterString.read(from: &buf), 
+                schedule: FfiConverterSequenceTypeUnattendedTimeView.read(from: &buf), 
+                environmentId: FfiConverterString.read(from: &buf), 
+                variables: FfiConverterSequenceString.read(from: &buf), 
+                command: FfiConverterOptionString.read(from: &buf), 
+                commandArguments: FfiConverterOptionSequenceString.read(from: &buf), 
+                expiresInDays: FfiConverterUInt32.read(from: &buf), 
+                runBrowser: FfiConverterOptionString.read(from: &buf), 
+                logins: FfiConverterSequenceTypeUnattendedLoginDraft.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedJobDraft, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.program, into: &buf)
+        FfiConverterSequenceString.write(value.arguments, into: &buf)
+        FfiConverterString.write(value.workingDir, into: &buf)
+        FfiConverterSequenceTypeUnattendedTimeView.write(value.schedule, into: &buf)
+        FfiConverterString.write(value.environmentId, into: &buf)
+        FfiConverterSequenceString.write(value.variables, into: &buf)
+        FfiConverterOptionString.write(value.command, into: &buf)
+        FfiConverterOptionSequenceString.write(value.commandArguments, into: &buf)
+        FfiConverterUInt32.write(value.expiresInDays, into: &buf)
+        FfiConverterOptionString.write(value.runBrowser, into: &buf)
+        FfiConverterSequenceTypeUnattendedLoginDraft.write(value.logins, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedJobDraft_lift(_ buf: RustBuffer) throws -> UnattendedJobDraft {
+    return try FfiConverterTypeUnattendedJobDraft.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedJobDraft_lower(_ value: UnattendedJobDraft) -> RustBuffer {
+    return FfiConverterTypeUnattendedJobDraft.lower(value)
+}
+
+
+/**
+ * A job, with its grants.
+ */
+public struct UnattendedJobView: Equatable, Hashable {
+    /**
+     * Identifier.
+     */
+    public var id: String
+    /**
+     * Display name.
+     */
+    public var name: String
+    /**
+     * The program it starts.
+     */
+    public var program: String
+    /**
+     * Its arguments.
+     */
+    public var arguments: [String]
+    /**
+     * Its working directory.
+     */
+    public var workingDir: String
+    /**
+     * When it runs.
+     */
+    public var schedule: [UnattendedTimeView]
+    /**
+     * How long a run may last, in minutes.
+     */
+    public var runDeadlineMinutes: UInt32
+    /**
+     * Its command grants.
+     */
+    public var grants: [UnattendedGrantView]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Identifier.
+         */id: String, 
+        /**
+         * Display name.
+         */name: String, 
+        /**
+         * The program it starts.
+         */program: String, 
+        /**
+         * Its arguments.
+         */arguments: [String], 
+        /**
+         * Its working directory.
+         */workingDir: String, 
+        /**
+         * When it runs.
+         */schedule: [UnattendedTimeView], 
+        /**
+         * How long a run may last, in minutes.
+         */runDeadlineMinutes: UInt32, 
+        /**
+         * Its command grants.
+         */grants: [UnattendedGrantView]) {
+        self.id = id
+        self.name = name
+        self.program = program
+        self.arguments = arguments
+        self.workingDir = workingDir
+        self.schedule = schedule
+        self.runDeadlineMinutes = runDeadlineMinutes
+        self.grants = grants
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedJobView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedJobView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedJobView {
+        return
+            try UnattendedJobView(
+                id: FfiConverterString.read(from: &buf), 
+                name: FfiConverterString.read(from: &buf), 
+                program: FfiConverterString.read(from: &buf), 
+                arguments: FfiConverterSequenceString.read(from: &buf), 
+                workingDir: FfiConverterString.read(from: &buf), 
+                schedule: FfiConverterSequenceTypeUnattendedTimeView.read(from: &buf), 
+                runDeadlineMinutes: FfiConverterUInt32.read(from: &buf), 
+                grants: FfiConverterSequenceTypeUnattendedGrantView.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedJobView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.name, into: &buf)
+        FfiConverterString.write(value.program, into: &buf)
+        FfiConverterSequenceString.write(value.arguments, into: &buf)
+        FfiConverterString.write(value.workingDir, into: &buf)
+        FfiConverterSequenceTypeUnattendedTimeView.write(value.schedule, into: &buf)
+        FfiConverterUInt32.write(value.runDeadlineMinutes, into: &buf)
+        FfiConverterSequenceTypeUnattendedGrantView.write(value.grants, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedJobView_lift(_ buf: RustBuffer) throws -> UnattendedJobView {
+    return try FfiConverterTypeUnattendedJobView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedJobView_lower(_ value: UnattendedJobView) -> RustBuffer {
+    return FfiConverterTypeUnattendedJobView.lower(value)
+}
+
+
+/**
+ * A login grant in the "New job" sheet.
+ */
+public struct UnattendedLoginDraft: Equatable, Hashable {
+    /**
+     * A Login item of the machine vault ([`unattended_copy_login`] returns one).
+     */
+    public var itemId: String
+    /**
+     * One of its websites, as an exact https origin.
+     */
+    public var origin: String
+    /**
+     * Where the sign-in may lead.
+     */
+    public var followOnOrigins: [String]
+    /**
+     * The one-time-code switch, off by default (ADR-0042 §12.5).
+     */
+    public var oneTimeCodes: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * A Login item of the machine vault ([`unattended_copy_login`] returns one).
+         */itemId: String, 
+        /**
+         * One of its websites, as an exact https origin.
+         */origin: String, 
+        /**
+         * Where the sign-in may lead.
+         */followOnOrigins: [String] = [], 
+        /**
+         * The one-time-code switch, off by default (ADR-0042 §12.5).
+         */oneTimeCodes: Bool = false) {
+        self.itemId = itemId
+        self.origin = origin
+        self.followOnOrigins = followOnOrigins
+        self.oneTimeCodes = oneTimeCodes
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedLoginDraft: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedLoginDraft: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedLoginDraft {
+        return
+            try UnattendedLoginDraft(
+                itemId: FfiConverterString.read(from: &buf), 
+                origin: FfiConverterString.read(from: &buf), 
+                followOnOrigins: FfiConverterSequenceString.read(from: &buf), 
+                oneTimeCodes: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedLoginDraft, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.itemId, into: &buf)
+        FfiConverterString.write(value.origin, into: &buf)
+        FfiConverterSequenceString.write(value.followOnOrigins, into: &buf)
+        FfiConverterBool.write(value.oneTimeCodes, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedLoginDraft_lift(_ buf: RustBuffer) throws -> UnattendedLoginDraft {
+    return try FfiConverterTypeUnattendedLoginDraft.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedLoginDraft_lower(_ value: UnattendedLoginDraft) -> RustBuffer {
+    return FfiConverterTypeUnattendedLoginDraft.lower(value)
+}
+
+
+/**
+ * A login grant, for Agent access.
+ */
+public struct UnattendedLoginGrantView: Equatable, Hashable {
+    /**
+     * Identifier.
+     */
+    public var id: String
+    /**
+     * The job whose runs may use it.
+     */
+    public var jobId: String
+    /**
+     * The machine login it fills.
+     */
+    public var itemId: String
+    /**
+     * That login's title, or empty when it is gone.
+     */
+    public var itemTitle: String
+    /**
+     * The one exact https origin.
+     */
+    public var origin: String
+    /**
+     * Where the sign-in may lead.
+     */
+    public var followOnOrigins: [String]
+    /**
+     * The fields it may fill: `username`, `password`, `one_time_code`.
+     */
+    public var fields: [String]
+    /**
+     * The one-time-code switch.
+     */
+    public var oneTimeCodes: Bool
+    /**
+     * Sign-ins so far.
+     */
+    public var uses: UInt32
+    /**
+     * Sign-ins allowed in total.
+     */
+    public var totalUses: UInt32
+    /**
+     * Sign-ins allowed per run.
+     */
+    public var perRun: UInt32
+    /**
+     * Unix seconds when it expires.
+     */
+    public var expiresAt: UInt64
+    /**
+     * Why it is suspended, if it is.
+     */
+    public var suspendedReason: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Identifier.
+         */id: String, 
+        /**
+         * The job whose runs may use it.
+         */jobId: String, 
+        /**
+         * The machine login it fills.
+         */itemId: String, 
+        /**
+         * That login's title, or empty when it is gone.
+         */itemTitle: String, 
+        /**
+         * The one exact https origin.
+         */origin: String, 
+        /**
+         * Where the sign-in may lead.
+         */followOnOrigins: [String], 
+        /**
+         * The fields it may fill: `username`, `password`, `one_time_code`.
+         */fields: [String], 
+        /**
+         * The one-time-code switch.
+         */oneTimeCodes: Bool, 
+        /**
+         * Sign-ins so far.
+         */uses: UInt32, 
+        /**
+         * Sign-ins allowed in total.
+         */totalUses: UInt32, 
+        /**
+         * Sign-ins allowed per run.
+         */perRun: UInt32, 
+        /**
+         * Unix seconds when it expires.
+         */expiresAt: UInt64, 
+        /**
+         * Why it is suspended, if it is.
+         */suspendedReason: String?) {
+        self.id = id
+        self.jobId = jobId
+        self.itemId = itemId
+        self.itemTitle = itemTitle
+        self.origin = origin
+        self.followOnOrigins = followOnOrigins
+        self.fields = fields
+        self.oneTimeCodes = oneTimeCodes
+        self.uses = uses
+        self.totalUses = totalUses
+        self.perRun = perRun
+        self.expiresAt = expiresAt
+        self.suspendedReason = suspendedReason
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedLoginGrantView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedLoginGrantView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedLoginGrantView {
+        return
+            try UnattendedLoginGrantView(
+                id: FfiConverterString.read(from: &buf), 
+                jobId: FfiConverterString.read(from: &buf), 
+                itemId: FfiConverterString.read(from: &buf), 
+                itemTitle: FfiConverterString.read(from: &buf), 
+                origin: FfiConverterString.read(from: &buf), 
+                followOnOrigins: FfiConverterSequenceString.read(from: &buf), 
+                fields: FfiConverterSequenceString.read(from: &buf), 
+                oneTimeCodes: FfiConverterBool.read(from: &buf), 
+                uses: FfiConverterUInt32.read(from: &buf), 
+                totalUses: FfiConverterUInt32.read(from: &buf), 
+                perRun: FfiConverterUInt32.read(from: &buf), 
+                expiresAt: FfiConverterUInt64.read(from: &buf), 
+                suspendedReason: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedLoginGrantView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.jobId, into: &buf)
+        FfiConverterString.write(value.itemId, into: &buf)
+        FfiConverterString.write(value.itemTitle, into: &buf)
+        FfiConverterString.write(value.origin, into: &buf)
+        FfiConverterSequenceString.write(value.followOnOrigins, into: &buf)
+        FfiConverterSequenceString.write(value.fields, into: &buf)
+        FfiConverterBool.write(value.oneTimeCodes, into: &buf)
+        FfiConverterUInt32.write(value.uses, into: &buf)
+        FfiConverterUInt32.write(value.totalUses, into: &buf)
+        FfiConverterUInt32.write(value.perRun, into: &buf)
+        FfiConverterUInt64.write(value.expiresAt, into: &buf)
+        FfiConverterOptionString.write(value.suspendedReason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedLoginGrantView_lift(_ buf: RustBuffer) throws -> UnattendedLoginGrantView {
+    return try FfiConverterTypeUnattendedLoginGrantView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedLoginGrantView_lower(_ value: UnattendedLoginGrantView) -> RustBuffer {
+    return FfiConverterTypeUnattendedLoginGrantView.lower(value)
+}
+
+
+/**
+ * Something to tell the owner now, as a local notification. Never a value or a command line.
+ */
+public struct UnattendedNoticeView: Equatable, Hashable {
+    /**
+     * `SUSPENDED`, `DISARMED`, `JOB_MISSED` or `JOB_NOT_STARTED`.
+     */
+    public var kind: String
+    /**
+     * The job's name, when it is about one.
+     */
+    public var job: String?
+    /**
+     * Why.
+     */
+    public var reason: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `SUSPENDED`, `DISARMED`, `JOB_MISSED` or `JOB_NOT_STARTED`.
+         */kind: String, 
+        /**
+         * The job's name, when it is about one.
+         */job: String?, 
+        /**
+         * Why.
+         */reason: String) {
+        self.kind = kind
+        self.job = job
+        self.reason = reason
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedNoticeView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedNoticeView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedNoticeView {
+        return
+            try UnattendedNoticeView(
+                kind: FfiConverterString.read(from: &buf), 
+                job: FfiConverterOptionString.read(from: &buf), 
+                reason: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedNoticeView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterOptionString.write(value.job, into: &buf)
+        FfiConverterString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedNoticeView_lift(_ buf: RustBuffer) throws -> UnattendedNoticeView {
+    return try FfiConverterTypeUnattendedNoticeView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedNoticeView_lower(_ value: UnattendedNoticeView) -> RustBuffer {
+    return FfiConverterTypeUnattendedNoticeView.lower(value)
+}
+
+
+/**
+ * What the machine vault holds, for Agent access.
+ */
+public struct UnattendedOverviewView: Equatable, Hashable {
+    /**
+     * Whether this personal vault has a machine vault at all.
+     */
+    public var hasMachineVault: Bool
+    /**
+     * Its environments.
+     */
+    public var environments: [MachineEnvironmentView]
+    /**
+     * Its jobs.
+     */
+    public var jobs: [UnattendedJobView]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Whether this personal vault has a machine vault at all.
+         */hasMachineVault: Bool, 
+        /**
+         * Its environments.
+         */environments: [MachineEnvironmentView], 
+        /**
+         * Its jobs.
+         */jobs: [UnattendedJobView]) {
+        self.hasMachineVault = hasMachineVault
+        self.environments = environments
+        self.jobs = jobs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedOverviewView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedOverviewView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedOverviewView {
+        return
+            try UnattendedOverviewView(
+                hasMachineVault: FfiConverterBool.read(from: &buf), 
+                environments: FfiConverterSequenceTypeMachineEnvironmentView.read(from: &buf), 
+                jobs: FfiConverterSequenceTypeUnattendedJobView.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedOverviewView, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.hasMachineVault, into: &buf)
+        FfiConverterSequenceTypeMachineEnvironmentView.write(value.environments, into: &buf)
+        FfiConverterSequenceTypeUnattendedJobView.write(value.jobs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedOverviewView_lift(_ buf: RustBuffer) throws -> UnattendedOverviewView {
+    return try FfiConverterTypeUnattendedOverviewView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedOverviewView_lower(_ value: UnattendedOverviewView) -> RustBuffer {
+    return FfiConverterTypeUnattendedOverviewView.lower(value)
+}
+
+
+/**
+ * One live run.
+ */
+public struct UnattendedRunView: Equatable, Hashable {
+    /**
+     * The run's number.
+     */
+    public var id: UInt64
+    /**
+     * The job's name.
+     */
+    public var job: String
+    /**
+     * The root's pid.
+     */
+    public var rootPid: UInt32
+    /**
+     * Unix seconds.
+     */
+    public var startedAt: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The run's number.
+         */id: UInt64, 
+        /**
+         * The job's name.
+         */job: String, 
+        /**
+         * The root's pid.
+         */rootPid: UInt32, 
+        /**
+         * Unix seconds.
+         */startedAt: UInt64) {
+        self.id = id
+        self.job = job
+        self.rootPid = rootPid
+        self.startedAt = startedAt
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedRunView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedRunView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedRunView {
+        return
+            try UnattendedRunView(
+                id: FfiConverterUInt64.read(from: &buf), 
+                job: FfiConverterString.read(from: &buf), 
+                rootPid: FfiConverterUInt32.read(from: &buf), 
+                startedAt: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedRunView, into buf: inout [UInt8]) {
+        FfiConverterUInt64.write(value.id, into: &buf)
+        FfiConverterString.write(value.job, into: &buf)
+        FfiConverterUInt32.write(value.rootPid, into: &buf)
+        FfiConverterUInt64.write(value.startedAt, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedRunView_lift(_ buf: RustBuffer) throws -> UnattendedRunView {
+    return try FfiConverterTypeUnattendedRunView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedRunView_lower(_ value: UnattendedRunView) -> RustBuffer {
+    return FfiConverterTypeUnattendedRunView.lower(value)
+}
+
+
+/**
+ * The engine's state, for the menu bar and Agent access.
+ */
+public struct UnattendedStatusView: Equatable, Hashable {
+    /**
+     * Whether the engine is running at all.
+     */
+    public var running: Bool
+    /**
+     * Whether the machine vault is armed.
+     */
+    public var armed: Bool
+    /**
+     * When it was armed, Unix seconds.
+     */
+    public var armedAt: UInt64?
+    /**
+     * Where the unattended socket is.
+     */
+    public var endpoint: String
+    /**
+     * Live runs.
+     */
+    public var runs: [UnattendedRunView]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Whether the engine is running at all.
+         */running: Bool, 
+        /**
+         * Whether the machine vault is armed.
+         */armed: Bool, 
+        /**
+         * When it was armed, Unix seconds.
+         */armedAt: UInt64?, 
+        /**
+         * Where the unattended socket is.
+         */endpoint: String, 
+        /**
+         * Live runs.
+         */runs: [UnattendedRunView]) {
+        self.running = running
+        self.armed = armed
+        self.armedAt = armedAt
+        self.endpoint = endpoint
+        self.runs = runs
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedStatusView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedStatusView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedStatusView {
+        return
+            try UnattendedStatusView(
+                running: FfiConverterBool.read(from: &buf), 
+                armed: FfiConverterBool.read(from: &buf), 
+                armedAt: FfiConverterOptionUInt64.read(from: &buf), 
+                endpoint: FfiConverterString.read(from: &buf), 
+                runs: FfiConverterSequenceTypeUnattendedRunView.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedStatusView, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.running, into: &buf)
+        FfiConverterBool.write(value.armed, into: &buf)
+        FfiConverterOptionUInt64.write(value.armedAt, into: &buf)
+        FfiConverterString.write(value.endpoint, into: &buf)
+        FfiConverterSequenceTypeUnattendedRunView.write(value.runs, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedStatusView_lift(_ buf: RustBuffer) throws -> UnattendedStatusView {
+    return try FfiConverterTypeUnattendedStatusView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedStatusView_lower(_ value: UnattendedStatusView) -> RustBuffer {
+    return FfiConverterTypeUnattendedStatusView.lower(value)
+}
+
+
+/**
+ * "While you were away" (ADR-0042 §9): what the machine log recorded since the person last
+ * acknowledged it.
+ */
+public struct UnattendedSummaryView: Equatable, Hashable {
+    /**
+     * The entries, newest first, at most 200.
+     */
+    public var rows: [AuditRowView]
+    /**
+     * How many entries there are in all since the acknowledgement.
+     */
+    public var total: UInt32
+    /**
+     * Runs started.
+     */
+    public var runs: UInt32
+    /**
+     * Values released.
+     */
+    public var releases: UInt32
+    /**
+     * Requests refused.
+     */
+    public var refusals: UInt32
+    /**
+     * Grants suspended.
+     */
+    public var suspensions: UInt32
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The entries, newest first, at most 200.
+         */rows: [AuditRowView], 
+        /**
+         * How many entries there are in all since the acknowledgement.
+         */total: UInt32, 
+        /**
+         * Runs started.
+         */runs: UInt32, 
+        /**
+         * Values released.
+         */releases: UInt32, 
+        /**
+         * Requests refused.
+         */refusals: UInt32, 
+        /**
+         * Grants suspended.
+         */suspensions: UInt32) {
+        self.rows = rows
+        self.total = total
+        self.runs = runs
+        self.releases = releases
+        self.refusals = refusals
+        self.suspensions = suspensions
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedSummaryView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedSummaryView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedSummaryView {
+        return
+            try UnattendedSummaryView(
+                rows: FfiConverterSequenceTypeAuditRowView.read(from: &buf), 
+                total: FfiConverterUInt32.read(from: &buf), 
+                runs: FfiConverterUInt32.read(from: &buf), 
+                releases: FfiConverterUInt32.read(from: &buf), 
+                refusals: FfiConverterUInt32.read(from: &buf), 
+                suspensions: FfiConverterUInt32.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedSummaryView, into buf: inout [UInt8]) {
+        FfiConverterSequenceTypeAuditRowView.write(value.rows, into: &buf)
+        FfiConverterUInt32.write(value.total, into: &buf)
+        FfiConverterUInt32.write(value.runs, into: &buf)
+        FfiConverterUInt32.write(value.releases, into: &buf)
+        FfiConverterUInt32.write(value.refusals, into: &buf)
+        FfiConverterUInt32.write(value.suspensions, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedSummaryView_lift(_ buf: RustBuffer) throws -> UnattendedSummaryView {
+    return try FfiConverterTypeUnattendedSummaryView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedSummaryView_lower(_ value: UnattendedSummaryView) -> RustBuffer {
+    return FfiConverterTypeUnattendedSummaryView.lower(value)
+}
+
+
+/**
+ * One calendar time: every day, or one weekday (0 = Monday ... 6 = Sunday), at `hour:minute`,
+ * in the Mac's local time.
+ */
+public struct UnattendedTimeView: Equatable, Hashable {
+    /**
+     * `None` for every day.
+     */
+    public var weekday: UInt8?
+    /**
+     * 0 to 23.
+     */
+    public var hour: UInt8
+    /**
+     * 0 to 59.
+     */
+    public var minute: UInt8
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `None` for every day.
+         */weekday: UInt8?, 
+        /**
+         * 0 to 23.
+         */hour: UInt8, 
+        /**
+         * 0 to 59.
+         */minute: UInt8) {
+        self.weekday = weekday
+        self.hour = hour
+        self.minute = minute
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension UnattendedTimeView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedTimeView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedTimeView {
+        return
+            try UnattendedTimeView(
+                weekday: FfiConverterOptionUInt8.read(from: &buf), 
+                hour: FfiConverterUInt8.read(from: &buf), 
+                minute: FfiConverterUInt8.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: UnattendedTimeView, into buf: inout [UInt8]) {
+        FfiConverterOptionUInt8.write(value.weekday, into: &buf)
+        FfiConverterUInt8.write(value.hour, into: &buf)
+        FfiConverterUInt8.write(value.minute, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedTimeView_lift(_ buf: RustBuffer) throws -> UnattendedTimeView {
+    return try FfiConverterTypeUnattendedTimeView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedTimeView_lower(_ value: UnattendedTimeView) -> RustBuffer {
+    return FfiConverterTypeUnattendedTimeView.lower(value)
+}
+
+
+/**
+ * What "keep this app's version (overwrite the file)" would discard — the body of the
+ * confirmation shown before it runs ([`crate::VaultSession::conflict_details`]).
+ *
+ * Counts and yes/no answers only: nothing here is a secret, a title or a value.
+ */
+public struct VaultConflictDetailsView: Equatable, Hashable {
+    /**
+     * What kind of file is there.
+     */
+    public var kind: VaultConflictKindView
+    /**
+     * Identifies the exact file version these details describe: the first 8 bytes of its
+     * SHA-256, in hex. `None` when there is no file. Pass the whole record back to
+     * [`crate::VaultSession::keep_app_version_over_conflict`] unchanged.
+     */
+    public var fileFingerprint: String?
+    /**
+     * How many audit entries this session's own log holds (what the overwrite writes, before
+     * its own entry recording the overwrite).
+     */
+    public var sessionAuditEntries: UInt64
+    /**
+     * For a diverged file — the same vault, an older or separately changed copy — what it holds
+     * that this session does not. `None` for the other kinds: a replaced or unreadable file is
+     * lost whole, and a removed one has nothing to lose.
+     */
+    public var diverged: DivergedFileView?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * What kind of file is there.
+         */kind: VaultConflictKindView, 
+        /**
+         * Identifies the exact file version these details describe: the first 8 bytes of its
+         * SHA-256, in hex. `None` when there is no file. Pass the whole record back to
+         * [`crate::VaultSession::keep_app_version_over_conflict`] unchanged.
+         */fileFingerprint: String?, 
+        /**
+         * How many audit entries this session's own log holds (what the overwrite writes, before
+         * its own entry recording the overwrite).
+         */sessionAuditEntries: UInt64, 
+        /**
+         * For a diverged file — the same vault, an older or separately changed copy — what it holds
+         * that this session does not. `None` for the other kinds: a replaced or unreadable file is
+         * lost whole, and a removed one has nothing to lose.
+         */diverged: DivergedFileView?) {
+        self.kind = kind
+        self.fileFingerprint = fileFingerprint
+        self.sessionAuditEntries = sessionAuditEntries
+        self.diverged = diverged
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension VaultConflictDetailsView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVaultConflictDetailsView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VaultConflictDetailsView {
+        return
+            try VaultConflictDetailsView(
+                kind: FfiConverterTypeVaultConflictKindView.read(from: &buf), 
+                fileFingerprint: FfiConverterOptionString.read(from: &buf), 
+                sessionAuditEntries: FfiConverterUInt64.read(from: &buf), 
+                diverged: FfiConverterOptionTypeDivergedFileView.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: VaultConflictDetailsView, into buf: inout [UInt8]) {
+        FfiConverterTypeVaultConflictKindView.write(value.kind, into: &buf)
+        FfiConverterOptionString.write(value.fileFingerprint, into: &buf)
+        FfiConverterUInt64.write(value.sessionAuditEntries, into: &buf)
+        FfiConverterOptionTypeDivergedFileView.write(value.diverged, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVaultConflictDetailsView_lift(_ buf: RustBuffer) throws -> VaultConflictDetailsView {
+    return try FfiConverterTypeVaultConflictDetailsView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVaultConflictDetailsView_lower(_ value: VaultConflictDetailsView) -> RustBuffer {
+    return FfiConverterTypeVaultConflictDetailsView.lower(value)
+}
+
+
+/**
  * A logical vault inside the vault file (vault-format.md §2.2).
  */
 public struct VaultView: Equatable, Hashable {
@@ -6385,6 +12736,327 @@ public func FfiConverterTypeVaultView_lower(_ value: VaultView) -> RustBuffer {
 
 
 /**
+ * Why an agent is blocked from asking for fills (ADR-0036 §9.3, §9.4).
+ */
+
+public enum AgentFillBlockReasonView: Equatable, Hashable {
+    
+    /**
+     * The human pressed **Deny and block this agent**; lifts by itself after thirty minutes.
+     */
+    case deniedAndBlocked
+    /**
+     * The agent's second origin mismatch in one unlock session; lifts only when unblocked.
+     */
+    case originMismatch
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentFillBlockReasonView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentFillBlockReasonView: FfiConverterRustBuffer {
+    typealias SwiftType = AgentFillBlockReasonView
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentFillBlockReasonView {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .deniedAndBlocked
+        
+        case 2: return .originMismatch
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AgentFillBlockReasonView, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .deniedAndBlocked:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .originMismatch:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentFillBlockReasonView_lift(_ buf: RustBuffer) throws -> AgentFillBlockReasonView {
+    return try FfiConverterTypeAgentFillBlockReasonView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentFillBlockReasonView_lower(_ value: AgentFillBlockReasonView) -> RustBuffer {
+    return FfiConverterTypeAgentFillBlockReasonView.lower(value)
+}
+
+
+
+/**
+ * A field an agent asked to have filled. A **name**; there is no variant that holds a value.
+ */
+
+public enum AgentFillFieldView: Equatable, Hashable {
+    
+    /**
+     * The login's username.
+     */
+    case username
+    /**
+     * The login's password.
+     */
+    case password
+    /**
+     * A one-time code from the item's one-time-password field.
+     */
+    case oneTimeCode
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentFillFieldView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentFillFieldView: FfiConverterRustBuffer {
+    typealias SwiftType = AgentFillFieldView
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentFillFieldView {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .username
+        
+        case 2: return .password
+        
+        case 3: return .oneTimeCode
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AgentFillFieldView, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .username:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .password:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .oneTimeCode:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentFillFieldView_lift(_ buf: RustBuffer) throws -> AgentFillFieldView {
+    return try FfiConverterTypeAgentFillFieldView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentFillFieldView_lower(_ value: AgentFillFieldView) -> RustBuffer {
+    return FfiConverterTypeAgentFillFieldView.lower(value)
+}
+
+
+
+/**
+ * Something about agent fills the human should hear although no sheet was raised
+ * (ADR-0036 §9.1, §9.4). Metadata only: names, a key, an origin, counts.
+ */
+
+public enum AgentFillNoticeView: Equatable, Hashable {
+    
+    /**
+     * An agent asked to fill an item into a tab whose origin the item is not saved for. Nothing
+     * was filled.
+     */
+    case originMismatch(
+        /**
+         * The agent as the audit log names it: self-reported name quoted, kernel facts bare.
+         */agent: String, 
+        /**
+         * The item's title.
+         */itemTitle: String, 
+        /**
+         * The origin the browser reported, rendered so a look-alike is obvious.
+         */origin: AgentOriginView
+    )
+    /**
+     * An agent asked for more sheets than its budget and is refused for the next
+     * `window_minutes`. One notice per cool-down, however many requests it refuses.
+     */
+    case rateLimited(
+        /**
+         * The agent as the audit log names it.
+         */agent: String, 
+        /**
+         * The key its budget is kept under (its parent executable).
+         */key: String, 
+        /**
+         * How many times it asked inside the window, the refused request included.
+         */requests: UInt32, 
+        /**
+         * The window, and the cool-down, in minutes.
+         */windowMinutes: UInt32
+    )
+    /**
+     * An agent was blocked without the human pressing anything — its second origin mismatch in
+     * this unlock session — until the human unblocks it.
+     */
+    case blocked(
+        /**
+         * The agent as the audit log names it.
+         */agent: String, 
+        /**
+         * The key it is blocked under; [`agent_fill_unblock`] takes it.
+         */key: String, 
+        /**
+         * Why.
+         */reason: AgentFillBlockReasonView
+    )
+    /**
+     * The tripwire (ADR-0036 §8.3) fired after an agent fill: the password input stopped being
+     * a password input within seconds — the site's "show password" control — and the extension
+     * cleared it. The fill did happen; what the agent could read, it may have read.
+     */
+    case unmasked(
+        /**
+         * The agent as the audit log names it.
+         */agent: String, 
+        /**
+         * The item's title.
+         */itemTitle: String, 
+        /**
+         * The origin the password was written at, rendered as the sheet rendered it.
+         */origin: AgentOriginView
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AgentFillNoticeView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentFillNoticeView: FfiConverterRustBuffer {
+    typealias SwiftType = AgentFillNoticeView
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentFillNoticeView {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .originMismatch(agent: try FfiConverterString.read(from: &buf), itemTitle: try FfiConverterString.read(from: &buf), origin: try FfiConverterTypeAgentOriginView.read(from: &buf)
+        )
+        
+        case 2: return .rateLimited(agent: try FfiConverterString.read(from: &buf), key: try FfiConverterString.read(from: &buf), requests: try FfiConverterUInt32.read(from: &buf), windowMinutes: try FfiConverterUInt32.read(from: &buf)
+        )
+        
+        case 3: return .blocked(agent: try FfiConverterString.read(from: &buf), key: try FfiConverterString.read(from: &buf), reason: try FfiConverterTypeAgentFillBlockReasonView.read(from: &buf)
+        )
+        
+        case 4: return .unmasked(agent: try FfiConverterString.read(from: &buf), itemTitle: try FfiConverterString.read(from: &buf), origin: try FfiConverterTypeAgentOriginView.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AgentFillNoticeView, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .originMismatch(agent,itemTitle,origin):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(agent, into: &buf)
+            FfiConverterString.write(itemTitle, into: &buf)
+            FfiConverterTypeAgentOriginView.write(origin, into: &buf)
+            
+        
+        case let .rateLimited(agent,key,requests,windowMinutes):
+            writeInt(&buf, Int32(2))
+            FfiConverterString.write(agent, into: &buf)
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterUInt32.write(requests, into: &buf)
+            FfiConverterUInt32.write(windowMinutes, into: &buf)
+            
+        
+        case let .blocked(agent,key,reason):
+            writeInt(&buf, Int32(3))
+            FfiConverterString.write(agent, into: &buf)
+            FfiConverterString.write(key, into: &buf)
+            FfiConverterTypeAgentFillBlockReasonView.write(reason, into: &buf)
+            
+        
+        case let .unmasked(agent,itemTitle,origin):
+            writeInt(&buf, Int32(4))
+            FfiConverterString.write(agent, into: &buf)
+            FfiConverterString.write(itemTitle, into: &buf)
+            FfiConverterTypeAgentOriginView.write(origin, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentFillNoticeView_lift(_ buf: RustBuffer) throws -> AgentFillNoticeView {
+    return try FfiConverterTypeAgentFillNoticeView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentFillNoticeView_lower(_ value: AgentFillNoticeView) -> RustBuffer {
+    return FfiConverterTypeAgentFillNoticeView.lower(value)
+}
+
+
+
+/**
  * What kind of request the approval sheet is about (ui-spec.md §10.2).
  */
 
@@ -6410,6 +13082,12 @@ public enum ApprovalAction: Equatable, Hashable {
      * A browser extension wants to fill a credential into a page (M6).
      */
     case fillCredential
+    /**
+     * An agent asks for a login to be typed into a browser tab (ADR-0036). Always the full
+     * sheet — never presence-only, never "for this session" — and it mints nothing. The facts
+     * the sheet shows are in [`ApprovalRequestView::agent_fill`].
+     */
+    case agentFill
 
 
 
@@ -6441,6 +13119,8 @@ public struct FfiConverterTypeApprovalAction: FfiConverterRustBuffer {
         
         case 5: return .fillCredential
         
+        case 6: return .agentFill
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -6468,6 +13148,10 @@ public struct FfiConverterTypeApprovalAction: FfiConverterRustBuffer {
         case .fillCredential:
             writeInt(&buf, Int32(5))
         
+        
+        case .agentFill:
+            writeInt(&buf, Int32(6))
+        
         }
     }
 }
@@ -6490,7 +13174,7 @@ public func FfiConverterTypeApprovalAction_lower(_ value: ApprovalAction) -> Rus
 
 
 /**
- * The three buttons on the sheet (ui-spec.md §10.3). There is no "always allow".
+ * The buttons on the sheet (ui-spec.md §10.3). There is no "always allow".
  */
 
 public enum ApprovalDecision: Equatable, Hashable {
@@ -6514,6 +13198,16 @@ public enum ApprovalDecision: Equatable, Hashable {
      * Refuse. Returns `USER_DENIED`.
      */
     case deny
+    /**
+     * Refuse, and refuse every agent fill from the same agent for the next thirty minutes
+     * without a sheet (ADR-0036 §9.3). Returns `USER_DENIED`. Offered only on the agent-fill
+     * sheet; for any other request it is exactly [`Self::Deny`]. A denial, so — like
+     * [`Self::Deny`] — it needs no biometric.
+     *
+     * UniFFI only: the C ABI's `KgsApprovalDecisionTag` has no counterpart, because Windows never
+     * offers agent fills.
+     */
+    case denyAndBlock
 
 
 
@@ -6542,6 +13236,8 @@ public struct FfiConverterTypeApprovalDecision: FfiConverterRustBuffer {
         
         case 3: return .deny
         
+        case 4: return .denyAndBlock
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -6562,6 +13258,10 @@ public struct FfiConverterTypeApprovalDecision: FfiConverterRustBuffer {
         
         case .deny:
             writeInt(&buf, Int32(3))
+        
+        
+        case .denyAndBlock:
+            writeInt(&buf, Int32(4))
         
         }
     }
@@ -6718,6 +13418,70 @@ enum FfiError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
      */
     case Io(message: String)
     
+    /**
+     * Another kagisecure process (or another handle in this one) held the vault's lock past the
+     * app's wait, or the lock file was moved while held ([`kagisecure_core::Error::VaultBusy`],
+     * [`kagisecure_core::Error::LockLost`]). Nothing was written; retrying shortly is safe.
+     */
+    case Busy(message: String)
+    
+    /**
+     * The vault file on disk is no longer the one this session's writes build on: an older copy
+     * was restored over it, a different file or vault sits at the path now, or the file is gone
+     * ([`kagisecure_core::Error::VaultDiverged`], [`kagisecure_core::Error::VaultReplaced`], or
+     * [`kagisecure_core::Error::VaultNotFound`] surfacing *after* this session was already
+     * unlocked, or a file at the path this build cannot parse). Nothing was written, and nothing
+     * will be until the human picks a side — [`VaultSession::conflict`],
+     * [`VaultSession::conflict_details`] and [`VaultSession::keep_app_version_over_conflict`]
+     * are the rest of that flow.
+     */
+    case Diverged(message: String)
+    
+    /**
+     * [`VaultSession::save_item`] refused to write because the item changed on disk after the
+     * edit sheet read it — a different process, or another window, saved it first. Nothing was
+     * written; the app should reload the item and let the user redo their edit.
+     */
+    case ItemChangedElsewhere(message: String)
+    
+    /**
+     * The vault is locked: [`VaultSession::lock`] ran, or the session is being destroyed. Nothing
+     * was read or released. A release whose presence prompt was still up when the vault locked
+     * ends here too, whatever the prompt then answered (ADR-0038 §4).
+     */
+    case VaultLocked(message: String)
+    
+    /**
+     * No [`PresenceGate`] is installed on this session ([`VaultSession::set_presence_gate`]), so
+     * nothing can be released: with no gate, every release fails closed (ADR-0038 §1).
+     */
+    case NoPresenceGate(message: String)
+    
+    /**
+     * The person dismissed the presence prompt, or it failed. Nothing was released.
+     */
+    case PresenceCancelled(message: String)
+    
+    /**
+     * The presence check could not run on this Mac right now (no biometrics, no passcode, a
+     * policy that refuses). Nothing was released; the app may offer the master-password fallback
+     * ([`VaultSession::verify_master_password`], ADR-0038 user decision 7).
+     */
+    case PresenceUnavailable(message: String)
+    
+    /**
+     * Another presence prompt is already up. Refused rather than queued, so requests cannot pile
+     * up behind a legitimate one (ADR-0037 §3, ADR-0038 §6). Nothing was released.
+     */
+    case PresenceBusy(message: String)
+    
+    /**
+     * A release object ([`FieldRelease`], [`TotpRelease`], [`NotesRelease`]) is no longer live:
+     * it was closed, it passed its five-minute cap, or it was a copy and has already been used.
+     * Ask again — which means another presence prompt.
+     */
+    case ReleaseEnded(message: String)
+    
 
     
 
@@ -6775,6 +13539,42 @@ public struct FfiConverterTypeFfiError: FfiConverterRustBuffer {
             message: try FfiConverterString.read(from: &buf)
         )
         
+        case 8: return .Busy(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 9: return .Diverged(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 10: return .ItemChangedElsewhere(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 11: return .VaultLocked(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 12: return .NoPresenceGate(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 13: return .PresenceCancelled(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 14: return .PresenceUnavailable(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 15: return .PresenceBusy(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
+        case 16: return .ReleaseEnded(
+            message: try FfiConverterString.read(from: &buf)
+        )
+        
 
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -6800,6 +13600,24 @@ public struct FfiConverterTypeFfiError: FfiConverterRustBuffer {
             writeInt(&buf, Int32(6))
         case .Io(_ /* message is ignored*/):
             writeInt(&buf, Int32(7))
+        case .Busy(_ /* message is ignored*/):
+            writeInt(&buf, Int32(8))
+        case .Diverged(_ /* message is ignored*/):
+            writeInt(&buf, Int32(9))
+        case .ItemChangedElsewhere(_ /* message is ignored*/):
+            writeInt(&buf, Int32(10))
+        case .VaultLocked(_ /* message is ignored*/):
+            writeInt(&buf, Int32(11))
+        case .NoPresenceGate(_ /* message is ignored*/):
+            writeInt(&buf, Int32(12))
+        case .PresenceCancelled(_ /* message is ignored*/):
+            writeInt(&buf, Int32(13))
+        case .PresenceUnavailable(_ /* message is ignored*/):
+            writeInt(&buf, Int32(14))
+        case .PresenceBusy(_ /* message is ignored*/):
+            writeInt(&buf, Int32(15))
+        case .ReleaseEnded(_ /* message is ignored*/):
+            writeInt(&buf, Int32(16))
 
         
         }
@@ -7637,6 +14455,633 @@ public func FfiConverterTypeItemSort_lower(_ value: ItemSort) -> RustBuffer {
 
 
 /**
+ * How [`crate::VaultSession::keep_app_version_over_conflict`] ended, when it did not fail.
+ */
+
+public enum KeepAppVersionOutcome: Equatable, Hashable {
+    
+    /**
+     * The file now holds this app's version, with an audit entry recording what it replaced.
+     * Writes work again.
+     */
+    case overwritten
+    /**
+     * The file continues this app's session again (someone put the newer file back, say), so
+     * nothing needed overwriting: the session caught up with the file the ordinary way, losing
+     * nothing of its own. Writes work again.
+     */
+    case noLongerInConflict
+    /**
+     * The file changed again after the confirmation was built, so what it said would be lost is
+     * no longer accurate. Nothing was written; confirm again with these details.
+     */
+    case fileChangedAgain(
+        /**
+         * What the file holds now.
+         */details: VaultConflictDetailsView
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension KeepAppVersionOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeKeepAppVersionOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = KeepAppVersionOutcome
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> KeepAppVersionOutcome {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .overwritten
+        
+        case 2: return .noLongerInConflict
+        
+        case 3: return .fileChangedAgain(details: try FfiConverterTypeVaultConflictDetailsView.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: KeepAppVersionOutcome, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .overwritten:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .noLongerInConflict:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .fileChangedAgain(details):
+            writeInt(&buf, Int32(3))
+            FfiConverterTypeVaultConflictDetailsView.write(details, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeKeepAppVersionOutcome_lift(_ buf: RustBuffer) throws -> KeepAppVersionOutcome {
+    return try FfiConverterTypeKeepAppVersionOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeKeepAppVersionOutcome_lower(_ value: KeepAppVersionOutcome) -> RustBuffer {
+    return FfiConverterTypeKeepAppVersionOutcome.lower(value)
+}
+
+
+
+/**
+ * The master-password fallback's answer ([`VaultSession::verify_master_password`]).
+ */
+
+public enum MasterPasswordCheck: Equatable, Hashable {
+    
+    /**
+     * The password is this vault's master password.
+     */
+    case verified
+    /**
+     * It is not. The next attempt is refused for `retry_after_ms`, doubling with every
+     * consecutive failure up to five minutes.
+     */
+    case wrong(
+        /**
+         * Milliseconds until the next attempt will be checked.
+         */retryAfterMs: UInt64
+    )
+    /**
+     * Not checked at all: an earlier failure's back-off has not run out, or another check is
+     * still running. Nothing was derived and nothing was compared.
+     */
+    case throttled(
+        /**
+         * Milliseconds until an attempt will be checked.
+         */retryAfterMs: UInt64
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension MasterPasswordCheck: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeMasterPasswordCheck: FfiConverterRustBuffer {
+    typealias SwiftType = MasterPasswordCheck
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> MasterPasswordCheck {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .verified
+        
+        case 2: return .wrong(retryAfterMs: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        case 3: return .throttled(retryAfterMs: try FfiConverterUInt64.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: MasterPasswordCheck, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .verified:
+            writeInt(&buf, Int32(1))
+        
+        
+        case let .wrong(retryAfterMs):
+            writeInt(&buf, Int32(2))
+            FfiConverterUInt64.write(retryAfterMs, into: &buf)
+            
+        
+        case let .throttled(retryAfterMs):
+            writeInt(&buf, Int32(3))
+            FfiConverterUInt64.write(retryAfterMs, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasterPasswordCheck_lift(_ buf: RustBuffer) throws -> MasterPasswordCheck {
+    return try FfiConverterTypeMasterPasswordCheck.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeMasterPasswordCheck_lower(_ value: MasterPasswordCheck) -> RustBuffer {
+    return FfiConverterTypeMasterPasswordCheck.lower(value)
+}
+
+
+
+/**
+ * Which signer a peer's Authenticode signature must name (ADR-0032).
+ */
+
+public enum PeerRequirementKind: Equatable, Hashable {
+    
+    /**
+     * One of our own helpers — the MCP sidecar, or the native messaging host: signed with the same
+     * key as this build of Kagisecure. Never met by an unsigned build.
+     */
+    case ownHelper
+    /**
+     * A browser: signed by the publisher the executable's file name maps to (`chrome.exe` →
+     * Google LLC, `msedge.exe` → Microsoft Corporation, `brave.exe` → Brave Software, Inc.).
+     */
+    case browser
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PeerRequirementKind: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePeerRequirementKind: FfiConverterRustBuffer {
+    typealias SwiftType = PeerRequirementKind
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PeerRequirementKind {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .ownHelper
+        
+        case 2: return .browser
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PeerRequirementKind, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .ownHelper:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .browser:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePeerRequirementKind_lift(_ buf: RustBuffer) throws -> PeerRequirementKind {
+    return try FfiConverterTypePeerRequirementKind.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePeerRequirementKind_lower(_ value: PeerRequirementKind) -> RustBuffer {
+    return FfiConverterTypePeerRequirementKind.lower(value)
+}
+
+
+
+/**
+ * What a presence check answered.
+ */
+
+public enum PresenceOutcome: Equatable, Hashable {
+    
+    /**
+     * A person proved presence — Touch ID, an Apple Watch, the login password, or (only when
+     * none of those can run) the vault's master password. The one answer that releases anything.
+     */
+    case confirmed
+    /**
+     * The person dismissed the prompt, or the check failed.
+     */
+    case cancelled
+    /**
+     * No presence check can run on this Mac right now.
+     */
+    case unavailable
+    /**
+     * Another prompt is already up; this one was refused rather than queued.
+     */
+    case busy
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension PresenceOutcome: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypePresenceOutcome: FfiConverterRustBuffer {
+    typealias SwiftType = PresenceOutcome
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> PresenceOutcome {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .confirmed
+        
+        case 2: return .cancelled
+        
+        case 3: return .unavailable
+        
+        case 4: return .busy
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: PresenceOutcome, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .confirmed:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .cancelled:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .unavailable:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .busy:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePresenceOutcome_lift(_ buf: RustBuffer) throws -> PresenceOutcome {
+    return try FfiConverterTypePresenceOutcome.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypePresenceOutcome_lower(_ value: PresenceOutcome) -> RustBuffer {
+    return FfiConverterTypePresenceOutcome.lower(value)
+}
+
+
+
+/**
+ * Why the app is asking for a value — which decides the prompt's wording, the audit entry, and
+ * what the release may do afterwards.
+ */
+
+public enum ReleasePurpose: Equatable, Hashable {
+    
+    /**
+     * Show the value in the detail pane (ui-spec §4.2). The release can be read again until it
+     * ends, and a copy of the shown value needs no new touch (user decision 1).
+     */
+    case reveal
+    /**
+     * Copy the value without showing it. One use: a second copy is a second touch.
+     */
+    case copy
+    /**
+     * Copy from Quick Access (⏎, ⌥⏎). One use.
+     */
+    case quickAccessCopy
+    /**
+     * Show one concealed value inside the edit sheet, which never prefills (user decision 4).
+     */
+    case editReveal
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension ReleasePurpose: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeReleasePurpose: FfiConverterRustBuffer {
+    typealias SwiftType = ReleasePurpose
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ReleasePurpose {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .reveal
+        
+        case 2: return .copy
+        
+        case 3: return .quickAccessCopy
+        
+        case 4: return .editReveal
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: ReleasePurpose, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .reveal:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .copy:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .quickAccessCopy:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .editReveal:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeReleasePurpose_lift(_ buf: RustBuffer) throws -> ReleasePurpose {
+    return try FfiConverterTypeReleasePurpose.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeReleasePurpose_lower(_ value: ReleasePurpose) -> RustBuffer {
+    return FfiConverterTypeReleasePurpose.lower(value)
+}
+
+
+
+/**
+ * A member's role in a shared vault (ADR-0035 §3).
+ */
+
+public enum SharedRole: Equatable, Hashable {
+    
+    /**
+     * Reads.
+     */
+    case reader
+    /**
+     * Also adds, edits and deletes items.
+     */
+    case writer
+    /**
+     * Also invites, removes and changes roles.
+     */
+    case admin
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SharedRole: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedRole: FfiConverterRustBuffer {
+    typealias SwiftType = SharedRole
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedRole {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .reader
+        
+        case 2: return .writer
+        
+        case 3: return .admin
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SharedRole, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .reader:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .writer:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .admin:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedRole_lift(_ buf: RustBuffer) throws -> SharedRole {
+    return try FfiConverterTypeSharedRole.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedRole_lower(_ value: SharedRole) -> RustBuffer {
+    return FfiConverterTypeSharedRole.lower(value)
+}
+
+
+
+/**
+ * Something about a shared vault's roster worth telling its members (ADR-0035 addendum;
+ * `kagisecure_shared::roster::RosterWarning`, and the CLI's `shared status`, which already
+ * prints these).
+ */
+
+public enum SharedRosterWarning: Equatable, Hashable {
+    
+    /**
+     * Fewer than two admins are left: losing the last one would freeze the roster.
+     */
+    case fewAdmins
+    /**
+     * No admin is left: the roster is frozen and cannot change — nobody can be added, removed
+     * or given another role.
+     */
+    case frozen
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension SharedRosterWarning: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeSharedRosterWarning: FfiConverterRustBuffer {
+    typealias SwiftType = SharedRosterWarning
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SharedRosterWarning {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .fewAdmins
+        
+        case 2: return .frozen
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: SharedRosterWarning, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .fewAdmins:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .frozen:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedRosterWarning_lift(_ buf: RustBuffer) throws -> SharedRosterWarning {
+    return try FfiConverterTypeSharedRosterWarning.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeSharedRosterWarning_lower(_ value: SharedRosterWarning) -> RustBuffer {
+    return FfiConverterTypeSharedRosterWarning.lower(value)
+}
+
+
+
+/**
  * The five buckets a strength meter labels.
  */
 
@@ -7827,6 +15272,81 @@ public func FfiConverterTypeTotpAlgorithm_lower(_ value: TotpAlgorithm) -> RustB
 
 
 /**
+ * Which presence proof authorized an arm (ADR-0038's vocabulary).
+ */
+
+public enum UnattendedPresence: Equatable, Hashable {
+    
+    /**
+     * Touch ID, an Apple Watch, or the login password through LocalAuthentication.
+     */
+    case confirmed
+    /**
+     * The master-password fallback.
+     */
+    case confirmedMasterPassword
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension UnattendedPresence: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeUnattendedPresence: FfiConverterRustBuffer {
+    typealias SwiftType = UnattendedPresence
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UnattendedPresence {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .confirmed
+        
+        case 2: return .confirmedMasterPassword
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: UnattendedPresence, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .confirmed:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .confirmedMasterPassword:
+            writeInt(&buf, Int32(2))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedPresence_lift(_ buf: RustBuffer) throws -> UnattendedPresence {
+    return try FfiConverterTypeUnattendedPresence.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeUnattendedPresence_lower(_ value: UnattendedPresence) -> RustBuffer {
+    return FfiConverterTypeUnattendedPresence.lower(value)
+}
+
+
+
+/**
  * How the current session unlocked the vault.
  */
 
@@ -7998,6 +15518,113 @@ public func FfiConverterTypeVarBinding_lower(_ value: VarBinding) -> RustBuffer 
 
 
 /**
+ * Why [`crate::VaultSession`] stopped writing and is waiting for the human to choose (step 4,
+ * user decision 3): the vault file changed, in a way that means this session's writes can no
+ * longer be trusted to build on what is actually there.
+ *
+ * Every kind ends up in the same alert with the same two choices ("keep this app's version" /
+ * "lock and reopen from the file"); the kind only changes what the alert says is different about
+ * the file, and what the overwrite confirmation says would be lost
+ * ([`VaultConflictDetailsView`]).
+ */
+
+public enum VaultConflictKindView: Equatable, Hashable {
+    
+    /**
+     * The file no longer continues this session's audit log — the shape an older copy being
+     * restored takes (`kagisecure_core::Error::VaultDiverged`).
+     */
+    case diverged
+    /**
+     * The file at the path no longer decrypts as this vault, or is a different `vault_id`
+     * (`kagisecure_core::Error::VaultReplaced`).
+     */
+    case replaced
+    /**
+     * Something at the path that is not a vault this build can parse at all: not a kagisecure
+     * file, a damaged one, or one in a newer format (`kagisecure_core::vault::FileConflict::
+     * Unreadable`).
+     */
+    case unreadable
+    /**
+     * The file is gone (`kagisecure_core::Error::VaultNotFound`, seen *after* this session was
+     * already unlocked — before that, a missing file is `FfiError::NotFound`, not a conflict).
+     */
+    case removed
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension VaultConflictKindView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeVaultConflictKindView: FfiConverterRustBuffer {
+    typealias SwiftType = VaultConflictKindView
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> VaultConflictKindView {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .diverged
+        
+        case 2: return .replaced
+        
+        case 3: return .unreadable
+        
+        case 4: return .removed
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: VaultConflictKindView, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .diverged:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .replaced:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .unreadable:
+            writeInt(&buf, Int32(3))
+        
+        
+        case .removed:
+            writeInt(&buf, Int32(4))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVaultConflictKindView_lift(_ buf: RustBuffer) throws -> VaultConflictKindView {
+    return try FfiConverterTypeVaultConflictKindView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeVaultConflictKindView_lower(_ value: VaultConflictKindView) -> RustBuffer {
+    return FfiConverterTypeVaultConflictKindView.lower(value)
+}
+
+
+
+/**
  * What goes between the words of a memorable password.
  */
 
@@ -8104,6 +15731,54 @@ public func FfiConverterTypeWordSeparator_lower(_ value: WordSeparator) -> RustB
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionUInt8: FfiConverterRustBuffer {
+    typealias SwiftType = UInt8?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt8.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt8.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionUInt16: FfiConverterRustBuffer {
+    typealias SwiftType = UInt16?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt16.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt16.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
     typealias SwiftType = UInt32?
 
@@ -8120,6 +15795,30 @@ fileprivate struct FfiConverterOptionUInt32: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterUInt32.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionUInt64: FfiConverterRustBuffer {
+    typealias SwiftType = UInt64?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterUInt64.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterUInt64.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -8200,6 +15899,54 @@ fileprivate struct FfiConverterOptionData: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeVaultSession: FfiConverterRustBuffer {
+    typealias SwiftType = VaultSession?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeVaultSession.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeVaultSession.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeAgentFillFactsView: FfiConverterRustBuffer {
+    typealias SwiftType = AgentFillFactsView?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeAgentFillFactsView.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeAgentFillFactsView.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeApprovalRequestView: FfiConverterRustBuffer {
     typealias SwiftType = ApprovalRequestView?
 
@@ -8224,8 +15971,8 @@ fileprivate struct FfiConverterOptionTypeApprovalRequestView: FfiConverterRustBu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-fileprivate struct FfiConverterOptionTypeTotpCodeView: FfiConverterRustBuffer {
-    typealias SwiftType = TotpCodeView?
+fileprivate struct FfiConverterOptionTypeDivergedFileView: FfiConverterRustBuffer {
+    typealias SwiftType = DivergedFileView?
 
     public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
         guard let value = value else {
@@ -8233,13 +15980,37 @@ fileprivate struct FfiConverterOptionTypeTotpCodeView: FfiConverterRustBuffer {
             return
         }
         writeInt(&buf, Int8(1))
-        FfiConverterTypeTotpCodeView.write(value, into: &buf)
+        FfiConverterTypeDivergedFileView.write(value, into: &buf)
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
-        case 1: return try FfiConverterTypeTotpCodeView.read(from: &buf)
+        case 1: return try FfiConverterTypeDivergedFileView.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeVaultConflictDetailsView: FfiConverterRustBuffer {
+    typealias SwiftType = VaultConflictDetailsView?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeVaultConflictDetailsView.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeVaultConflictDetailsView.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -8296,6 +16067,78 @@ fileprivate struct FfiConverterOptionTypeImportItemActionView: FfiConverterRustB
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeSharedRole: FfiConverterRustBuffer {
+    typealias SwiftType = SharedRole?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeSharedRole.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeSharedRole.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeVaultConflictKindView: FfiConverterRustBuffer {
+    typealias SwiftType = VaultConflictKindView?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeVaultConflictKindView.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeVaultConflictKindView.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionSequenceString: FfiConverterRustBuffer {
+    typealias SwiftType = [String]?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterSequenceString.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterSequenceString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
     typealias SwiftType = [String]
 
@@ -8313,6 +16156,56 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterString.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSharedVaultSession: FfiConverterRustBuffer {
+    typealias SwiftType = [SharedVaultSession]
+
+    public static func write(_ value: [SharedVaultSession], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSharedVaultSession.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SharedVaultSession] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SharedVaultSession]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSharedVaultSession.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeAgentFillBlockView: FfiConverterRustBuffer {
+    typealias SwiftType = [AgentFillBlockView]
+
+    public static func write(_ value: [AgentFillBlockView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeAgentFillBlockView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [AgentFillBlockView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [AgentFillBlockView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeAgentFillBlockView.read(from: &buf))
         }
         return seq
     }
@@ -8746,6 +16639,56 @@ fileprivate struct FfiConverterSequenceTypeLeaseView: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeMachineEnvironmentView: FfiConverterRustBuffer {
+    typealias SwiftType = [MachineEnvironmentView]
+
+    public static func write(_ value: [MachineEnvironmentView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMachineEnvironmentView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MachineEnvironmentView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MachineEnvironmentView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMachineEnvironmentView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeMachineLoginView: FfiConverterRustBuffer {
+    typealias SwiftType = [MachineLoginView]
+
+    public static func write(_ value: [MachineLoginView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeMachineLoginView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [MachineLoginView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [MachineLoginView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeMachineLoginView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeMcpSnippetView: FfiConverterRustBuffer {
     typealias SwiftType = [McpSnippetView]
 
@@ -8763,6 +16706,131 @@ fileprivate struct FfiConverterSequenceTypeMcpSnippetView: FfiConverterRustBuffe
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeMcpSnippetView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSharedDeviceView: FfiConverterRustBuffer {
+    typealias SwiftType = [SharedDeviceView]
+
+    public static func write(_ value: [SharedDeviceView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSharedDeviceView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SharedDeviceView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SharedDeviceView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSharedDeviceView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSharedEnvironmentChoice: FfiConverterRustBuffer {
+    typealias SwiftType = [SharedEnvironmentChoice]
+
+    public static func write(_ value: [SharedEnvironmentChoice], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSharedEnvironmentChoice.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SharedEnvironmentChoice] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SharedEnvironmentChoice]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSharedEnvironmentChoice.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSharedExposure: FfiConverterRustBuffer {
+    typealias SwiftType = [SharedExposure]
+
+    public static func write(_ value: [SharedExposure], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSharedExposure.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SharedExposure] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SharedExposure]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSharedExposure.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSharedMemberView: FfiConverterRustBuffer {
+    typealias SwiftType = [SharedMemberView]
+
+    public static func write(_ value: [SharedMemberView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSharedMemberView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SharedMemberView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SharedMemberView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSharedMemberView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSharedUnattendedCopyView: FfiConverterRustBuffer {
+    typealias SwiftType = [SharedUnattendedCopyView]
+
+    public static func write(_ value: [SharedUnattendedCopyView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSharedUnattendedCopyView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SharedUnattendedCopyView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SharedUnattendedCopyView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSharedUnattendedCopyView.read(from: &buf))
         }
         return seq
     }
@@ -8796,6 +16864,181 @@ fileprivate struct FfiConverterSequenceTypeTagCount: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeUnattendedGrantView: FfiConverterRustBuffer {
+    typealias SwiftType = [UnattendedGrantView]
+
+    public static func write(_ value: [UnattendedGrantView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeUnattendedGrantView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UnattendedGrantView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UnattendedGrantView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeUnattendedGrantView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeUnattendedJobView: FfiConverterRustBuffer {
+    typealias SwiftType = [UnattendedJobView]
+
+    public static func write(_ value: [UnattendedJobView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeUnattendedJobView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UnattendedJobView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UnattendedJobView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeUnattendedJobView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeUnattendedLoginDraft: FfiConverterRustBuffer {
+    typealias SwiftType = [UnattendedLoginDraft]
+
+    public static func write(_ value: [UnattendedLoginDraft], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeUnattendedLoginDraft.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UnattendedLoginDraft] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UnattendedLoginDraft]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeUnattendedLoginDraft.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeUnattendedLoginGrantView: FfiConverterRustBuffer {
+    typealias SwiftType = [UnattendedLoginGrantView]
+
+    public static func write(_ value: [UnattendedLoginGrantView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeUnattendedLoginGrantView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UnattendedLoginGrantView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UnattendedLoginGrantView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeUnattendedLoginGrantView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeUnattendedNoticeView: FfiConverterRustBuffer {
+    typealias SwiftType = [UnattendedNoticeView]
+
+    public static func write(_ value: [UnattendedNoticeView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeUnattendedNoticeView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UnattendedNoticeView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UnattendedNoticeView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeUnattendedNoticeView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeUnattendedRunView: FfiConverterRustBuffer {
+    typealias SwiftType = [UnattendedRunView]
+
+    public static func write(_ value: [UnattendedRunView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeUnattendedRunView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UnattendedRunView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UnattendedRunView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeUnattendedRunView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeUnattendedTimeView: FfiConverterRustBuffer {
+    typealias SwiftType = [UnattendedTimeView]
+
+    public static func write(_ value: [UnattendedTimeView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeUnattendedTimeView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [UnattendedTimeView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [UnattendedTimeView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeUnattendedTimeView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeVaultView: FfiConverterRustBuffer {
     typealias SwiftType = [VaultView]
 
@@ -8816,6 +17059,219 @@ fileprivate struct FfiConverterSequenceTypeVaultView: FfiConverterRustBuffer {
         }
         return seq
     }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeAgentFillFieldView: FfiConverterRustBuffer {
+    typealias SwiftType = [AgentFillFieldView]
+
+    public static func write(_ value: [AgentFillFieldView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeAgentFillFieldView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [AgentFillFieldView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [AgentFillFieldView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeAgentFillFieldView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeAgentFillNoticeView: FfiConverterRustBuffer {
+    typealias SwiftType = [AgentFillNoticeView]
+
+    public static func write(_ value: [AgentFillNoticeView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeAgentFillNoticeView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [AgentFillNoticeView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [AgentFillNoticeView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeAgentFillNoticeView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeSharedRosterWarning: FfiConverterRustBuffer {
+    typealias SwiftType = [SharedRosterWarning]
+
+    public static func write(_ value: [SharedRosterWarning], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeSharedRosterWarning.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [SharedRosterWarning] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [SharedRosterWarning]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeSharedRosterWarning.read(from: &buf))
+        }
+        return seq
+    }
+}
+private let UNIFFI_RUST_FUTURE_POLL_READY: Int8 = 0
+private let UNIFFI_RUST_FUTURE_POLL_WAKE: Int8 = 1
+
+fileprivate let uniffiContinuationHandleMap = UniffiHandleMap<UnsafeContinuation<Int8, Never>>()
+
+fileprivate func uniffiRustCallAsync<F, T>(
+    rustFutureFunc: () -> UInt64,
+    pollFunc: (UInt64, @escaping UniffiRustFutureContinuationCallback, UInt64) -> (),
+    completeFunc: (UInt64, UnsafeMutablePointer<RustCallStatus>) -> F,
+    freeFunc: (UInt64) -> (),
+    liftFunc: (F) throws -> T,
+    errorHandler: ((RustBuffer) throws -> Swift.Error)?
+) async throws -> T {
+    // Make sure to call the ensure init function since future creation doesn't have a
+    // RustCallStatus param, so doesn't use makeRustCall()
+    uniffiEnsureKagisecureFfiInitialized()
+    let rustFuture = rustFutureFunc()
+    defer {
+        freeFunc(rustFuture)
+    }
+    var pollResult: Int8;
+    repeat {
+        pollResult = await withUnsafeContinuation {
+            pollFunc(
+                rustFuture,
+                { handle, pollResult in
+                    uniffiFutureContinuationCallback(handle: handle, pollResult: pollResult)
+                },
+                uniffiContinuationHandleMap.insert(obj: $0)
+            )
+        }
+    } while pollResult != UNIFFI_RUST_FUTURE_POLL_READY
+
+    return try liftFunc(makeRustCall(
+        { completeFunc(rustFuture, $0) },
+        errorHandler: errorHandler
+    ))
+}
+
+// Callback handlers for an async calls.  These are invoked by Rust when the future is ready.  They
+// lift the return value or error and resume the suspended function.
+fileprivate func uniffiFutureContinuationCallback(handle: UInt64, pollResult: Int8) {
+    if let continuation = try? uniffiContinuationHandleMap.remove(handle: handle) {
+        continuation.resume(returning: pollResult)
+    } else {
+        print("uniffiFutureContinuationCallback invalid handle")
+    }
+}
+private func uniffiTraitInterfaceCallAsync<T>(
+    makeCall: @escaping () async throws -> T,
+    handleSuccess: @escaping (T) -> (),
+    handleError: @escaping (Int8, RustBuffer) -> (),
+    droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+) {
+    let task = Task {
+        // Note: it's important we call either `handleSuccess` or `handleError` exactly once.  Each
+        // call consumes an Arc reference, which means there should be no possibility of a double
+        // call.  The following code is structured so that will will never call both `handleSuccess`
+        // and `handleError`, even in the face of weird errors.
+        //
+        // On platforms that need extra machinery to make C-ABI calls, like JNA or ctypes, it's
+        // possible that we fail to make either call.  However, it doesn't seem like this is
+        // possible on Swift since swift can just make the C call directly.
+        var callResult: T
+        do {
+            callResult = try await makeCall()
+        } catch {
+            handleError(CALL_UNEXPECTED_ERROR, FfiConverterString.lower(String(describing: error)))
+            return
+        }
+        handleSuccess(callResult)
+    }
+    let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
+    droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
+        handle: handle,
+        free: uniffiForeignFutureDroppedCallback
+    )
+}
+
+private func uniffiTraitInterfaceCallAsyncWithError<T, E>(
+    makeCall: @escaping () async throws -> T,
+    handleSuccess: @escaping (T) -> (),
+    handleError: @escaping (Int8, RustBuffer) -> (),
+    lowerError: @escaping (E) -> RustBuffer,
+    droppedCallback: UnsafeMutablePointer<UniffiForeignFutureDroppedCallbackStruct>
+) {
+    let task = Task {
+        // See the note in uniffiTraitInterfaceCallAsync for details on `handleSuccess` and
+        // `handleError`.
+        var callResult: T
+        do {
+            callResult = try await makeCall()
+        } catch let error as E {
+            handleError(CALL_ERROR, lowerError(error))
+            return
+        } catch {
+            handleError(CALL_UNEXPECTED_ERROR, FfiConverterString.lower(String(describing: error)))
+            return
+        }
+        handleSuccess(callResult)
+    }
+    let handle = UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.insert(obj: task)
+    droppedCallback.pointee = UniffiForeignFutureDroppedCallbackStruct(
+        handle: handle,
+        free: uniffiForeignFutureDroppedCallback
+    )
+}
+
+// Borrow the callback handle map implementation to store foreign future handles
+// TODO: consolidate the handle-map code (https://github.com/mozilla/uniffi-rs/pull/1823)
+fileprivate let UNIFFI_FOREIGN_FUTURE_HANDLE_MAP = UniffiHandleMap<UniffiForeignFutureTask>()
+
+// Protocol for tasks that handle foreign futures.
+//
+// Defining a protocol allows all tasks to be stored in the same handle map.  This can't be done
+// with the task object itself, since has generic parameters.
+fileprivate protocol UniffiForeignFutureTask {
+    func cancel()
+}
+
+extension Task: UniffiForeignFutureTask {}
+
+private func uniffiForeignFutureDroppedCallback(handle: UInt64) {
+    do {
+        let task = try UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.remove(handle: handle)
+        // Set the cancellation flag on the task.  If it's still running, the code can check the
+        // cancellation flag or call `Task.checkCancellation()`.  If the task has completed, this is
+        // a no-op.
+        task.cancel()
+    } catch {
+        print("uniffiForeignFutureDroppedCallback: handle missing from handlemap")
+    }
+}
+
+// For testing
+public func uniffiForeignFutureHandleCountKagisecureFfi() -> Int {
+    UNIFFI_FOREIGN_FUTURE_HANDLE_MAP.count
 }
 /**
  * Every category a "+ New item" menu should offer, with its display name and SF Symbol.
@@ -8875,6 +17331,23 @@ public func platformSlotId(path: String)throws  -> String?  {
 })
 }
 /**
+ * [`platform_slot_id`], [`platform_wrapped_key`] and the vault-file id together, from a single
+ * read of the header — so they cannot come from two different versions of a file that was
+ * replaced in between (the Windows Hello unlock, ADR-0033).
+ *
+ * # Errors
+ *
+ * As [`platform_slot_id`].
+ */
+public func platformSlotInfo(path: String)throws  -> PlatformSlotInfo  {
+    return try  FfiConverterTypePlatformSlotInfo_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_platform_slot_info(
+        FfiConverterString.lower(path),uniffiCallStatus
+    )
+})
+}
+/**
  * The platform slot's wrapped key, for the keystore to decrypt.
  *
  * The bytes are opaque ciphertext, not key material this process can use — see
@@ -8905,6 +17378,67 @@ public func vaultExists(path: String) -> Bool  {
         uniffiCallStatus in
     uniffi_kagisecure_ffi_fn_func_vault_exists(
         FfiConverterString.lower(path),uniffiCallStatus
+    )
+})
+}
+/**
+ * Every agent blocked from asking for fills right now, for the blocks list in Agent access
+ * (ADR-0036 §9.3). Blocks live in the process, not the vault: they survive a lock.
+ *
+ * UniFFI only, like every `agent_fill_*` call.
+ */
+public func agentFillBlocks() -> [AgentFillBlockView]  {
+    return try!  FfiConverterSequenceTypeAgentFillBlockView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_agent_fill_blocks(uniffiCallStatus
+    )
+})
+}
+/**
+ * Turn agent-requested browser fills on or off (ADR-0036 §2, implementation decision 12).
+ *
+ * The app stores the switch in its own defaults and pushes it here at launch and whenever it
+ * changes; Rust keeps it in memory only, and it starts **off**, so a process that never calls
+ * this never serves an agent fill. Off, every `request_fill` answers `FILL_UNAVAILABLE` before
+ * its item is looked up. The switch is a convenience, not a security boundary — the per-fill
+ * sheet and its biometric are — and turning it on is the app's to gate behind a presence check.
+ *
+ * UniFFI only: the C ABI never offers agent fills (implementation decision 8), and on a Windows
+ * build this call changes nothing — the broker answers "off" there whatever it is told.
+ */
+public func agentFillSetEnabled(enabled: Bool)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_agent_fill_set_enabled(
+        FfiConverterBool.lower(enabled),uniffiCallStatus
+    )
+}
+}
+/**
+ * Every agent-fill notice queued since the last call, oldest first (ADR-0036 §9.1, §9.4,
+ * implementation decision 11). The app drains it on its 1-second tick and shows each one in
+ * Agent access, on the menu-bar badge and — if the user authorized it — as a system notification.
+ *
+ * UniFFI only, like every `agent_fill_*` call.
+ */
+public func agentFillTakeNotices() -> [AgentFillNoticeView]  {
+    return try!  FfiConverterSequenceTypeAgentFillNoticeView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_agent_fill_take_notices(uniffiCallStatus
+    )
+})
+}
+/**
+ * Lift the block on `key` (an [`AgentFillBlockView::key`]): the Unblock button. Returns whether
+ * there was one. A denial the human gave in the last ten minutes still stands for the identical
+ * request.
+ *
+ * UniFFI only, like every `agent_fill_*` call.
+ */
+public func agentFillUnblock(key: String) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_agent_fill_unblock(
+        FfiConverterString.lower(key),uniffiCallStatus
     )
 })
 }
@@ -8990,10 +17524,23 @@ public func agentRevokeLease(leaseId: String)throws  -> Bool  {
  * `socket_path` overrides the per-user default (architecture.md §4.2); pass `None` in the app.
  * Returns the endpoint it bound, for the "Set up your agent" screen.
  *
+ * # What the string means
+ *
+ * The same thing `--socket` and `KAGISECURE_SOCKET` mean, because it goes through the same
+ * `Endpoint::parse`: a **socket path** on Unix, and a **named pipe name** on Windows, which has
+ * no filesystem sockets at all. A path supplied on Windows is refused with a message saying
+ * what to pass instead, rather than accepted and then failing at `bind` with an opaque
+ * `Unsupported: "not a named pipe path"`. It is not silently turned into a pipe name: two
+ * directories holding the same file name would collapse onto one pipe.
+ *
+ * The parameter keeps its name so that the generated bindings — and the Swift the app is built
+ * against — keep theirs.
+ *
  * # Errors
  *
  * [`FfiError::Invalid`] with a message written for a human when another kagisecure already holds
- * the socket, or when this process has already started an agent.
+ * the socket, when `socket_path` is not usable on this platform, or when this process has
+ * already started an agent.
  */
 public func agentStart(session: VaultSession, socketPath: String?)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
@@ -9027,7 +17574,10 @@ public func agentStop()  {try! rustCall() {
 }
 }
 /**
- * Whether something asked the vault to lock over IPC (`kagisecure lock`), clearing the flag.
+ * Whether something asked the vault to lock over IPC (`kagisecure lock`): `true` once per request.
+ *
+ * Only the report is consumed; the agent keeps refusing every request from the moment the lock
+ * was acknowledged until the app takes the vault (see `Agent::take_lock_request`).
  *
  * The app polls this alongside `agent_next_request` and performs the lock itself, because the app
  * owns the `VaultSession` and therefore the vault's lifetime.
@@ -9113,7 +17663,11 @@ public func extensionSetup(bundleHelpersDir: String?, bundlePluginsDir: String?,
  * # Errors
  *
  * [`FfiError::Invalid`], with a message written for a human, when another kagisecure holds the
- * socket or this process has already started a listener.
+ * socket, when either override is not usable on this platform, or when this process has already
+ * started a listener.
+ *
+ * Both strings mean what [`agent_start`]'s `socket_path` means: a path on Unix, a named pipe
+ * name on Windows.
  */
 public func extensionStart(session: VaultSession, socketPath: String?, safariSocketPath: String?, teamId: String?)throws  -> String  {
     return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
@@ -9173,6 +17727,36 @@ public func mcpSetup(bundleHelpersDir: String?) -> McpSetupView  {
         uniffiCallStatus in
     uniffi_kagisecure_ffi_fn_func_mcp_setup(
         FfiConverterOptionString.lower(bundleHelpersDir),uniffiCallStatus
+    )
+})
+}
+/**
+ * Check the process behind `pid` with Authenticode, for the Windows approval sheet.
+ *
+ * The Windows counterpart of the macOS app's Swift `PeerCodeSignature` (ADR-0015): the app calls
+ * this with a request's `client_pid` and `client_executable` (`OwnHelper`) or its `browser_pid`
+ * and `browser_executable` (`Browser`), shows the verdict, and hands it back unchanged to
+ * [`agent_resolve`] so the lease and the audit entry record it.
+ *
+ * `executable` must be the path from the request: a process that is no longer running that file
+ * is not verified. The check is **structurally weaker than the macOS one** — it verifies a file,
+ * not the running process — and ADR-0032 says exactly how; the verdict is a warning on the sheet,
+ * never a gate.
+ *
+ * It hashes the whole executable, so it takes as long as reading the file does: call it from the
+ * same background task that polls [`agent_next_request`], not from the UI thread. It never touches
+ * the network (no revocation check).
+ *
+ * On every other platform this returns `verified: false` with "not available on this platform";
+ * the macOS app keeps its own Swift check.
+ */
+public func verifyPeerCodeSignature(pid: UInt32, executable: String, requirement: PeerRequirementKind) -> ClientVerificationView  {
+    return try!  FfiConverterTypeClientVerificationView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_verify_peer_code_signature(
+        FfiConverterUInt32.lower(pid),
+        FfiConverterString.lower(executable),
+        FfiConverterTypePeerRequirementKind_lower(requirement),uniffiCallStatus
     )
 })
 }
@@ -9349,6 +17933,514 @@ public func shredSourceFile(path: String)throws  -> ShredOutcomeView  {
     )
 })
 }
+/**
+ * Open this personal vault's machine vault for the ordinary socket (ADR-0042 §2): machine
+ * environments are then listed and served beside the personal vault's, each release with the
+ * ordinary sheet and presence proof. Call after [`crate::agent_start`]; a lock of the personal
+ * vault drops it. Returns whether one was attached.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the machine vault cannot be opened.
+ */
+public func agentAttachMachineVault(session: VaultSession)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_agent_attach_machine_vault(
+        FfiConverterTypeVaultSession_lower(session),uniffiCallStatus
+    )
+})
+}
+/**
+ * Arm, after the app's presence proof `presence`, creating the machine vault first when this
+ * personal vault has none. Returns the machine vault key's 48 bytes for the app to store in the
+ * Keychain (this device only, never synchronized).
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the engine is not running, the personal vault is locked, or the machine
+ * vault cannot be created, opened or written.
+ */
+public func unattendedArm(session: VaultSession, presence: UnattendedPresence)throws  -> Data  {
+    return try  FfiConverterData.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_arm(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterTypeUnattendedPresence_lower(presence),uniffiCallStatus
+    )
+})
+}
+/**
+ * Create this personal vault's machine vault, if it has none: a new key in the personal body
+ * and a new machine vault file beside it. Returns whether one was created.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or either write fails.
+ */
+public func unattendedCreateMachineVault(session: VaultSession)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_create_machine_vault(
+        FfiConverterTypeVaultSession_lower(session),uniffiCallStatus
+    )
+})
+}
+/**
+ * Disarm (Pause). Needs no presence proof. Records it in the personal log too when `session`
+ * is unlocked. Delete the Keychain item whatever this returns.
+ */
+public func unattendedDisarm(session: VaultSession?) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_disarm(
+        FfiConverterOptionTypeVaultSession.lower(session),uniffiCallStatus
+    )
+})
+}
+/**
+ * Where the machine vault of the personal vault at `vault_path` lives.
+ */
+public func unattendedMachineVaultPath(vaultPath: String) -> String  {
+    return try!  FfiConverterString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_machine_vault_path(
+        FfiConverterString.lower(vaultPath),uniffiCallStatus
+    )
+})
+}
+/**
+ * Arm again from the Keychain's bytes, at launch. `false` when the machine vault is not armed
+ * any more: delete the Keychain item.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the engine is not running or the bytes do not open the machine vault.
+ */
+public func unattendedResume(keychain: Data)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_resume(
+        FfiConverterData.lower(keychain),uniffiCallStatus
+    )
+})
+}
+/**
+ * Start `job_id` now ("Run now"). Returns the run's number.
+ *
+ * # Errors
+ *
+ * [`FfiError::Invalid`] when not armed, no such job, already running, or it cannot start.
+ */
+public func unattendedRunNow(jobId: String)throws  -> UInt64  {
+    return try  FfiConverterUInt64.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_run_now(
+        FfiConverterString.lower(jobId),uniffiCallStatus
+    )
+})
+}
+/**
+ * Start the engine for the machine vault at `machine_path`, disarmed. `socket_path` overrides
+ * where the unattended socket goes (beside `daemon.sock` by default). Returns the endpoint.
+ *
+ * # Errors
+ *
+ * [`FfiError::Invalid`] when it is already running or the socket cannot be bound.
+ */
+public func unattendedStart(machinePath: String, socketPath: String?)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_start(
+        FfiConverterString.lower(machinePath),
+        FfiConverterOptionString.lower(socketPath),uniffiCallStatus
+    )
+})
+}
+/**
+ * The engine's state.
+ */
+public func unattendedStatus() -> UnattendedStatusView  {
+    return try!  FfiConverterTypeUnattendedStatusView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_status(uniffiCallStatus
+    )
+})
+}
+/**
+ * Stop the engine: runs end, the socket closes. The arm stays recorded, so the next launch
+ * resumes it.
+ */
+public func unattendedStop()  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_stop(uniffiCallStatus
+    )
+}
+}
+/**
+ * What happened since the app last asked, for notifications.
+ */
+public func unattendedTakeNotices() -> [UnattendedNoticeView]  {
+    return try!  FfiConverterSequenceTypeUnattendedNoticeView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_take_notices(uniffiCallStatus
+    )
+})
+}
+/**
+ * Copy a personal Login item, as it is now, into the machine vault — or bring an earlier copy up
+ * to date — after the app's presence proof (ADR-0042 §12.1: a login the owner moved in
+ * knowingly). Its password history is not copied, and its websites become the exact https
+ * origins they name. Updating a copy re-approves the login grants
+ * over it, since the person has just confirmed the change. Returns the machine item's id.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked, the item is not a personal Login or has no
+ * https website, or a write fails.
+ */
+public func unattendedCopyLogin(session: VaultSession, personalItemId: String, presence: UnattendedPresence)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_copy_login(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterString.lower(personalItemId),
+        FfiConverterTypeUnattendedPresence_lower(presence),uniffiCallStatus
+    )
+})
+}
+/**
+ * The run browser the app offers first: Microsoft Edge, else Chromium, if installed.
+ */
+public func unattendedDefaultRunBrowser() -> String?  {
+    return try!  FfiConverterOptionString.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_default_run_browser(uniffiCallStatus
+    )
+})
+}
+/**
+ * Every login grant of the machine vault, for Agent access.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or the machine vault cannot be opened.
+ */
+public func unattendedLoginGrants(session: VaultSession)throws  -> [UnattendedLoginGrantView]  {
+    return try  FfiConverterSequenceTypeUnattendedLoginGrantView.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_login_grants(
+        FfiConverterTypeVaultSession_lower(session),uniffiCallStatus
+    )
+})
+}
+/**
+ * The machine vault's Login items.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or the machine vault cannot be opened.
+ */
+public func unattendedMachineLogins(session: VaultSession)throws  -> [MachineLoginView]  {
+    return try  FfiConverterSequenceTypeMachineLoginView.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_machine_logins(
+        FfiConverterTypeVaultSession_lower(session),uniffiCallStatus
+    )
+})
+}
+/**
+ * Whether this app can start a run browser: the native host and the extension are where the
+ * engine looks for them.
+ */
+public func unattendedRunBrowserReady() -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_run_browser_ready(uniffiCallStatus
+    )
+})
+}
+/**
+ * The environments of a shared vault that could be copied for unattended jobs, by name.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the shared vault is locked or damaged.
+ */
+public func sharedEnvironmentsForCopy(shared: SharedVaultSession)throws  -> [SharedEnvironmentChoice]  {
+    return try  FfiConverterSequenceTypeSharedEnvironmentChoice.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_shared_environments_for_copy(
+        FfiConverterTypeSharedVaultSession_lower(shared),uniffiCallStatus
+    )
+})
+}
+/**
+ * Allow or forbid unattended copies of this shared vault's values, as an admin. Copies already
+ * made stay where they are; the members view flags them.
+ *
+ * # Errors
+ *
+ * [`FfiError::Invalid`] when this device is not an admin, and when the write fails.
+ */
+public func sharedSetUnattendedCopiesAllowed(shared: SharedVaultSession, allowed: Bool)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_shared_set_unattended_copies_allowed(
+        FfiConverterTypeSharedVaultSession_lower(shared),
+        FfiConverterBool.lower(allowed),uniffiCallStatus
+    )
+}
+}
+/**
+ * Which devices hold unattended copies of this shared vault's values.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the shared vault is locked or damaged.
+ */
+public func sharedUnattendedCopies(shared: SharedVaultSession)throws  -> [SharedUnattendedCopyView]  {
+    return try  FfiConverterSequenceTypeSharedUnattendedCopyView.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_shared_unattended_copies(
+        FfiConverterTypeSharedVaultSession_lower(shared),uniffiCallStatus
+    )
+})
+}
+/**
+ * Whether members may copy this shared vault's values for unattended jobs. `true` unless an
+ * admin said no.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the shared vault is locked or damaged.
+ */
+public func sharedUnattendedCopiesAllowed(shared: SharedVaultSession)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_shared_unattended_copies_allowed(
+        FfiConverterTypeSharedVaultSession_lower(shared),uniffiCallStatus
+    )
+})
+}
+/**
+ * The person has read the summary: record, in the personal log, how far the machine log went and
+ * its head as they saw it (ADR-0042 §8), so a later rollback of the machine vault below that point
+ * shows as a gap.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or the machine vault cannot be opened.
+ */
+public func unattendedAcknowledgeSummary(session: VaultSession)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_acknowledge_summary(
+        FfiConverterTypeVaultSession_lower(session),uniffiCallStatus
+    )
+}
+}
+/**
+ * A page of the machine vault's log, newest first — the Audit view's second log.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or the machine vault cannot be opened.
+ */
+public func unattendedAuditPage(session: VaultSession, limit: UInt32, offset: UInt32)throws  -> [AuditRowView]  {
+    return try  FfiConverterSequenceTypeAuditRowView.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_audit_page(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterUInt32.lower(limit),
+        FfiConverterUInt32.lower(offset),uniffiCallStatus
+    )
+})
+}
+/**
+ * Copy a personal environment's variables, as they are now, into the machine vault — or bring an
+ * earlier copy up to date — after the app's presence proof. The values are resolved and written
+ * inside Rust; none crosses. Updating a copy re-approves the grants over it (owner's answer 10),
+ * since the person has just confirmed the change. Returns the machine environment's id.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked, the environment is not found or a variable has
+ * no value, or a write fails.
+ */
+public func unattendedCopyEnvironment(session: VaultSession, personalEnvironmentId: String, presence: UnattendedPresence)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_copy_environment(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterString.lower(personalEnvironmentId),
+        FfiConverterTypeUnattendedPresence_lower(presence),uniffiCallStatus
+    )
+})
+}
+/**
+ * Copy a shared vault's environment into the machine vault — or bring an earlier copy up to date
+ * — after the app's presence proof (ADR-0042 §13). Refused when an admin of the vault forbids
+ * copies, and for a variable bound to a login's field: a shared login is never copied for
+ * unattended use. Before anything is written, a record goes to the shared vault saying this
+ * device holds the copy, described as `holder` ("Alice's MacBook"), so every member sees it.
+ * Returns the machine environment's id.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked, copies are forbidden, the environment is not in
+ * the shared vault or binds a login's field, a value is missing, or a write fails.
+ */
+public func unattendedCopySharedEnvironment(session: VaultSession, shared: SharedVaultSession, environmentId: String, holder: String, presence: UnattendedPresence)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_copy_shared_environment(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterTypeSharedVaultSession_lower(shared),
+        FfiConverterString.lower(environmentId),
+        FfiConverterString.lower(holder),
+        FfiConverterTypeUnattendedPresence_lower(presence),uniffiCallStatus
+    )
+})
+}
+/**
+ * Create a job and the command grant it runs under, in one step, after the app's presence proof.
+ * Executables are pinned as they are now: by code-signing identity when they have a team, by
+ * hash otherwise. Returns the job's id.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked, a path is not absolute or does not exist, the
+ * environment is not in the machine vault, or the draft breaks a rule of the machine vault.
+ */
+public func unattendedCreateJob(session: VaultSession, draft: UnattendedJobDraft, presence: UnattendedPresence)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_create_job(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterTypeUnattendedJobDraft_lower(draft),
+        FfiConverterTypeUnattendedPresence_lower(presence),uniffiCallStatus
+    )
+})
+}
+/**
+ * What the machine vault holds: its environments and its jobs with their grants.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or the machine vault cannot be opened.
+ */
+public func unattendedOverview(session: VaultSession)throws  -> UnattendedOverviewView  {
+    return try  FfiConverterTypeUnattendedOverviewView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_overview(
+        FfiConverterTypeVaultSession_lower(session),uniffiCallStatus
+    )
+})
+}
+/**
+ * Re-enable a suspended grant after the app's presence proof: the suspension is cleared and what
+ * it releases counts as approved now (ADR-0042 implementation decision 23).
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or the write fails.
+ */
+public func unattendedReenableGrant(session: VaultSession, grantId: String, presence: UnattendedPresence)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_reenable_grant(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterString.lower(grantId),
+        FfiConverterTypeUnattendedPresence_lower(presence),uniffiCallStatus
+    )
+})
+}
+/**
+ * Remove an environment from the machine vault, with every job whose grant uses it. Asks for
+ * nothing.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or the write fails.
+ */
+public func unattendedRemoveEnvironment(session: VaultSession, environmentId: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_remove_environment(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterString.lower(environmentId),uniffiCallStatus
+    )
+})
+}
+/**
+ * Remove a copy of a shared environment from the machine vault, telling the shared vault's
+ * members this device no longer holds it. Asks for nothing.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or a write fails.
+ */
+public func unattendedRemoveSharedCopy(session: VaultSession, shared: SharedVaultSession, environmentId: String, holder: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_remove_shared_copy(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterTypeSharedVaultSession_lower(shared),
+        FfiConverterString.lower(environmentId),
+        FfiConverterString.lower(holder),uniffiCallStatus
+    )
+})
+}
+/**
+ * Revoke a job: remove it and every grant of it. Asks for nothing — narrowing is always allowed.
+ * A run of it in progress is not ended here; its next request finds no grant.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or the write fails.
+ */
+public func unattendedRevokeJob(session: VaultSession, jobId: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_revoke_job(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterString.lower(jobId),uniffiCallStatus
+    )
+})
+}
+/**
+ * The machine environments whose source changed since they were copied — the personal
+ * environment (or an item it binds) edited, or a newer version of a shared environment's value —
+ * or whose source is gone. Their values are as copied: **Update** copies them again (owner's
+ * decision: copies stay copies). A copy of a shared vault not among `shared` is not judged.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or the machine vault cannot be opened.
+ */
+public func unattendedStaleCopies(session: VaultSession, shared: [SharedVaultSession])throws  -> [String]  {
+    return try  FfiConverterSequenceString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_stale_copies(
+        FfiConverterTypeVaultSession_lower(session),
+        FfiConverterSequenceTypeSharedVaultSession.lower(shared),uniffiCallStatus
+    )
+})
+}
+/**
+ * "While you were away": what the machine log recorded since the person last acknowledged it.
+ *
+ * # Errors
+ *
+ * [`FfiError`] when the personal vault is locked or the machine vault cannot be opened.
+ */
+public func unattendedSummary(session: VaultSession)throws  -> UnattendedSummaryView  {
+    return try  FfiConverterTypeUnattendedSummaryView_lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_unattended_summary(
+        FfiConverterTypeVaultSession_lower(session),uniffiCallStatus
+    )
+})
+}
 
 private enum InitializationResult {
     case ok
@@ -9374,10 +18466,25 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_func_platform_slot_id() != 20324) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_kagisecure_ffi_checksum_func_platform_slot_info() != 19844) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_kagisecure_ffi_checksum_func_platform_wrapped_key() != 50783) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_vault_exists() != 3910) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_agent_fill_blocks() != 11833) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_agent_fill_set_enabled() != 28933) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_agent_fill_take_notices() != 24521) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_agent_fill_unblock() != 51546) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_agent_leases() != 459) {
@@ -9398,7 +18505,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_func_agent_revoke_lease() != 53534) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_func_agent_start() != 56701) {
+    if (uniffi_kagisecure_ffi_checksum_func_agent_start() != 35312) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_agent_status() != 29984) {
@@ -9407,7 +18514,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_func_agent_stop() != 7378) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_func_agent_take_lock_request() != 33397) {
+    if (uniffi_kagisecure_ffi_checksum_func_agent_take_lock_request() != 39611) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_extension_fill_leases() != 14094) {
@@ -9425,7 +18532,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_func_extension_setup() != 49110) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_func_extension_start() != 16188) {
+    if (uniffi_kagisecure_ffi_checksum_func_extension_start() != 22062) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_extension_status() != 61422) {
@@ -9438,6 +18545,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_mcp_setup() != 42796) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_verify_peer_code_signature() != 29888) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_generate_password() != 62561) {
@@ -9473,7 +18583,103 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_func_shred_source_file() != 62532) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_importplanhandle_is_spent() != 26062) {
+    if (uniffi_kagisecure_ffi_checksum_func_agent_attach_machine_vault() != 4229) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_arm() != 57034) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_create_machine_vault() != 51950) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_disarm() != 17521) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_machine_vault_path() != 5780) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_resume() != 42746) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_run_now() != 54799) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_start() != 3949) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_status() != 39205) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_stop() != 17159) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_take_notices() != 13299) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_copy_login() != 50878) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_default_run_browser() != 51878) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_login_grants() != 36373) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_machine_logins() != 24750) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_run_browser_ready() != 14225) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_shared_environments_for_copy() != 14351) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_shared_set_unattended_copies_allowed() != 52540) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_shared_unattended_copies() != 9537) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_shared_unattended_copies_allowed() != 46624) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_acknowledge_summary() != 34224) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_audit_page() != 47534) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_copy_environment() != 64809) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_copy_shared_environment() != 41591) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_create_job() != 64799) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_overview() != 42298) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_reenable_grant() != 53112) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_remove_environment() != 17603) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_remove_shared_copy() != 57693) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_revoke_job() != 6024) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_stale_copies() != 3990) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_unattended_summary() != 29695) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_importplanhandle_is_spent() != 18393) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_importplanhandle_report() != 62180) {
@@ -9482,10 +18688,100 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_importplanhandle_source_path() != 22289) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_kagisecure_ffi_checksum_method_presencegate_confirm() != 20572) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_fieldrelease_close() != 21125) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_fieldrelease_copy_shown_value() != 33019) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_fieldrelease_field_id() != 37129) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_fieldrelease_is_live() != 51753) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_fieldrelease_item_id() != 14144) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_fieldrelease_purpose() != 31253) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_fieldrelease_seconds_remaining() != 7321) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_fieldrelease_value() != 18833) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_notesrelease_close() != 41013) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_notesrelease_copy_shown_text() != 1463) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_notesrelease_is_live() != 7023) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_notesrelease_item_id() != 14963) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_notesrelease_purpose() != 38751) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_notesrelease_seconds_remaining() != 40790) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_notesrelease_text() != 42037) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_totprelease_close() != 617) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_totprelease_code_at() != 22659) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_totprelease_copy_shown_code_at() != 49135) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_totprelease_field_id() != 49175) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_totprelease_is_live() != 17021) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_totprelease_item_id() != 2042) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_totprelease_purpose() != 63763) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_totprelease_seconds_remaining() != 40281) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_set_presence_gate() != 62464) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_verify_master_password() != 30666) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_release_field() != 63573) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_release_notes() != 52612) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_release_totp() != 59979) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_audit_count() != 1330) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_audit_intact() != 62330) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_audit_durability() != 14977) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_audit_intact() != 33645) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_audit_page() != 19225) {
@@ -9494,7 +18790,13 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_bind_variable() != 32344) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_change_master_password() != 59947) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_change_master_password() != 59739) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_conflict() != 40029) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_conflict_details() != 16366) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_create_environment() != 58548) {
@@ -9509,7 +18811,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_delete_environment() != 5421) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_delete_item() != 52012) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_delete_item() != 13549) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_environment() != 63002) {
@@ -9518,7 +18820,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_environments() != 7980) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_export_vault_key_for_platform_wrapping() != 25828) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_export_vault_key_for_platform_wrapping() != 22763) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_field() != 40891) {
@@ -9527,7 +18829,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_has_platform_slot() != 40982) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_import_commit() != 34407) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_import_commit() != 54794) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_import_preview() != 22395) {
@@ -9539,13 +18841,22 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_install_platform_slot() != 63244) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_is_unlocked() != 47185) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_item() != 50511) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_item_totp_code() != 32048) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_keep_app_version_over_conflict() != 25227) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_list_items() != 23781) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_list_items() != 34645) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_lock() != 28945) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_note_reopened_after_conflict() != 32721) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_path() != 5013) {
@@ -9560,13 +18871,10 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_remove_variable() != 8186) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_reveal_field() != 39054) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_save() != 37876) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_save() != 34279) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_save_item() != 34834) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_save_item() != 22312) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_set_agent_visible() != 13450) {
@@ -9596,16 +18904,139 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_sidebar_counts() != 5379) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_sync() != 32712) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_take_recovery_code() != 44250) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_totp_code() != 64012) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_unlocked_by() != 24289) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_unlocked_by() != 25211) {
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_vault_file_id() != 13921) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_vault_file_id_bytes() != 34560) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_vaults() != 5902) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_create_shared_vault() != 46617) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_join_shared_vault() != 39222) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_open_shared_vaults() != 33308) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_bind_variable() != 13623) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_create_environment() != 2223) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_create_item() != 63514) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_delete_environment() != 65239) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_delete_item() != 39603) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_environment() != 6983) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_environments() != 19113) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_folder() != 64611) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_invite_device() != 51291) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_invite_member() != 43480) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_item() != 35795) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_list_items() != 53373) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_members() != 7457) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_rebuild() != 48573) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_release_field() != 36025) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_release_notes() != 50025) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_release_totp() != 7232) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_remove_member() != 8821) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_remove_variable() != 51357) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_rename() != 21000) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_rename_environment() != 16480) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_rotation_list() != 60890) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_save_item() != 18287) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_set_agent_visible() != 45526) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_set_archived() != 8691) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_set_environment_agent_visible() != 22314) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_set_favorite() != 65104) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_set_field_agent_visible() != 6069) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_set_folder() != 30226) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_set_member_name() != 30041) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_set_role() != 60078) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_set_trashed() != 10888) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_set_variable_value() != 31882) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_summary() != 50486) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_sync() != 34277) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_sharedvaultsession_vault_id() != 47150) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_constructor_vaultsession_create() != 29308) {
@@ -9621,6 +19052,7 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
 
+    uniffiCallbackInitPresenceGate()
     return InitializationResult.ok
 }()
 

@@ -87,6 +87,72 @@ impl PartialEq for Secret {
 
 impl Eq for Secret {}
 
+/// Secret material that is known to be text — an item's notes (ADR-0038 user decision 3).
+///
+/// A [`Secret`] underneath, with every one of its guarantees — no `Display`, a redacted `Debug`,
+/// no `Serialize`/`Deserialize` of its own, no `Clone`, zeroized on drop — plus one more: it can
+/// only be built from a `String`, so it is always valid UTF-8 and [`SecretText::expose`] can hand
+/// back a `&str` without a fallible conversion at every call site.
+///
+/// The UTF-8 guarantee is also what keeps the on-disk encoding exactly what it was when notes
+/// were a plain `Option<String>`: the crate-private adapter below writes a CBOR *text* string,
+/// never the byte string [`Secret`]'s own adapter writes, so a vault saved by this build is
+/// byte-for-byte what an older build would have written for the same note, and an older build
+/// reads it back unchanged (vault-format §9: no `body.schema` bump). The golden vectors in
+/// `tests/vectors/item-with-notes-v1.cbor` and `v1-notes-argon2id-64k.kagivault` pin that.
+pub struct SecretText(Secret);
+
+impl SecretText {
+    /// Take ownership of secret text. The `String`'s buffer is moved, not copied — the same
+    /// caveat as [`Secret::from_string`] about any earlier copy the caller made applies.
+    #[must_use]
+    pub fn new(text: String) -> Self {
+        Self(Secret::from_string(text))
+    }
+
+    /// Borrow the plaintext. The single, explicitly-named escape hatch, exactly as
+    /// [`Secret::expose`] is.
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        self.0
+            .expose_str()
+            .expect("SecretText is only ever built from a String, so it is always UTF-8")
+    }
+
+    /// The underlying [`Secret`].
+    #[must_use]
+    pub fn as_secret(&self) -> &Secret {
+        &self.0
+    }
+
+    /// Length in bytes. Length is metadata, not the value.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the text is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl std::fmt::Debug for SecretText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The same rendering as `Secret`, so a canary search for the redaction marker finds it.
+        std::fmt::Debug::fmt(&self.0, f)
+    }
+}
+
+impl PartialEq for SecretText {
+    fn eq(&self, other: &Self) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl Eq for SecretText {}
+
 /// Crate-private serde adapter. Used through `#[serde(with = ...)]` by the item model so that the
 /// vault body can be encoded; `Secret` itself remains un-`Serialize`, so no caller outside this
 /// crate can serialize one on its own.
@@ -101,6 +167,31 @@ pub(crate) mod cbor {
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(de: D) -> Result<Secret, D::Error> {
         let bytes = serde_bytes::ByteBuf::deserialize(de)?;
         Ok(Secret::new(bytes.into_vec()))
+    }
+}
+
+/// Crate-private serde adapter for an optional [`SecretText`] — an item's notes.
+///
+/// Encodes exactly as `Option<&str>` does, and decodes exactly as `Option<String>` does, which is
+/// what a note was before it became secret: `null` for none, a CBOR text string for some. Nothing
+/// about the file changes; only what the process holds in memory does.
+pub(crate) mod cbor_text_opt {
+    use super::SecretText;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    // `serde(with)` hands the field by reference, so the signature is fixed by serde.
+    #[allow(clippy::ref_option)]
+    pub(crate) fn serialize<S: Serializer>(
+        text: &Option<SecretText>,
+        ser: S,
+    ) -> Result<S::Ok, S::Error> {
+        text.as_ref().map(SecretText::expose).serialize(ser)
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        de: D,
+    ) -> Result<Option<SecretText>, D::Error> {
+        Ok(Option::<String>::deserialize(de)?.map(SecretText::new))
     }
 }
 
@@ -152,6 +243,59 @@ mod tests {
             Secret::from_string("a".to_owned()),
             Secret::from_string("ab".to_owned())
         );
+    }
+
+    #[test]
+    fn secret_text_is_redacted_and_exposes_its_text() {
+        let t = SecretText::new("recovery: 1234-5678".to_owned());
+        assert_eq!(format!("{t:?}"), "Secret(<redacted>)");
+        assert_eq!(t.expose(), "recovery: 1234-5678");
+        assert_eq!(t.as_secret().expose(), b"recovery: 1234-5678");
+        assert_eq!(t.len(), 19);
+        assert!(!t.is_empty());
+        assert_eq!(t, SecretText::new("recovery: 1234-5678".to_owned()));
+    }
+
+    /// The adapter writes what `Option<String>` wrote — a text string or `null` — and reads it
+    /// back, so a note's bytes on disk are unchanged by it becoming secret.
+    #[test]
+    fn optional_secret_text_encodes_exactly_as_an_optional_string() {
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct New {
+            #[serde(default, with = "cbor_text_opt")]
+            notes: Option<SecretText>,
+        }
+        #[derive(serde::Serialize, serde::Deserialize)]
+        struct Old {
+            #[serde(default)]
+            notes: Option<String>,
+        }
+        for value in [None, Some(""), Some("line one\nline two — ✓")] {
+            let mut old = Vec::new();
+            ciborium::into_writer(
+                &Old {
+                    notes: value.map(str::to_owned),
+                },
+                &mut old,
+            )
+            .unwrap();
+            let mut new = Vec::new();
+            ciborium::into_writer(
+                &New {
+                    notes: value.map(|v| SecretText::new(v.to_owned())),
+                },
+                &mut new,
+            )
+            .unwrap();
+            assert_eq!(old, new, "{value:?}");
+            let back: New = ciborium::from_reader(old.as_slice()).unwrap();
+            assert_eq!(back.notes.as_ref().map(SecretText::expose), value);
+        }
+        // A key an older file never wrote still reads back as no note.
+        let mut empty = Vec::new();
+        ciborium::into_writer(&ciborium::Value::Map(Vec::new()), &mut empty).unwrap();
+        let back: New = ciborium::from_reader(empty.as_slice()).unwrap();
+        assert!(back.notes.is_none());
     }
 
     /// Zeroize sanity.

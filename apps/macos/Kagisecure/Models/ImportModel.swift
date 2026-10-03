@@ -115,11 +115,12 @@ final class ImportModel {
             }
         #endif
         let panel = NSOpenPanel()
-        panel.title = "Import into kagisecure"
-        panel.message =
-            "Choose a 1Password .1pux archive or a CSV exported from Apple Passwords, Chrome, "
-            + "Edge or Firefox."
-        panel.prompt = "Choose"
+        panel.title = String(localized: "Import into kagisecure")
+        panel.message = String(
+            localized:
+                "Choose a 1Password .1pux archive or a CSV exported from Apple Passwords, Chrome, Edge or Firefox."
+        )
+        panel.prompt = String(localized: "Choose")
         panel.allowsMultipleSelection = false
         panel.canChooseDirectories = false
         panel.canChooseFiles = true
@@ -192,8 +193,8 @@ final class ImportModel {
             let result = try shredSourceFile(path: sourcePath)
             let sentence =
                 result.removed
-                ? "The source file was deleted. \(result.caveat)"
-                : "The source file is still there. \(result.caveat)"
+                ? String(localized: "The source file was deleted. \(result.caveat)")
+                : String(localized: "The source file is still there. \(result.caveat)")
             phase = .finished(outcome, sentence)
         } catch {
             fail(error)
@@ -205,13 +206,21 @@ final class ImportModel {
         guard case .shredPrompt(let outcome) = phase else { return }
         phase = .finished(
             outcome,
-            "The source file was left where it is. It is a complete, unencrypted copy of "
-                + "everything you just imported — delete it yourself when you are done with it.")
+            String(
+                localized:
+                    "The source file was left where it is. It is a complete, unencrypted copy of everything you just imported — delete it yourself when you are done with it."
+            ))
     }
 
-    /// Go back to the file that was chosen and parse it again, after a failure.
+    /// After a failure: back to the preview if the plan is still whole — a commit that could not
+    /// be written (the vault busy, a failed save) spends nothing in Rust — or else back to the file
+    /// that was chosen, to parse it again.
     func retry() {
-        load()
+        if let plan, !plan.isSpent() {
+            refreshPreview()
+        } else {
+            load()
+        }
     }
 
     // MARK: - What the sheet reads
@@ -272,15 +281,6 @@ final class ImportModel {
     /// The same mapping `AppModel` uses: `FfiError`'s messages are metadata — a path, a missing
     /// column, a limit — and are safe to show. Nothing else is inspected.
     static func message(for error: Error) -> String {
-        if let ffi = error as? FfiError {
-            switch ffi {
-            case .WrongCredential:
-                return "That did not unlock the vault."
-            case .NotFound(let message), .AlreadyExists(let message), .NoSuchSlot(let message),
-                .NotPresent(let message), .Invalid(let message), .Io(let message):
-                return message
-            }
-        }
-        return error.localizedDescription
+        describeAnyError(error)
     }
 }

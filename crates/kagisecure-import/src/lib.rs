@@ -39,12 +39,14 @@
 //! # The shape of an import
 //!
 //! ```text
-//! parse  →  ImportPlan  →  report()  →  the user decides  →  commit()  →  Vault::save()
+//! parse  →  ImportPlan  →  report()  →  the user decides  →  Vault::transact(|tx| commit(tx, ..))
 //! ```
 //!
 //! Parsing finishes before anything is written, so a malformed file fails with the vault
 //! untouched. The plan holds values; **the report does not, and structurally cannot** — see
-//! [`ir`] and [`report`]. `--dry-run` is a run that stops after `report()`.
+//! [`ir`] and [`report`]. `--dry-run` is a run that stops after `report()`. [`commit()`] itself
+//! takes a `&mut kagisecure_core::vault::Tx<'_>` — `Vault`'s mutators live only on `Tx`
+//! (ADR-0039 step 6) — so committing is always the closure of one transaction.
 //!
 //! # Threat-model notes that constrain this crate
 //!

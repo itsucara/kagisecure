@@ -1,0 +1,13 @@
+<Window
+    x:Class="Kagisecure.App.MainWindow"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <Grid.KeyboardAccelerators>
+            <!-- ui-spec.md §6.2: manual lock, Ctrl+L (Cmd+\ on macOS; Windows has no backslash-adjacent convention, so this follows 1Password 8 for Windows' own Ctrl+L). -->
+            <KeyboardAccelerator Key="L" Modifiers="Control" Invoked="OnLockAccelerator" />
+        </Grid.KeyboardAccelerators>
+        <Frame x:Name="RootFrame" />
+    </Grid>
+</Window>

@@ -1,0 +1,69 @@
+[package]
+name = "kagisecure-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+kagisecure-core = { path = "../crates/kagisecure-core" }
+kagisecure-shared = { path = "../crates/kagisecure-shared", features = ["fuzzing"] }
+
+[[bin]]
+name = "vault_header"
+path = "fuzz_targets/vault_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "otpauth_uri"
+path = "fuzz_targets/otpauth_uri.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "audit_canonical"
+path = "fuzz_targets/audit_canonical.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shared_record"
+path = "fuzz_targets/shared_record.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shared_bundle"
+path = "fuzz_targets/shared_bundle.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shared_payloads"
+path = "fuzz_targets/shared_payloads.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "shared_roster"
+path = "fuzz_targets/shared_roster.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = true
+
+[workspace]
+members = ["."]

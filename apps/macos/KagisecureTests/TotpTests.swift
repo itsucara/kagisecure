@@ -24,7 +24,7 @@ struct TotpTests {
         return try VaultSession.create(
             path: directory.appendingPathComponent("t.kagivault").path,
             masterPassword: "correct horse battery staple",
-            vaultName: "Personal", kdfMKib: 8, kdfT: 1)
+            vaultName: "Personal", kdfMKib: 64, kdfT: 1)
     }
 
     // MARK: - Countdown arithmetic
@@ -121,7 +121,7 @@ struct TotpTests {
         #expect(totpUriIsValid(uri: Self.uri))
     }
 
-    @Test func aStoredTotpFieldIsSecretAndStillProducesACode() throws {
+    @Test func aStoredTotpFieldIsSecretAndStillProducesACode() async throws {
         let session = try Self.newVault()
         let store = VaultStore(session: session)
         try store.createItem(category: "login")
@@ -136,7 +136,7 @@ struct TotpTests {
                     value: $0.id == totpField.id ? Self.uri : ($0.value ?? ""),
                     section: $0.section, agentVisible: $0.agentVisible)
             },
-            tags: [], urls: [], notes: nil)
+            tags: [], urls: [], notes: nil, revision: item.revision)
         draft.title = "GitHub"
         try store.save(draft: draft)
 
@@ -146,20 +146,27 @@ struct TotpTests {
         #expect(field.hasValue)
         #expect(field.value == nil, "the seed must not ride along on a rendered field list")
 
-        let code = try session.totpCode(itemId: saved.id, fieldId: field.id, at: 1_700_000_000)
+        let code = try await releasedCode(
+            session, itemId: saved.id, fieldId: field.id, at: 1_700_000_000)
         #expect(code.code.count == 6)
         #expect(code.params.issuer == "ACME")
 
         // The item-level lookup — what Quick Access's ⌥⏎ and the list's hover action use.
-        let byItem = try #require(try session.itemTotpCode(itemId: saved.id, at: 1_700_000_000))
+        let byItem = try await releasedCode(
+            session, itemId: saved.id, fieldId: nil, at: 1_700_000_000)
         #expect(byItem.code == code.code)
     }
 
-    @Test func anItemWithNoOneTimePasswordReportsNothingRatherThanFailing() throws {
+    @Test func anItemWithNoOneTimePasswordIsRefusedBeforeAnyPrompt() async throws {
         let session = try Self.newVault()
         let store = VaultStore(session: session)
         try store.createItem(category: "secure-note")
         let item = try #require(store.selectedItem)
-        #expect(try session.itemTotpCode(itemId: item.id, at: 0) == nil)
+        let gate = ScriptedPresenceGate([.confirmed])
+        try session.setPresenceGate(gate: gate)
+        #expect(await refusal {
+            _ = try await session.releaseTotp(itemId: item.id, fieldId: nil, purpose: .copy)
+        } == "NotPresent")
+        #expect(gate.calls == 0, "nobody is asked to touch for a code that does not exist")
     }
 }

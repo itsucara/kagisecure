@@ -20,9 +20,44 @@ serde_json = "1"
 thiserror = "2"
 
 # Only for `kernel_peer`'s isolated FFI (macOS `LOCAL_PEERPID`/`proc_pidpath`, Linux
-# `SO_PEERCRED`). Not needed on Windows, which has no implementation there yet.
+# `SO_PEERCRED`).
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+# The Windows half of the same isolated FFI: `QueryFullProcessImageNameW` resolves a peer pid to
+# an executable (without it `PeerIdentity::verified()` is false for every connection), and
+# `CreateToolhelp32Snapshot` walks process ancestry for the extension channel. Only the three
+# feature gates those calls need — `windows-sys` is feature-gated per Win32 module precisely so a
+# dependent does not pull in the whole API surface. Already in the lock file by way of `mio`,
+# `rustix` and `tempfile`, and MIT OR Apache-2.0, so `cargo deny` has nothing new to weigh.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    # `connect`'s client open (`CreateFileW` with `SECURITY_SQOS_PRESENT |
+    # SECURITY_IDENTIFICATION`, bounded `WaitNamedPipeW`) and `sever`'s `DisconnectNamedPipe`.
+    # `Win32_Security` because `CreateFileW`'s signature names `SECURITY_ATTRIBUTES`; the
+    # `connect` tests also use it to read an impersonation token's level.
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Pipes",
+    # `authenticode` (ADR-0032): `WinVerifyTrust` and its `WTHelper*` accessors, the signer
+    # certificate's name and key, the file-sharing flags that pin the image while it is checked
+    # (`Win32_Storage_FileSystem`, above), and `GetModuleHandleExW`/`GetModuleFileNameW` to find
+    # this module's own signature. `_Catalog` and `_Sip` are there only because `windows-sys`
+    # gates `WTHelperProvDataFromStateData`/`WTHelperGetProvSignerFromChain` on them (their
+    # `CRYPT_PROVIDER_DATA` names catalog and SIP types); catalog signatures are not verified.
+    "Win32_Security_WinTrust",
+    "Win32_Security_Cryptography",
+    "Win32_Security_Cryptography_Catalog",
+    "Win32_Security_Cryptography_Sip",
+    "Win32_System_LibraryLoader",
+] }
+# The string type `interprocess`'s `SecurityDescriptor::deserialize` takes, so the named pipe's
+# owner-only descriptor (`server::owner_only_pipe_descriptor`) is built from SDDL with no `unsafe`
+# here. Already in the lock file as `interprocess`'s own dependency, at the version it uses.
+widestring = "1"
 
 [dev-dependencies]
 tempfile = "3"

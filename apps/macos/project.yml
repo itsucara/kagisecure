@@ -4,6 +4,9 @@
 
 name: Kagisecure
 options:
+  # English is the source language; translations live in Kagisecure/Localizable.xcstrings
+  # (UI) and Kagisecure/InfoPlist.xcstrings (Info.plist keys).
+  developmentLanguage: en
   bundleIdPrefix: com.kagisecure
   createIntermediateGroups: true
   deploymentTarget:
@@ -15,6 +18,10 @@ packages:
     # Local package. `cargo xtask bindgen` must have run at least once: it writes both the
     # generated Swift and the xcframework the package's binaryTarget points at.
     path: KagisecureFFI
+  # Self-update (ADR-0044). Linked into the app only — not the Safari extension, not the tests.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.10.0"
 
 # Project-wide settings. Signing defaults to ad-hoc so that a clean checkout can build
 # with no developer account at all (CI could too, before it was removed on 2026-09-19). To build
@@ -42,8 +49,8 @@ settings:
     # Cargo.toml (ADR-0028). Both are the same string on purpose: kagisecure ships one artifact
     # per version and has no separate build number to count. Override on the xcodebuild command
     # line if a rebuild of the same version ever has to be distinguishable.
-    MARKETING_VERSION: "0.1.1"
-    CURRENT_PROJECT_VERSION: "0.1.1"
+    MARKETING_VERSION: "0.1.2"
+    CURRENT_PROJECT_VERSION: "0.1.2"
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
@@ -61,6 +68,12 @@ settings:
     DEAD_CODE_STRIPPING: YES
     GCC_TREAT_WARNINGS_AS_ERRORS: YES
     SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+    # Sparkle's feed and EdDSA public key (ADR-0044). Empty here, so every ordinary build —
+    # Debug, `make macos`, the tests — has no updater at all. `cargo xtask dist` passes both on the
+    # xcodebuild command line: the feed URL is its constant, the key is read from the release
+    # machine's keychain, so the key is never written into the tree.
+    KAGISECURE_UPDATE_FEED_URL: ""
+    KAGISECURE_SPARKLE_PUBLIC_KEY: ""
 
 targets:
   Kagisecure:
@@ -68,9 +81,17 @@ targets:
     platform: macOS
     sources:
       - path: Kagisecure
+      # The AutoFill wire types, shared with the credential provider extension (ADR-0045).
+      - path: Shared
     dependencies:
       - package: KagisecureFFI
         product: KagisecureFFI
+      - package: Sparkle
+      # System-wide password AutoFill (ADR-0045). Embedded and signed like the Safari extension;
+      # macOS lists it under System Settings › General › AutoFill & Passwords once it is enabled.
+      - target: KagisecureCredentialProvider
+        embed: true
+        codeSign: true
       # Embedded into Contents/PlugIns and signed with the app. Safari finds a web extension only
       # inside an installed containing app, so this is not optional packaging — it is the only way
       # the extension exists at all.
@@ -82,6 +103,8 @@ targets:
       properties:
         CFBundleName: Kagisecure
         CFBundleDisplayName: Kagisecure
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, ja]
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         # Must equal MACOSX_DEPLOYMENT_TARGET above. Gatekeeper does not check it, but Finder and
@@ -95,6 +118,18 @@ targets:
         NSHumanReadableCopyright: "kagisecure contributors. MIT OR Apache-2.0."
         # The string macOS shows above the Touch ID sheet when the Secure Enclave key is used.
         NSFaceIDUsageDescription: "Unlock your kagisecure vault."
+        # Sparkle (ADR-0044), the same settings as itsustar's updater: a signed feed, archives
+        # verified before they are unpacked, a check every hour, and updates installed without
+        # asking. No system profile is ever sent.
+        SUFeedURL: "$(KAGISECURE_UPDATE_FEED_URL)"
+        SUPublicEDKey: "$(KAGISECURE_SPARKLE_PUBLIC_KEY)"
+        SURequireSignedFeed: true
+        SUVerifyUpdateBeforeExtraction: true
+        SUEnableAutomaticChecks: true
+        SUAutomaticallyUpdate: true
+        SUAllowsAutomaticUpdates: true
+        SUScheduledCheckInterval: 3600
+        SUEnableSystemProfiling: false
     entitlements:
       path: Kagisecure/Kagisecure.entitlements
       properties:
@@ -143,11 +178,21 @@ targets:
       # excluded here and supplied from extensions/safari below: the two manifests differ only in
       # the Chromium-specific keys (`key`, `minimum_chrome_version`), and giving Safari a manifest
       # with no keys it does not understand is cheaper than explaining a warning to every reader.
+      #
+      # `icons/` is the one subdirectory, and it is excluded here and added again below as a
+      # *folder reference*: a group's files are copied flat, which would put `icon-16.png` at the
+      # top of Contents/Resources while both manifests name `icons/icon-16.png`. A folder
+      # reference is copied as the directory it is.
       - path: ../../extensions/shared
         buildPhase: resources
         excludes:
           - manifest.json
+          - "icons/**"
+          - icons
         createIntermediateGroups: false
+      - path: ../../extensions/shared/icons
+        type: folder
+        buildPhase: resources
       - path: ../../extensions/safari/manifest.json
         buildPhase: resources
     info:
@@ -185,6 +230,61 @@ targets:
         ENABLE_APP_SANDBOX: YES
         SKIP_INSTALL: YES
         # An app extension has no main(); it is loaded by the host process.
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+
+  # The AutoFill credential provider (ADR-0045).
+  #
+  # Holds no vault: it asks the running app over `<App Group>/run/autofill.sock` and the app
+  # decides — grace window, presence check, unlock. Sandboxed (an app extension must be) with the
+  # App Group as its one hole, exactly like the Safari extension.
+  #
+  # The AutoFill entitlement (`com.apple.developer.authentication-services.autofill-credential-
+  # provider`) is a **restricted** one: like `keychain-access-groups` (ADR-0011) it needs a
+  # provisioning profile, and its presence would stop a clean ad-hoc checkout from building. So it
+  # is not here; `Signing/CredentialProvider.Provisioned.entitlements` carries it for a build with
+  # a team and a profile. Without it the extension builds, embeds and is unit-testable, but macOS
+  # will not offer it in System Settings.
+  KagisecureCredentialProvider:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: KagisecureCredentialProvider
+      - path: Shared
+    dependencies:
+      - sdk: AuthenticationServices.framework
+    info:
+      path: KagisecureCredentialProvider/Info.plist
+      properties:
+        CFBundleName: Kagisecure
+        CFBundleDisplayName: Kagisecure
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, ja]
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSHumanReadableCopyright: "kagisecure contributors. MIT OR Apache-2.0."
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.authentication-services-credential-provider-ui
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).CredentialProviderViewController
+          NSExtensionAttributes:
+            ASCredentialProviderExtensionCapabilities:
+              ProvidesPasswords: true
+              ProvidesOneTimeCodes: true
+              ShowsConfigurationUI: true
+    entitlements:
+      path: KagisecureCredentialProvider/KagisecureCredentialProvider.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.application-groups:
+          - $(AppIdentifierPrefix)com.kagisecure
+    settings:
+      base:
+        # Must match `AutoFillChannel.providerBundleIdentifier`: the app checks the peer's signing
+        # identifier against it before it answers.
+        PRODUCT_BUNDLE_IDENTIFIER: com.kagisecure.app.credential-provider
+        PRODUCT_NAME: KagisecureCredentialProvider
+        PRODUCT_MODULE_NAME: KagisecureCredentialProvider
+        ENABLE_APP_SANDBOX: YES
+        SKIP_INSTALL: YES
         CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
 
   # The XCUITest bundle (docs/e2e-harness.md §7, suite D). Separate from `KagisecureTests`
@@ -264,6 +364,7 @@ schemes:
       targets:
         Kagisecure: all
         KagisecureSafariExtension: all
+        KagisecureCredentialProvider: all
         KagisecureTests: [test]
     run:
       config: Debug
@@ -271,6 +372,16 @@ schemes:
       config: Debug
       targets:
         - KagisecureTests
+      # `KagisecureTests` is hosted: `xcodebuild test` launches the `Kagisecure` app itself as
+      # the test runner, with the environment this scheme's Test action sets — not anything a
+      # test method controls, since the app is already running by the time one starts. Without
+      # these, the app falls back to its ordinary defaults (`default_vault_path`,
+      # `Endpoint::discover`) and opens a window on this Mac's real vault and its real IPC socket.
+      # `KagisecureUITests` does not need this: it launches the app itself, per scenario
+      # (`UITestCase.setUpWithError`), with its own fresh scratch paths every time.
+      environmentVariables:
+        KAGISECURE_HOME: /tmp/kagisecure-xctest-home
+        KAGISECURE_SOCKET: /tmp/kagisecure-xctest.sock
     profile:
       config: Release
     analyze:

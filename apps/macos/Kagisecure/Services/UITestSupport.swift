@@ -63,8 +63,10 @@ enum AppDefaults {
     ///
     /// What the gate double replaces is the *fingerprint*, not the decision: the sheet still has to
     /// be found, read and pressed by the test, `AgentService.allow` still runs, and `agentResolve`
-    /// still carries the verdict into Rust. It is a robot's finger on the sensor, not a bypass
-    /// around the sensor.
+    /// still carries the verdict into Rust. The same goes for the app's own reveals and copies
+    /// (ADR-0038): the double is installed as `PresenceCoordinator.gate`, so a reveal still goes
+    /// through `AppPresenceGate`, the one-prompt slot and Rust's `release_*`, which audits it. It
+    /// is a robot's finger on the sensor, not a bypass around the sensor.
     enum UITestSupport {
         /// `-KSUITestBiometrics allow|cancel|unavailable` — what the injected gate answers.
         static let biometricsArgument = "-KSUITestBiometrics"
@@ -72,6 +74,11 @@ enum AppDefaults {
         /// `-KSUITestDefaultsSuite <name>` — a throwaway `UserDefaults` suite, so the suite's
         /// settings changes never reach the real user's preferences. See `AppDefaults`.
         static let defaultsSuiteArgument = "-KSUITestDefaultsSuite"
+
+        /// `-KSUITestPresenceLog <path>` — where the scripted gate writes one line per prompt it
+        /// answers. A refused prompt changes nothing on screen, by design, so this is how a
+        /// scenario knows the refusal has *happened* rather than guessing with a sleep.
+        static let presenceLogArgument = "-KSUITestPresenceLog"
 
         /// `-KSUITestAppearance dark|light` — pin `NSApp.appearance`, for the dark-mode captures.
         ///
@@ -104,13 +111,15 @@ enum AppDefaults {
 
         /// The biometric gate to install, or `nil` to leave the real `LocalAuthenticationGate`.
         static func biometricGate() -> BiometricGate? {
+            let log = value(for: presenceLogArgument).map { URL(fileURLWithPath: $0) }
             switch value(for: biometricsArgument) {
-            case "allow": ScriptedBiometricGate(outcome: .authenticated)
-            case "cancel": ScriptedBiometricGate(outcome: .cancelled)
+            case "allow": return ScriptedBiometricGate(outcome: .authenticated, log: log)
+            case "cancel": return ScriptedBiometricGate(outcome: .cancelled, log: log)
             case "unavailable":
-                ScriptedBiometricGate(
-                    outcome: .unavailable("no authentication method available in this test run"))
-            default: nil
+                return ScriptedBiometricGate(
+                    outcome: .unavailable("no authentication method available in this test run"),
+                    log: log)
+            default: return nil
             }
         }
 
@@ -142,6 +151,9 @@ enum AppDefaults {
     /// only channel is the command line the app was started with.
     struct ScriptedBiometricGate: BiometricGate {
         let outcome: BiometricOutcome
+        /// Appended to with one line per answer — `authenticated`, `cancelled` or `unavailable` —
+        /// after the answer is decided and before it is returned. `nil` writes nothing.
+        var log: URL? = nil
 
         func isAvailable() -> Bool {
             if case .unavailable = outcome { return false }
@@ -152,8 +164,33 @@ enum AppDefaults {
             // A real Touch ID sheet takes a moment, and a gate that returns on the same run loop
             // turn hides ordering bugs the real one would expose.
             try? await Task.sleep(for: .milliseconds(120))
+            record()
             return outcome
         }
+
+        /// One line in `log`, if there is one. Written before the answer is returned, so a
+        /// scenario that sees the line knows the prompt was up and has been answered.
+        private func record() {
+            guard let log else { return }
+            let word =
+                switch outcome {
+                case .authenticated: "authenticated"
+                case .cancelled: "cancelled"
+                case .unavailable: "unavailable"
+                case .busy: "busy"
+                }
+            let line = Data((word + "\n").utf8)
+            if let handle = try? FileHandle(forWritingTo: log) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: line)
+            } else {
+                try? line.write(to: log)
+            }
+        }
+
+        /// Nothing to tear down: this gate raises no prompt, and returns on its own.
+        func cancelInFlight() {}
     }
 
 #endif

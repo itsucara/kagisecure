@@ -34,7 +34,8 @@ struct FillApprovalTests {
         topOrigin: String? = nil,
         fields: [String] = ["username", "password"],
         title: String = "Example account",
-        browser: String? = "Google Chrome"
+        browser: String? = "Google Chrome",
+        presenceOnly: Bool = false
     ) -> ApprovalRequestView {
         ApprovalRequestView(
             id: "req-1",
@@ -52,6 +53,9 @@ struct FillApprovalTests {
             variables: [],
             command: [],
             gitignored: nil,
+            overwriteRequested: false,
+            targetExists: nil,
+            targetWrittenByUs: nil,
             requestedTtlSeconds: 300,
             requestedUses: 1,
             maxTtlSeconds: 900,
@@ -59,6 +63,7 @@ struct FillApprovalTests {
             expiresAt: 1_757_000_060,
             origin: origin,
             topOrigin: topOrigin,
+            topOriginUnknown: false,
             itemId: "item-1",
             itemTitle: title,
             fillFields: fields,
@@ -66,7 +71,8 @@ struct FillApprovalTests {
             browserPid: 4241,
             browserExecutable: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
             browserIsAppExtension: false,
-            extensionId: "nlijibjnmanccalmafnfbobkcfjiibmd")
+            extensionId: "nlijibjnmanccalmafnfbobkcfjiibmd",
+            presenceOnly: presenceOnly)
     }
 
     /// An env-file request, for the comparisons that matter: the two must not be confused.
@@ -87,6 +93,9 @@ struct FillApprovalTests {
             variables: ["TOKEN"],
             command: [],
             gitignored: false,
+            overwriteRequested: false,
+            targetExists: false,
+            targetWrittenByUs: nil,
             requestedTtlSeconds: 900,
             requestedUses: 10,
             maxTtlSeconds: 3_600,
@@ -94,6 +103,7 @@ struct FillApprovalTests {
             expiresAt: 1_757_000_060,
             origin: nil,
             topOrigin: nil,
+            topOriginUnknown: false,
             itemId: nil,
             itemTitle: nil,
             fillFields: [],
@@ -101,7 +111,8 @@ struct FillApprovalTests {
             browserPid: nil,
             browserExecutable: nil,
             browserIsAppExtension: false,
-            extensionId: nil)
+            extensionId: nil,
+            presenceOnly: false)
     }
 
     // MARK: - The record
@@ -166,6 +177,60 @@ struct FillApprovalTests {
         let reason = AgentService.reason(for: request)
         #expect(reason.contains("Example account"))
         #expect(request.fillFields == ["one-time password"])
+    }
+
+    // MARK: - Presence-only fills (ADR-0037)
+
+    @Test("a presence-only fill is marked as one, and a first fill is not")
+    func presenceOnlyIsCarriedThrough() {
+        #expect(Self.fillRequest(presenceOnly: true).presenceOnly)
+        #expect(!Self.fillRequest().presenceOnly, "a first fill always gets the sheet")
+        #expect(!Self.envRequest().presenceOnly, "an agent request always gets the sheet")
+    }
+
+    @Test("a presence-only fill at the head raises no sheet; a first fill does")
+    func presenceOnlyNeverReachesTheSheet() async {
+        let service = AgentService()
+        // Stalls long enough to observe the head while the prompt is up, then cancels.
+        service.gate = BiometricGateAdversarialTests.ScriptedGate(.cancelled, stall: .seconds(1))
+        service.resolver = { _, _, _ in true }
+
+        let presence = Self.fillRequest(presenceOnly: true)
+        service.enqueue(presence)
+        #expect(service.current?.id == presence.id, "it is the request being asked about")
+        #expect(service.sheetRequest == nil, "but it is asked by the system prompt alone")
+        #expect(service.presencePromptFor == presence.id, "and the prompt is already up")
+
+        let full = Self.envRequest()
+        service.enqueue(full)
+        #expect(service.sheetRequest == nil, "a request behind a presence prompt waits its turn")
+
+        for _ in 0..<100 where service.current?.id != full.id {
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(service.current?.id == full.id, "the cancelled prompt was answered and retired")
+        #expect(service.sheetRequest?.id == full.id, "and the next request gets its sheet")
+        service.deny(full)
+    }
+
+    @Test("the presence prompt names the item and the site, and says when not to touch it")
+    func presenceReasonIsSpecific() {
+        let reason = AgentService.reason(for: Self.fillRequest(presenceOnly: true))
+        #expect(reason.contains("Example account"))
+        #expect(reason.contains("https://example.com"))
+        #expect(reason.contains("only if you just asked Kagisecure to fill this"))
+        #expect(!reason.contains("password"), "the prompt names the item, never a field's value")
+        #expect(
+            reason != AgentService.reason(for: Self.fillRequest()),
+            "a prompt with no sheet in front of it has to say more than one behind a sheet")
+    }
+
+    @Test("a presence prompt for a one-time code says so, because it is its own touch")
+    func presenceReasonForACodeSaysCode() {
+        let reason = AgentService.reason(
+            for: Self.fillRequest(fields: ["one-time password"], presenceOnly: true))
+        #expect(reason.contains("one-time code"))
+        #expect(reason.contains("Example account"))
     }
 
     @Test("the sheet's sentence names the browser, the item and nothing else")

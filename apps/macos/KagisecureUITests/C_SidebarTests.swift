@@ -105,6 +105,12 @@ final class C_SidebarTests: UITestCase {
                     element(root).waitForExistence(timeout: Self.timeout),
                     "selecting \(row) should open \(root); on screen instead: "
                         + onScreenIdentifiers().joined(separator: ", "))
+                // ui-spec.md §2.1: an agent section is two columns, the pane taking the item
+                // list's width as well as its own.
+                XCTAssertFalse(
+                    element("ks.itemList.list").exists,
+                    "\(row) is an agent section and should hide the item list, which is still "
+                        + "there")
                 capture("sidebar-pane-\(name)", "The \(name) pane, opened from the sidebar")
             }
         }
@@ -133,6 +139,21 @@ final class C_SidebarTests: UITestCase {
 
             // The filtered list is live, not a stale render: one of its rows still opens.
             selectItem("Stripe")
+        }
+
+        step("leaving for an agent section and coming back keeps the item selection") {
+            selectSidebarRow("ks.sidebar.agentAudit")
+            waitFor("ks.audit.chainState")
+            waitForDisappearance("ks.itemList.list")
+
+            selectSidebarRow("ks.sidebar.tag.prod")
+            waitFor("ks.itemList.list")
+            XCTAssertTrue(
+                detailShows("Stripe"),
+                "the item list comes back with the item it had selected (ui-spec.md §2.1); the "
+                    + "detail pane shows \(openedItemTitle() ?? "no item")")
+            capture(
+                "sidebar-back-from-agent", "Back on the prod tag after Audit, Stripe still open")
         }
     }
 
@@ -259,21 +280,5 @@ final class C_SidebarTests: UITestCase {
     /// on whichever of the two AppKit happened to hand back first.
     private func emptyStateTitles() -> [String] {
         elements("ks.emptyState.title").allElementsBoundByIndex.map { text(of: $0) }
-    }
-
-    /// Wait until `condition` holds.
-    ///
-    /// `waitFor` covers "this identifier appears"; this covers the conditions that are computed
-    /// over several elements at once, which no identifier can express. Predicate-driven rather
-    /// than a sleep loop, so it returns as soon as the condition is true.
-    private func waitUntil(
-        _ description: String, timeout: TimeInterval = UITestCase.shortTimeout,
-        _ condition: @escaping () -> Bool
-    ) -> Bool {
-        if condition() { return true }
-        let expectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate { _, _ in condition() }, object: nil)
-        expectation.expectationDescription = description
-        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 }

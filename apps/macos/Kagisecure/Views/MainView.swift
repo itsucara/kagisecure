@@ -2,24 +2,64 @@ import SwiftUI
 
 import KagisecureFFI
 
-/// The three-pane window (ui-spec.md §2.1): sidebar, item list, item detail.
+/// The main window (ui-spec.md §2.1): sidebar, item list and item detail for the vault's own
+/// sections and each shared vault; sidebar and a full-width pane for the agent ones and a shared
+/// vault's members.
+///
+/// Two `NavigationSplitView`s rather than one, swapped on `SidebarSelection.showsItems`. The
+/// item list means nothing beside Environments, Leases, Audit, Set up your agent, Browser
+/// extension or a shared vault's Members, and a three-column split has no way to hide its middle column while keeping the
+/// sidebar — `.doubleColumn` there hides the *sidebar*. The swap rebuilds the columns, so what a
+/// person would notice losing is carried across it by hand: whether the sidebar is collapsed
+/// (`sidebarHidden`), how wide they left each column (`widths`), and the keyboard focus when they
+/// crossed the boundary from the sidebar itself (`sidebarPick`). The item selection needs nothing:
+/// it lives in `VaultStore`, and an agent section leaves it alone.
 struct MainView: View {
     @Environment(AppModel.self) private var model
     @Bindable var store: VaultStore
 
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    /// Whether the user collapsed the sidebar. One flag rather than a
+    /// `NavigationSplitViewVisibility`, because the two arrangements spell "sidebar hidden"
+    /// differently — `.doubleColumn` with three columns, `.detailOnly` with two — and the choice
+    /// has to survive the swap.
+    @State private var sidebarHidden = false
+    @State private var widths = ColumnWidths()
+    @FocusState private var sidebarFocused: Bool
+    /// The row the user last picked in the sidebar, by click or arrow key. When that pick is what
+    /// swapped the arrangement, the rebuilt sidebar takes the keyboard back, so walking the sidebar
+    /// with the arrow keys carries on across the boundary instead of stopping at it. A selection
+    /// made anywhere else (⌘F, a new item, the menu bar's agent-fill notices) does not match it
+    /// and leaves the focus to whatever asked.
+    @State private var sidebarPick: SidebarSelection?
+    /// The vault section ⌘F goes back to from an agent section, which has no search field.
+    @State private var lastVaultSelection: SidebarSelection = .all
+    @State private var searchRequested = false
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            SidebarView(store: store)
-                .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 280)
-        } content: {
-            ItemListView(store: store)
-                .navigationSplitViewColumnWidth(min: 300, ideal: 340, max: 420)
-        } detail: {
-            detail
+        Group {
+            if !store.selection.showsItems {
+                NavigationSplitView(columnVisibility: visibility(threeColumns: false)) {
+                    sidebar
+                } detail: {
+                    agentPane
+                }
+            } else {
+                NavigationSplitView(columnVisibility: visibility(threeColumns: true)) {
+                    sidebar
+                } content: {
+                    ItemListView(store: store, searchRequested: $searchRequested)
+                        .navigationSplitViewColumnWidth(
+                            min: ColumnWidths.itemListRange.lowerBound, ideal: widths.itemList,
+                            max: ColumnWidths.itemListRange.upperBound)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                            widths.noteItemList($0)
+                        }
+                } detail: {
+                    itemDetail
+                }
+            }
         }
-        .navigationTitle(store.vaultName)
+        .navigationTitle(store.windowTitle)
         .navigationSubtitle(statusLine)
         .toolbar { toolbar }
         // An import writes straight through the session, so the list and the sidebar counts are
@@ -28,10 +68,63 @@ struct MainView: View {
         .onChange(of: model.importCommitCount) { _, _ in
             store.refresh()
         }
+        .onChange(of: store.selection, initial: true) { _, selection in
+            if selection.showsItems { lastVaultSelection = selection }
+        }
+        // The search field belongs to the item list, which an agent section does not show. ⌘F
+        // there goes back to the vault section the user came from and focuses its search, rather
+        // than doing nothing; `ItemListView` picks the request up when it appears.
+        .sheet(item: $store.sharedSheet) { sheet in
+            SharedSheetView(store: store, sheet: sheet)
+        }
+        .onChange(of: model.focusSearch) { _, _ in
+            guard !store.selection.showsItems else { return }
+            searchRequested = true
+            store.selection = lastVaultSelection
+        }
+    }
+
+    private var sidebar: some View {
+        SidebarView(store: store, focus: $sidebarFocused) { sidebarPick = $0 }
+            .navigationSplitViewColumnWidth(
+                min: ColumnWidths.sidebarRange.lowerBound, ideal: widths.sidebar,
+                max: ColumnWidths.sidebarRange.upperBound)
+            .onGeometryChange(for: CGFloat.self) { $0.size.width } action: {
+                widths.noteSidebar($0)
+            }
+            .onAppear {
+                let picked = sidebarPick == store.selection
+                sidebarPick = nil
+                guard picked else { return }
+                sidebarFocused = true
+                // …and again once the rebuilt list is actually in the window: a focus request made
+                // before then is dropped, and the arrow keys go nowhere (QuickAccessView does the
+                // same for its panel).
+                Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(60))
+                    sidebarFocused = true
+                }
+            }
+    }
+
+    /// The split view's visibility, as the arrangement being built spells `sidebarHidden`.
+    ///
+    /// Any collapsed state reads back as hidden: `.detailOnly` in either arrangement, and
+    /// `.doubleColumn` in the three-column one, where it is what the sidebar button produces.
+    private func visibility(threeColumns: Bool) -> Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: {
+                guard sidebarHidden else { return .all }
+                return threeColumns ? .doubleColumn : .detailOnly
+            },
+            set: { visibility in
+                sidebarHidden =
+                    visibility == .detailOnly || (threeColumns && visibility == .doubleColumn)
+            })
     }
 
     @ViewBuilder
-    private var detail: some View {
+    private var agentPane: some View {
         switch store.selection {
         case .agentEnvironments:
             AgentAccessView(store: store)
@@ -41,10 +134,17 @@ struct MainView: View {
             AuditView(store: store)
         case .agentSetup:
             AgentSetupView()
+        case .agentUnattended:
+            UnattendedView(store: store)
         case .browserExtension:
             BrowserExtensionView()
-        default:
-            itemDetail
+        case .sharedMembers(let id):
+            SharedMembersView(store: store, vaultId: id)
+        case .sharedEnvironments(let id):
+            SharedEnvironmentsView(store: store, vaultId: id)
+        case .all, .favorites, .category, .tag, .archive, .trash, .sharedVault:
+            // Not reached: `body` only builds this pane when the selection shows no items.
+            EmptyView()
         }
     }
 
@@ -62,24 +162,44 @@ struct MainView: View {
     }
 
     private var statusLine: String {
-        let items = store.counts.all
-        return "\(items) item\(items == 1 ? "" : "s")"
+        if let id = store.sharedVaultId {
+            let summary = store.shared.summary(for: id)
+            let items = summary?.itemCount ?? 0
+            let members = summary?.memberCount ?? 0
+            let itemsText = Self.itemCountText(items)
+            let membersText =
+                members == 1 ? String(localized: "1 member") : String(localized: "\(members) members")
+            return String(localized: "Shared · \(itemsText) · \(membersText)")
+        }
+        return Self.itemCountText(store.counts.all)
+    }
+
+    private static func itemCountText(_ items: UInt32) -> String {
+        items == 1 ? String(localized: "1 item") : String(localized: "\(items) items")
     }
 
     private var emptyTitle: String {
         switch store.selection {
-        case .trash: "Trash is empty"
-        case .archive: "Nothing archived"
-        case .favorites: "No favorites yet"
-        case .category(let name): "No \(store.displayName(forCategory: name)) items yet"
-        default: store.query.isEmpty ? "No items yet" : "No items match “\(store.query)”"
+        case .trash: String(localized: "Trash is empty")
+        case .archive: String(localized: "Nothing archived")
+        case .favorites: String(localized: "No favorites yet")
+        case .category(let name): String(localized: "No \(store.displayName(forCategory: name)) items yet")
+        case .sharedVault where store.query.isEmpty: String(localized: "No shared items yet")
+        default:
+            store.query.isEmpty
+                ? String(localized: "No items yet") : String(localized: "No items match “\(store.query)”")
         }
     }
 
     private var emptyMessage: String {
-        store.query.isEmpty
-            ? "Select an item on the left, or create one with ⌘N."
-            : "Clear the search field to see everything again."
+        if store.sharedVaultId != nil, store.query.isEmpty {
+            return store.canEditItems
+                ? String(localized: "Create one with ⌘N: everyone in this vault gets it.")
+                : String(localized: "Items others add appear here.")
+        }
+        return store.query.isEmpty
+            ? String(localized: "Select an item on the left, or create one with ⌘N.")
+            : String(localized: "Clear the search field to see everything again.")
     }
 
     @ToolbarContentBuilder
@@ -140,6 +260,29 @@ struct MainView: View {
             }
             .accessibilityIdentifier("ks.toolbar.sort")
         }
+    }
+}
+
+/// Each column's width as last laid out, so a swap between the two arrangements rebuilds the
+/// sidebar and the item list at the width the user left them rather than at the default.
+///
+/// A plain reference held in `@State`, not observed state: recording a width must not re-render
+/// the window, or a divider being dragged would feed its own width back into `ideal` mid-drag. The
+/// value is only read when the columns are built again. A width outside the column's range is a
+/// collapsed or collapsing sidebar, not a choice, and is not recorded.
+private final class ColumnWidths {
+    static let sidebarRange: ClosedRange<CGFloat> = 220...280
+    static let itemListRange: ClosedRange<CGFloat> = 300...420
+
+    private(set) var sidebar: CGFloat = 240
+    private(set) var itemList: CGFloat = 340
+
+    func noteSidebar(_ width: CGFloat) {
+        if Self.sidebarRange.contains(width) { sidebar = width }
+    }
+
+    func noteItemList(_ width: CGFloat) {
+        if Self.itemListRange.contains(width) { itemList = width }
     }
 }
 

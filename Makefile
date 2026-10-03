@@ -42,7 +42,7 @@ EMBED_IDENTITY := -
 endif
 
 .PHONY: all check test fmt clippy deny version bindgen helpers icon project signing-check macos \
-	macos-test app run release clean-macos e2e clean-e2e
+	macos-test app run release chrome-package clean-macos e2e clean-e2e
 
 all: check
 
@@ -150,6 +150,12 @@ run: macos
 #   make release DIST_FLAGS=--skip-notarize   build and sign only, no submission to Apple
 release:
 	$(CARGO) xtask dist $(DIST_FLAGS)
+
+## Browser extension
+# The Chrome Web Store upload: dist/kagisecure-chrome-<version>.zip, with the manifest's `key`
+# removed and its version taken from Cargo.toml. docs/chrome-web-store.md is the long version.
+chrome-package:
+	$(CARGO) xtask chrome-package
 
 clean-macos:
 	rm -rf $(XCODEPROJ) $(MACOS_DIR)/KagisecureFFI/Artifacts dist $(ICON)

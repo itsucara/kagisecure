@@ -18,30 +18,44 @@
 //! * [`endpoint`] — where the socket lives, `0600` in a `0700` directory.
 //! * [`client`] — the sidecar's half. Blocking, one round trip per call.
 //! * [`server`] — the daemon's half, plus what can be learned about a caller.
-//! * [`kernel_peer`] — the one place this crate uses FFI: the peer pid straight from the kernel
-//!   (macOS `LOCAL_PEERPID`, Linux `SO_PEERCRED`). Public since M6, so that
+//! * [`kernel_peer`] — the peer pid straight from the kernel (macOS `LOCAL_PEERPID`, Linux
+//!   `SO_PEERCRED`, Windows `GetNamedPipeClientProcessId`). Public since M6, so that
 //!   `kagisecure-extension-ipc`'s listener identifies the native host the same way this crate
 //!   identifies a sidecar, rather than growing a second copy of the same two syscalls.
+//! * [`connect`] — how every client in the workspace opens its end: bounded on a busy Windows
+//!   pipe, and granting the server identification, never impersonation.
+//! * [`sever`] — ending an accepted connection from another thread, so that a stopped listener
+//!   really releases its endpoint. Shared with `kagisecure-extension-ipc`.
+//! * [`authenticode`] — Windows: whether the process behind a pid is running a file with a valid
+//!   embedded Authenticode signature by the right signer (ADR-0032). Its verdict logic builds
+//!   everywhere; off Windows it answers "not available on this platform".
 //!
 //! # Why `deny(unsafe_code)`, not `forbid`
 //!
-//! Every module here is safe Rust with one exception: `kernel_peer`, which needs `getsockopt`
-//! FFI to get a caller's pid from the kernel on macOS (see ADR-0007 §3). `forbid` cannot be
-//! locally overridden by a nested `allow` — that is the point of `forbid` — so getting a scoped
-//! exception for one small, reviewed module means the crate-wide lint has to be `deny` instead.
-//! `deny` is not weaker in practice: every module except `kernel_peer` is exactly as unsafe-free
-//! as it would be under `forbid`, and `kernel_peer` states its own `#![allow(unsafe_code)]`
-//! plainly at the top of the file rather than sneaking past the crate's setting.
+//! Every module here is safe Rust except four that need FFI no safe wrapper offers:
+//! `kernel_peer` (`getsockopt` for a caller's pid on macOS, see ADR-0007 §3, and its Windows
+//! counterparts), `connect` (`CreateFileW` with impersonation flags, and a bounded
+//! `WaitNamedPipeW`, on Windows), `sever` (`DisconnectNamedPipe` on Windows) and `authenticode`
+//! (`WinVerifyTrust` and the certificate accessors behind it, confined to its Windows-only `imp`
+//! submodule). `forbid` cannot be locally overridden by a nested `allow` — that is the point of
+//! `forbid` — so getting a scoped exception for a few small, reviewed modules means the
+//! crate-wide lint has to be `deny` instead. `deny` is not weaker in practice: every other module
+//! is exactly as unsafe-free as it would be under `forbid`, and each of the four states its own
+//! `#![allow(unsafe_code)]` plainly at the top of the file rather than sneaking past the crate's
+//! setting.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 
+pub mod authenticode;
 pub mod client;
+pub mod connect;
 pub mod endpoint;
 pub mod frame;
 pub mod kernel_peer;
 pub mod protocol;
 pub mod server;
+pub mod sever;
 
 pub use client::{Client, ClientError};
 pub use endpoint::{Endpoint, EndpointError};

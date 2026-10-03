@@ -27,14 +27,101 @@ pub fn peer_pid(stream: &Stream) -> Option<u32> {
     imp::peer_pid(stream)
 }
 
+/// This process's own effective uid, straight from the kernel.
+///
+/// `geteuid(2)` reads a field of this process's credentials. It takes no arguments, touches no
+/// filesystem and cannot fail, which is the whole reason it lives here: the same-user gate
+/// (threat-model M-13/M-15) is a hard gate, and a hard gate cannot be built on an answer that is
+/// sometimes unavailable. It replaces a probe that created `$TMPDIR/kagisecure-uid-<pid>` and
+/// read the owner back — a probe that returned nothing when `$TMPDIR` (inherited, and so
+/// attacker-choosable) was unwritable, and that followed a symlink planted at its predictable
+/// path and truncated whatever it pointed at.
+#[cfg(unix)]
+#[must_use]
+pub fn own_euid() -> u32 {
+    // SAFETY: `geteuid` takes no arguments, reads only this process's own credential fields,
+    // returns a plain integer and is documented as always succeeding. There is nothing to
+    // validate before the call and nothing to free after it.
+    unsafe { libc::geteuid() }
+}
+
 /// Resolve `pid` to the path of its executable without shelling out or reading `/proc`.
 ///
-/// Only implemented on macOS: Linux already has `/proc/<pid>/exe`, which needs no FFI and lives
-/// in `server.rs` next to the code that calls it.
-#[cfg(target_os = "macos")]
+/// Implemented on macOS (`proc_pidpath`) and Windows (`QueryFullProcessImageNameW`). Linux
+/// already has `/proc/<pid>/exe`, which needs no FFI and lives in `server.rs` next to the code
+/// that calls it.
+#[cfg(any(target_os = "macos", windows))]
 #[must_use]
 pub fn executable_path(pid: u32) -> Option<String> {
     imp::executable_path(pid)
+}
+
+/// When `pid` started, in microseconds since the Unix epoch, straight from the kernel.
+///
+/// macOS only: `proc_pidinfo(PROC_PIDTBSDINFO)`'s `pbi_start_tvsec`/`pbi_start_tvusec`. Linux
+/// reads the same fact from `/proc/<pid>/stat`, which needs no FFI and lives in `server.rs`
+/// beside `/proc/<pid>/exe` (see `server::process_start_time`, the function callers use).
+///
+/// A pid names whichever process holds it now; a pid together with its start time names one
+/// process for as long as the machine runs, because the kernel does not hand a pid to a new
+/// process while the old one still holds it. `None` means the process is gone or the call failed.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn process_start_time(pid: u32) -> Option<u64> {
+    imp::process_start_time(pid)
+}
+
+/// The parent process id of `pid`, straight from the kernel.
+///
+/// Windows only, and deliberately so: every Unix that matters here answers this question through
+/// `ps(1)` without any FFI at all, and `kagisecure-extension-ipc` already does exactly that.
+/// Windows has no `ps`, and the alternative — parsing `wmic`/PowerShell output — would put a
+/// shell on the process-ancestry path that gates browser-extension trust. This is the same
+/// reasoning that put `peer_pid` in this module rather than in a helper that shells out.
+///
+/// `None` means the snapshot failed, `pid` is gone, or the parent is the idle process.
+///
+/// # Pid reuse
+///
+/// The value is the parent recorded at *this* moment; Windows reuses pids aggressively and does
+/// not keep a zombie entry the way Unix does, so a parent that has already exited may be
+/// reported as a pid that now belongs to something else. The caller resolves that pid to an
+/// executable separately, which means the window is "the real parent exited **and** its pid was
+/// handed to a process whose image path matches a browser". The macOS `ps` path carries the
+/// identical weakness; see the `TODO(windows)` in `kagisecure_extension_ipc::peer` for the
+/// `GetProcessTimes` hardening that would close it on this platform.
+#[cfg(windows)]
+#[must_use]
+pub fn parent_pid(pid: u32) -> Option<u32> {
+    imp::parent_pid(pid)
+}
+
+/// The account `pid` runs as: the user SID in its primary token.
+///
+/// Windows only — it is the input `server::peer_is_same_user` compares there, where a named
+/// pipe carries no uid. `OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)` here, then
+/// `kagisecure_core::windows_acl::process_user_sid` (`OpenProcessToken` + `TokenUser`) on the
+/// handle, which this module keeps open for the duration so the process object cannot go away
+/// underneath the token query.
+///
+/// `None` means the process could not be opened or its token could not be read. For a process
+/// belonging to another account that is the *normal* answer — its DACL does not grant this one
+/// `PROCESS_QUERY_LIMITED_INFORMATION` — so a caller deciding "same user?" must read `None` as
+/// "no", never as "unknown, let it through".
+///
+/// # Pid reuse
+///
+/// A pid names whichever process holds it *now*. `GetNamedPipeClientProcessId` records the pid
+/// that opened the pipe; if that process has exited and its pid been handed to another process
+/// before this runs, the answer describes the newcomer. For that to admit a stranger, the
+/// stranger's connection must outlive the process that made it (a duplicated or inherited pipe
+/// handle) **and** the pid must land on a process of *this* user in the gap — and the stranger
+/// must have got past the pipe's DACL to connect at all, which is the boundary this check backs
+/// up rather than replaces.
+#[cfg(windows)]
+#[must_use]
+pub fn process_user_sid(pid: u32) -> Option<kagisecure_core::windows_acl::Sid> {
+    imp::process_user_sid(pid)
 }
 
 #[cfg(target_os = "macos")]
@@ -92,6 +179,39 @@ mod imp {
         buf.truncate(len);
         String::from_utf8(buf).ok()
     }
+
+    pub(super) fn process_start_time(pid: u32) -> Option<u64> {
+        let pid = libc::c_int::try_from(pid).ok()?;
+        // Pid 0 is the kernel; `proc_pidinfo` would describe it, and it is nobody's sidecar.
+        if pid <= 0 {
+            return None;
+        }
+        let size = libc::c_int::try_from(std::mem::size_of::<libc::proc_bsdinfo>()).ok()?;
+        // SAFETY: `libc::proc_bsdinfo` is a plain-old-data struct of integers and integer arrays;
+        // the all-zero bit pattern is a valid value for it, which is all that is required before
+        // `proc_pidinfo` overwrites it.
+        let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+        // SAFETY: `info` is live stack storage of exactly `size` bytes, and `size` is the
+        // `buffersize` passed alongside it; with `PROC_PIDTBSDINFO` the kernel writes one
+        // `struct proc_bsdinfo` (`<sys/proc_info.h>`) and returns the byte count written, or zero
+        // or less on failure, in which case `info` is not read below.
+        let written = unsafe {
+            libc::proc_pidinfo(
+                pid,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                std::ptr::addr_of_mut!(info).cast::<libc::c_void>(),
+                size,
+            )
+        };
+        // Anything short of the whole struct is a failure, not a start time.
+        if written != size {
+            return None;
+        }
+        info.pbi_start_tvsec
+            .checked_mul(1_000_000)?
+            .checked_add(info.pbi_start_tvusec)
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -130,14 +250,156 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+mod imp {
+    use interprocess::local_socket::Stream;
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+        TH32CS_SNAPPROCESS,
+    };
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+        QueryFullProcessImageNameW,
+    };
+
+    /// `interprocess` (pinned at 2.4.4) already reports a trustworthy pid here through
+    /// `Stream::peer_creds` — `GetNamedPipeClientProcessId` (ADR-0007 §3) — so this module has
+    /// nothing to add; `server.rs` falls back to that.
+    pub(super) fn peer_pid(_stream: &Stream) -> Option<u32> {
+        None
+    }
+
+    /// A `HANDLE` that is closed when it goes out of scope.
+    ///
+    /// Both functions below have early returns between opening a handle and being done with it,
+    /// and a leaked process handle in the daemon is a leak that grows once per approval prompt.
+    struct OwnedHandle(HANDLE);
+
+    impl Drop for OwnedHandle {
+        fn drop(&mut self) {
+            // SAFETY: `self.0` came from `OpenProcess`/`CreateToolhelp32Snapshot` and was
+            // checked to be neither null nor `INVALID_HANDLE_VALUE` before this type was
+            // constructed. `Drop` runs exactly once, so the handle is closed exactly once.
+            unsafe { CloseHandle(self.0) };
+        }
+    }
+
+    impl OwnedHandle {
+        /// Wrap a handle, rejecting both of the two values the Win32 API uses for failure.
+        ///
+        /// `OpenProcess` returns null on failure while `CreateToolhelp32Snapshot` returns
+        /// `INVALID_HANDLE_VALUE` (`-1`), and closing either would be a bug, so both are refused
+        /// here rather than at each call site.
+        fn new(raw: HANDLE) -> Option<Self> {
+            if raw.is_null() || raw == INVALID_HANDLE_VALUE {
+                None
+            } else {
+                Some(Self(raw))
+            }
+        }
+    }
+
+    pub(super) fn executable_path(pid: u32) -> Option<String> {
+        // `PROCESS_QUERY_LIMITED_INFORMATION` rather than `PROCESS_QUERY_INFORMATION`: it is the
+        // least this needs, and it is the right that is still granted for a process running at a
+        // higher integrity level as the same user, which `PROCESS_QUERY_INFORMATION` is not.
+        // SAFETY: a plain call with three by-value arguments; the returned handle is immediately
+        // given to `OwnedHandle`, which rejects the failure values and closes it on drop.
+        let handle =
+            OwnedHandle::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })?;
+
+        // `MAX_PATH` (260) is the wrong size for this. A system with long paths enabled can hand
+        // back up to 32767 UTF-16 code units, and the failure mode of a short buffer is
+        // `ERROR_INSUFFICIENT_BUFFER` — i.e. this function would return `None` and the peer
+        // would be reported as unverified purely for living under a deep path. One 64 KiB
+        // allocation for the length of the call is cheaper than a grow-and-retry loop and
+        // cheaper still than that bug.
+        let mut buf = vec![0_u16; 32768];
+        let mut len = u32::try_from(buf.len()).ok()?;
+        // SAFETY: `handle` is a live process handle opened with
+        // `PROCESS_QUERY_LIMITED_INFORMATION`, which is the right this call requires. `buf` is a
+        // live allocation of `buf.len()` `u16`s and `len` tells the call that size in code units
+        // up front, as the API requires; on success it is overwritten with the number of code
+        // units written, which is what is read back below. Nothing is read from `buf` when the
+        // call reports failure.
+        let ok = unsafe {
+            QueryFullProcessImageNameW(
+                handle.0,
+                PROCESS_NAME_WIN32,
+                buf.as_mut_ptr(),
+                std::ptr::addr_of_mut!(len),
+            )
+        };
+        if ok == 0 {
+            return None;
+        }
+        let len = usize::try_from(len).ok()?;
+        // A zero-length path is not a path; treating it as one would put an empty string in the
+        // approval prompt where an executable belongs.
+        if len == 0 || len > buf.len() {
+            return None;
+        }
+        String::from_utf16(&buf[..len]).ok()
+    }
+
+    pub(super) fn process_user_sid(pid: u32) -> Option<kagisecure_core::windows_acl::Sid> {
+        // The least right `OpenProcessToken(TOKEN_QUERY)` needs of the process handle, and — as
+        // in `executable_path` — one still granted on the user's own elevated processes.
+        // SAFETY: a plain call with three by-value arguments; the returned handle is immediately
+        // given to `OwnedHandle`, which rejects the failure values and closes it on drop.
+        let handle =
+            OwnedHandle::new(unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) })?;
+        // SAFETY: `handle.0` is a live process handle owned by `handle`, which is not dropped
+        // until after the borrow below has ended — the borrow does not escape this function.
+        let borrowed = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(handle.0) };
+        kagisecure_core::windows_acl::process_user_sid(borrowed).ok()
+    }
+
+    pub(super) fn parent_pid(pid: u32) -> Option<u32> {
+        // There is no `GetParentProcessId`. The documented way is a process snapshot; the
+        // undocumented one is `NtQueryInformationProcess`, which is explicitly "may be altered or
+        // unavailable in future versions" and is not worth it on a path that runs once per
+        // approval prompt.
+        // SAFETY: a plain call with two by-value arguments; the returned handle is immediately
+        // given to `OwnedHandle`, which rejects the failure values and closes it on drop.
+        let snapshot =
+            OwnedHandle::new(unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) })?;
+
+        let mut entry = PROCESSENTRY32W {
+            // Required by the API, and the one field the caller must fill in: the call fails if
+            // `dwSize` does not match the struct it was compiled against.
+            dwSize: u32::try_from(size_of::<PROCESSENTRY32W>()).ok()?,
+            ..Default::default()
+        };
+
+        // SAFETY: `snapshot` is a live `TH32CS_SNAPPROCESS` snapshot and `entry` is a live,
+        // zeroed `PROCESSENTRY32W` whose `dwSize` was set to its own size, which is what
+        // `Process32FirstW` requires before it writes to it.
+        let mut ok = unsafe { Process32FirstW(snapshot.0, std::ptr::addr_of_mut!(entry)) };
+        while ok != 0 {
+            if entry.th32ProcessID == pid {
+                let parent = entry.th32ParentProcessID;
+                // Pid 0 is the idle process, which is nobody's meaningful parent; report it the
+                // same way a missing answer is reported rather than handing a caller a pid it
+                // would then try to resolve.
+                return (parent != 0).then_some(parent);
+            }
+            // SAFETY: as for `Process32FirstW` — the snapshot is still live and `entry` still
+            // carries the `dwSize` this call checks.
+            ok = unsafe { Process32NextW(snapshot.0, std::ptr::addr_of_mut!(entry)) };
+        }
+        None
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod imp {
     use interprocess::local_socket::Stream;
 
-    /// Windows has no pid on a named pipe worth trusting more than `interprocess` already
-    /// reports (none, today). The BSDs already get their pid from `interprocess`'s own
-    /// `LOCAL_PEERCRED`/`SO_PEERCRED` support that backs `Stream::peer_creds` (ADR-0007 §3), so
-    /// this module has nothing to add there either — `server.rs` falls back to that.
+    /// The BSDs need no kernel-FFI shim here: `interprocess` (pinned at 2.4.4) already reports a
+    /// trustworthy pid through `Stream::peer_creds` — `LOCAL_PEERCRED`/`SO_PEERCRED` (ADR-0007
+    /// §3) — so this module has nothing to add there; `server.rs` falls back to that.
     pub(super) fn peer_pid(_stream: &Stream) -> Option<u32> {
         None
     }
@@ -156,5 +418,24 @@ mod tests {
         // can be wrapped directly without going through a listener/connect round trip.
         let stream = Stream::UdSocket(a.into());
         assert_eq!(peer_pid(&stream), Some(std::process::id()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn this_process_has_a_start_time_in_the_past_and_it_does_not_change() {
+        let first = process_start_time(std::process::id()).expect("a start time");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_micros();
+        assert!(u128::from(first) <= now, "started {first}, now {now}");
+        assert_eq!(process_start_time(std::process::id()), Some(first));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_pid_that_names_no_process_has_no_start_time() {
+        assert_eq!(process_start_time(0), None);
+        assert_eq!(process_start_time(u32::MAX), None);
     }
 }

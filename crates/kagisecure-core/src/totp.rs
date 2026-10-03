@@ -27,6 +27,8 @@ use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
 use sha2::{Sha256, Sha512};
 
+use zeroize::Zeroizing;
+
 use crate::error::{Error, Result};
 use crate::model::Secret;
 
@@ -265,7 +267,11 @@ impl Totp {
     /// insensitively, the label may or may not carry an `Issuer:` prefix, a separate `issuer=`
     /// parameter wins over the label prefix when both are present (as the Key Uri Format
     /// specifies), unknown parameters are ignored, and the secret goes through the same forgiving
-    /// [`base32_decode`] a hand-typed seed does.
+    /// Base32 decoding a hand-typed seed does ([`base32_decode`]).
+    ///
+    /// The seed is decoded straight from the URI into the buffer the [`Secret`] then owns: the
+    /// percent-escapes and the Base32 are undone byte by byte, with no intermediate copy of the
+    /// seed in a buffer nobody zeroizes.
     ///
     /// # Errors
     ///
@@ -273,66 +279,94 @@ impl Totp {
     /// `secret` parameter, or any parameter is out of range. The message never quotes the URI:
     /// the URI contains the seed.
     pub fn parse_uri(uri: &str) -> Result<Self> {
-        let rest = uri
-            .get(..10)
-            .filter(|prefix| prefix.eq_ignore_ascii_case("otpauth://"))
-            .and_then(|_| uri.get(10..))
-            .ok_or(Error::Totp("not an otpauth:// URI"))?;
-
-        let (path, query) = match rest.split_once('?') {
-            Some((path, query)) => (path, query),
-            None => (rest, ""),
-        };
-        let (kind, label) = match path.split_once('/') {
-            Some((kind, label)) => (kind, label),
-            None => (path, ""),
-        };
-        if !kind.eq_ignore_ascii_case("totp") {
-            return Err(Error::Totp(
-                "only otpauth://totp/ URIs are supported; counter-based HOTP is not",
-            ));
-        }
-
-        let mut secret_b32: Option<String> = None;
-        let mut params = TotpParams::default();
-        for pair in query.split('&').filter(|p| !p.is_empty()) {
-            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
-            let value = percent_decode(value);
-            match key.to_ascii_lowercase().as_str() {
-                "secret" => secret_b32 = Some(value),
-                "issuer" => params.issuer = non_empty(value),
-                "algorithm" => params.algorithm = value.parse()?,
-                "digits" => {
-                    params.digits = value
-                        .trim()
-                        .parse()
-                        .map_err(|_| Error::Totp("digits must be a number"))?;
-                }
-                "period" => {
-                    params.period = value
-                        .trim()
-                        .parse()
-                        .map_err(|_| Error::Totp("period must be a number of seconds"))?;
-                }
-                _ => {}
-            }
-        }
-
-        // The label is `Issuer:Account`, `Issuer%3AAccount`, or just `Account`.
-        let label = percent_decode(label.trim_start_matches('/'));
-        match label.split_once(':') {
-            Some((issuer, account)) => {
-                if params.issuer.is_none() {
-                    params.issuer = non_empty(issuer.trim().to_owned());
-                }
-                params.account = non_empty(account.trim().to_owned());
-            }
-            None => params.account = non_empty(label.trim().to_owned()),
-        }
-
-        let secret = secret_b32.ok_or(Error::Totp("the URI has no secret= parameter"))?;
-        Self::from_base32(&secret, params)
+        let (params, secret) = split_uri(uri)?;
+        let secret = secret.ok_or(Error::Totp("the URI has no secret= parameter"))?;
+        // Sized for the longest seed `secret` can decode to, so it never reallocates — a
+        // reallocation would leave the bytes decoded so far behind in the old buffer.
+        let mut seed = Zeroizing::new(Vec::with_capacity(secret.len() * 5 / 8 + 1));
+        base32_bits(PercentBytes::new(secret), |byte| seed.push(byte))?;
+        Self::new(Secret::new(std::mem::take(&mut *seed)), params)
     }
+
+    /// Whether `uri` is an `otpauth://totp/...` URI [`Self::parse_uri`] would accept, decided
+    /// without decoding the seed into memory at all.
+    ///
+    /// For a caller that only needs to know whether a field *could* produce a code — before any
+    /// approval, say — and so must not leave a copy of the seed behind for asking. It reads the
+    /// seed where it lies, in `uri`, one byte at a time, and keeps none of it: the only buffers
+    /// it allocates hold the URI's metadata (issuer and account), never the secret parameter.
+    ///
+    /// # Errors
+    ///
+    /// Exactly the errors [`Self::parse_uri`] returns for the same input.
+    pub fn check_uri(uri: &str) -> Result<()> {
+        let (params, secret) = split_uri(uri)?;
+        let secret = secret.ok_or(Error::Totp("the URI has no secret= parameter"))?;
+        base32_bits(PercentBytes::new(secret), |_| {})?;
+        params.validate()
+    }
+}
+
+/// The metadata of an `otpauth://totp/...` URI, and its `secret` parameter exactly as it appears
+/// in the URI — still percent-encoded, borrowed, never copied.
+fn split_uri(uri: &str) -> Result<(TotpParams, Option<&str>)> {
+    let rest = uri
+        .get(..10)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("otpauth://"))
+        .and_then(|_| uri.get(10..))
+        .ok_or(Error::Totp("not an otpauth:// URI"))?;
+
+    let (path, query) = match rest.split_once('?') {
+        Some((path, query)) => (path, query),
+        None => (rest, ""),
+    };
+    let (kind, label) = match path.split_once('/') {
+        Some((kind, label)) => (kind, label),
+        None => (path, ""),
+    };
+    if !kind.eq_ignore_ascii_case("totp") {
+        return Err(Error::Totp(
+            "only otpauth://totp/ URIs are supported; counter-based HOTP is not",
+        ));
+    }
+
+    let mut secret: Option<&str> = None;
+    let mut params = TotpParams::default();
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        match key.to_ascii_lowercase().as_str() {
+            // Left encoded: decoding it here would be a copy of the seed.
+            "secret" => secret = Some(value),
+            "issuer" => params.issuer = non_empty(percent_decode(value)),
+            "algorithm" => params.algorithm = percent_decode(value).parse()?,
+            "digits" => {
+                params.digits = percent_decode(value)
+                    .trim()
+                    .parse()
+                    .map_err(|_| Error::Totp("digits must be a number"))?;
+            }
+            "period" => {
+                params.period = percent_decode(value)
+                    .trim()
+                    .parse()
+                    .map_err(|_| Error::Totp("period must be a number of seconds"))?;
+            }
+            _ => {}
+        }
+    }
+
+    // The label is `Issuer:Account`, `Issuer%3AAccount`, or just `Account`.
+    let label = percent_decode(label.trim_start_matches('/'));
+    match label.split_once(':') {
+        Some((issuer, account)) => {
+            if params.issuer.is_none() {
+                params.issuer = non_empty(issuer.trim().to_owned());
+            }
+            params.account = non_empty(account.trim().to_owned());
+        }
+        None => params.account = non_empty(label.trim().to_owned()),
+    }
+    Ok((params, secret))
 }
 
 fn non_empty(s: String) -> Option<String> {
@@ -367,11 +401,26 @@ const BASE32_ALPHABET: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 /// [`Error::Totp`] for a character outside the alphabet or a length that cannot be a whole number
 /// of bytes. The message never contains the input.
 pub fn base32_decode(input: &str) -> Result<Vec<u8>> {
+    // Sized so it never reallocates, and zeroized if the input turns out not to decode: either
+    // would otherwise leave part of a seed behind in a freed buffer.
+    let mut out = Zeroizing::new(Vec::with_capacity(input.len() * 5 / 8 + 1));
+    base32_bits(input.bytes(), |byte| out.push(byte))?;
+    Ok(std::mem::take(&mut *out))
+}
+
+/// The Base32 decoder itself, over any byte source, handing each decoded byte to `emit` as soon
+/// as it is complete — so a caller decides where the bytes go, or that they go nowhere at all
+/// ([`Totp::check_uri`]).
+///
+/// The rules [`base32_decode`] documents: case ignored, whitespace, `-` and `=` skipped; an error
+/// for a character outside the alphabet, for no bytes at all, and for left-over bits that are not
+/// zero padding. The error never contains the input.
+fn base32_bits(input: impl IntoIterator<Item = u8>, mut emit: impl FnMut(u8)) -> Result<()> {
     let mut bits = 0u32;
     let mut width = 0u32;
-    let mut out = Vec::with_capacity(input.len() * 5 / 8 + 1);
+    let mut emitted = false;
 
-    for byte in input.bytes() {
+    for byte in input {
         if byte.is_ascii_whitespace() || byte == b'-' || byte == b'=' {
             continue;
         }
@@ -386,18 +435,21 @@ pub fn base32_decode(input: &str) -> Result<Vec<u8>> {
         width += 5;
         if width >= 8 {
             width -= 8;
-            out.push(u8::try_from((bits >> width) & 0xff).unwrap_or(0));
+            emit(u8::try_from((bits >> width) & 0xff).unwrap_or(0));
+            emitted = true;
         }
     }
+    // Only the bits not yet emitted are kept from here on.
+    bits &= (1 << width) - 1;
 
-    if out.is_empty() {
+    if !emitted {
         return Err(Error::Totp("the secret is empty"));
     }
     // Left-over bits must be zero padding, not a truncated byte.
-    if width > 0 && (bits & ((1 << width) - 1)) != 0 {
+    if width > 0 && bits != 0 {
         return Err(Error::Totp("the secret is truncated"));
     }
-    Ok(out)
+    Ok(())
 }
 
 /// Encode bytes as un-padded upper-case Base32.
@@ -442,41 +494,92 @@ fn percent_encode(s: &str) -> String {
     out
 }
 
+/// Decode two ASCII hex digits, or `None` if either byte is not one.
+fn hex_pair(hi: u8, lo: u8) -> Option<u8> {
+    let digit = |b: u8| match b {
+        b'0'..=b'9' => Some(b - b'0'),
+        b'a'..=b'f' => Some(b - b'a' + 10),
+        b'A'..=b'F' => Some(b - b'A' + 10),
+        _ => None,
+    };
+    Some(digit(hi)? * 16 + digit(lo)?)
+}
+
 /// Decode percent escapes, and `+` as a space. Invalid escapes are left verbatim rather than
 /// rejected: a label is metadata, and refusing to import a whole seed over a stray `%` would be
 /// the wrong trade.
+///
+/// For metadata only. The secret parameter goes through [`PercentBytes`] instead, which makes no
+/// copy of it.
 fn percent_decode(s: &str) -> String {
-    let bytes = s.as_bytes();
-    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'%' if i + 2 < bytes.len() => match u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                Ok(byte) => {
-                    out.push(byte);
-                    i += 3;
+    let out: Vec<u8> = PercentBytes::new(s).collect();
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// The bytes [`percent_decode`] would produce from a string, one at a time and without a buffer.
+///
+/// The window of an escape is taken from the *bytes*, never from `&s[..]`: a percent escape can
+/// straddle a multi-byte UTF-8 character, and slicing the `str` there would panic.
+struct PercentBytes<'a> {
+    bytes: &'a [u8],
+    at: usize,
+}
+
+impl<'a> PercentBytes<'a> {
+    fn new(s: &'a str) -> Self {
+        Self {
+            bytes: s.as_bytes(),
+            at: 0,
+        }
+    }
+}
+
+impl Iterator for PercentBytes<'_> {
+    type Item = u8;
+
+    fn next(&mut self) -> Option<u8> {
+        let i = self.at;
+        let byte = *self.bytes.get(i)?;
+        match byte {
+            b'%' if i + 2 < self.bytes.len() => {
+                match hex_pair(self.bytes[i + 1], self.bytes[i + 2]) {
+                    Some(decoded) => {
+                        self.at += 3;
+                        Some(decoded)
+                    }
+                    None => {
+                        self.at += 1;
+                        Some(b'%')
+                    }
                 }
-                Err(_) => {
-                    out.push(b'%');
-                    i += 1;
-                }
-            },
+            }
             b'+' => {
-                out.push(b' ');
-                i += 1;
+                self.at += 1;
+                Some(b' ')
             }
             other => {
-                out.push(other);
-                i += 1;
+                self.at += 1;
+                Some(other)
             }
         }
     }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_percent_escape_straddling_a_utf8_character_does_not_panic() {
+        // `%€` — the escape window falls inside a three-byte character.
+        assert_eq!(percent_decode("%\u{20ac}"), "%\u{20ac}");
+        assert_eq!(percent_decode("a%\u{20ac}b"), "a%\u{20ac}b");
+        assert!(
+            Totp::parse_uri("otpauth://totp/a?secret=JBSWY3DPEHPK3PXP&issuer=%\u{20ac}").is_ok()
+        );
+        // A well-formed escape still decodes.
+        assert_eq!(percent_decode("a%3Ab"), "a:b");
+    }
 
     fn code(totp: &Totp, at: u64) -> String {
         totp.code_at(at)

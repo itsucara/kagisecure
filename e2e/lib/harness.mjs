@@ -42,18 +42,53 @@ export function vaultPath(name) {
   return path.join(runDir(), `${name}.kagivault`);
 }
 
-/** A debug binary from `target/debug`. */
+/**
+ * `true` on Windows. Named once, here, because it changes three unrelated things below: the
+ * executable suffix `cargo build` produces, the shape a listener's address has to be in
+ * (`kagisecure_ipc::Endpoint::parse` refuses anything that isn't `\\HOST\pipe\NAME` on this
+ * platform — see `docs/windows-port.md` §1), and what a temp directory is called.
+ */
+const WINDOWS = process.platform === "win32";
+
+/** A debug binary from `target/debug`, `.exe`-suffixed on Windows. */
 export function binary(name) {
-  return path.join(REPO_ROOT, "target", "debug", name);
+  return path.join(REPO_ROOT, "target", "debug", WINDOWS ? `${name}.exe` : name);
 }
 
-/** A `cargo --example` binary from `target/debug/examples`. */
+/** A `cargo --example` binary from `target/debug/examples`, `.exe`-suffixed on Windows. */
 export function exampleBinary(name) {
-  return path.join(REPO_ROOT, "target", "debug", "examples", name);
+  return path.join(REPO_ROOT, "target", "debug", "examples", WINDOWS ? `${name}.exe` : name);
 }
 
 export const KAGISECURE = binary("kagisecure");
 export const SIDECAR = binary("kagisecure-mcp");
+
+/**
+ * The cheapest Argon2id parameters `kagisecure-core` will accept from a file today.
+ *
+ * `crates/kagisecure-core/src/crypto/kdf.rs`'s `MIN_M_KIB` (64) and `MIN_T` (1) are the *open*
+ * path's floor — a file that declares less is refused before decryption is even attempted, so a
+ * scratch vault cannot be created any cheaper than this and still open. Every suite that creates
+ * its own scratch vaults uses this constant instead of its own literal, so the day that floor
+ * moves, it only has to move here.
+ */
+export const CHEAP_KDF = ["--kdf-m-kib", "64", "--kdf-t", "1"];
+
+/**
+ * An address for `kagisecure daemon --socket <addr>` / `KAGISECURE_SOCKET` to listen on: a path
+ * to a `.sock` file under the run directory everywhere but Windows, where it has to be a named
+ * pipe instead — a Unix-socket-shaped path is not a "not a named pipe path" error away from
+ * working, it is refused outright (`docs/windows-port.md` §1's `Endpoint::parse`). `name` should
+ * be unique per listener within a run; the pid keeps two suites' runs from colliding on the same
+ * pipe namespace, which — unlike a directory under `runDir()` — is global to the session rather
+ * than scoped to a run directory.
+ */
+export function socketPath(name) {
+  if (WINDOWS) {
+    return `\\\\.\\pipe\\kse2e-${process.pid}-${name}`;
+  }
+  return path.join(runDir(), `${name}.sock`);
+}
 
 /**
  * Run the CLI once.
@@ -141,7 +176,17 @@ export async function startDaemon({ vault, socket, password, args = [], logPath 
     await waitFor(
       () => {
         if (exited) throw new Error(`the daemon exited before binding its socket:\n${output}`);
-        return fs.existsSync(socket);
+        // A Unix socket is a filesystem entry `existsSync` reliably sees. A Windows named pipe
+        // lives in its own object-manager namespace rather than a directory `fs` walks, and
+        // whether `existsSync` resolves `\\.\pipe\NAME` before it has a listener is not something
+        // this harness has verified on Windows (no Windows machine with Node has run it yet) — so
+        // this treats an unexpected stat failure as "not ready" rather than letting it throw and
+        // abort the wait early.
+        try {
+          return fs.existsSync(socket);
+        } catch {
+          return false;
+        }
       },
       { what: `the daemon socket at ${socket}` },
     );

@@ -4,6 +4,8 @@
 //! `--kdf-m-kib 64 --kdf-t 1` so the suite is not dominated by Argon2.
 
 use assert_cmd::Command;
+use kagisecure_core::Vault;
+use kagisecure_core::proto::Outcome;
 use predicates::str::contains;
 use std::path::{Path, PathBuf};
 
@@ -244,6 +246,165 @@ fn show_json_stays_metadata_only_even_with_reveal() {
         !stdout.contains(TOKEN),
         "--json must never carry a value, even with --reveal"
     );
+}
+
+/// ADR-0038's CLI decision: notes are secret like any other field, so `item show` prints them only
+/// with `--reveal` — and, unlike a wrong or missing password, every `--reveal` is audited
+/// (best-effort, actor `cli`, tool `reveal_field`) rather than silently trusted just because the
+/// CLI already asked for the master password to open the vault at all.
+///
+/// The note itself comes in through `--note --value-stdin`, never `--note TEXT` on argv — see
+/// `a_note_value_cannot_be_given_on_the_command_line` for the flag that used to allow that.
+#[test]
+fn show_hides_notes_by_default_and_reveals_and_audits_on_request() {
+    let fixture = Fixture::new();
+    fixture.init();
+    fixture
+        .cmd()
+        .args([
+            "item",
+            "add",
+            "--title",
+            "Acme staging",
+            "--note",
+            "--value-stdin",
+        ])
+        .write_stdin(format!("{PASSWORD}\na secret note about staging\n"))
+        .assert()
+        .success();
+
+    let hidden = fixture
+        .cmd()
+        .args(["item", "show", "Acme staging"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success()
+        .stdout(contains("(hidden, use --reveal)"));
+    let stdout = String::from_utf8(hidden.get_output().stdout.clone()).unwrap();
+    assert!(!stdout.contains("a secret note about staging"));
+
+    fixture
+        .cmd()
+        .args(["item", "show", "Acme staging", "--reveal"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success()
+        .stdout(contains("a secret note about staging"));
+
+    let vault = Vault::open_with_password(&fixture.vault, PASSWORD.as_bytes()).unwrap();
+    let entry = vault
+        .audit_entries()
+        .iter()
+        .find(|e| e.tool == "reveal_field")
+        .expect("the reveal should have been audited");
+    assert_eq!(entry.actor, "cli");
+    assert_eq!(entry.outcome, Outcome::Allowed);
+    assert!(
+        entry.variables.contains(&"notes".to_owned()),
+        "{:?}",
+        entry.variables
+    );
+    assert_eq!(entry.detail.as_deref(), Some("MASTER_PASSWORD"));
+}
+
+/// `--note` used to take the note's text directly (`--note "some text"`), which put a secret value
+/// in argv, `ps` output and shell history — exactly what `--secret` and `--totp` never do. It is
+/// now a bare switch, so that old invocation is refused by clap itself before the vault is even
+/// opened: a usage error (exit 2), not a silently-accepted note.
+#[test]
+fn a_note_value_cannot_be_given_on_the_command_line() {
+    let fixture = Fixture::new();
+    fixture.init();
+
+    fixture
+        .cmd()
+        .args([
+            "item",
+            "add",
+            "--title",
+            "Old style",
+            "--note",
+            "a note typed straight on the command line",
+        ])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .code(2)
+        .stderr(contains("unexpected argument"));
+
+    // Nothing was written: the item from the refused invocation above does not exist.
+    fixture
+        .cmd()
+        .args(["item", "show", "Old style"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .code(6)
+        .stderr(contains("no item matches"));
+}
+
+/// The multi-line path `--note` and `--value-stdin` cannot offer, since both stop at the first
+/// line break: `--note-file` reads the file's bytes verbatim, trimming only one trailing newline.
+#[test]
+fn note_file_carries_a_note_with_more_than_one_line() {
+    let fixture = Fixture::new();
+    fixture.init();
+
+    let note_path = fixture.vault.with_file_name("note.txt");
+    std::fs::write(&note_path, "line one\nline two\nline three\n").unwrap();
+
+    fixture
+        .cmd()
+        .args([
+            "item",
+            "add",
+            "--title",
+            "Multiline",
+            "--note-file",
+            note_path.to_str().unwrap(),
+        ])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success();
+
+    let assertion = fixture
+        .cmd()
+        .args(["item", "show", "Multiline", "--reveal"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assertion.get_output().stdout.clone()).unwrap();
+    assert!(
+        stdout.contains("line one\nline two\nline three"),
+        "the note's embedded newlines should survive verbatim: {stdout}"
+    );
+    assert!(
+        !stdout.contains("line three\n\n"),
+        "the file's one trailing newline should have been trimmed, not stored as a blank line: \
+         {stdout}"
+    );
+}
+
+/// `--note` and `--note-file` are two different sources for the same one note; passing both is a
+/// usage mistake, not a "last one wins" or "concatenate them" situation.
+#[test]
+fn note_and_note_file_are_mutually_exclusive() {
+    let fixture = Fixture::new();
+    fixture.init();
+
+    fixture
+        .cmd()
+        .args([
+            "item",
+            "add",
+            "--title",
+            "Both",
+            "--note",
+            "--note-file",
+            "/nonexistent/path/does/not/matter",
+        ])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .code(2)
+        .stderr(contains("cannot be used with"));
 }
 
 #[test]
@@ -542,7 +703,9 @@ fn help_documents_the_exit_codes() {
 #[test]
 fn a_secret_value_cannot_be_given_on_the_command_line() {
     // `--secret` takes a label. There is no `--secret-value`; if one is ever added by accident,
-    // this test fails and asks why.
+    // this test fails and asks why. The same goes for `--note`, which used to take the note's text
+    // directly (`--note <TEXT>`) and is now a bare switch — if it is ever given a value again by
+    // accident, `--note <TEXT>` would reappear in `--help` and this test would catch it.
     let output = Command::cargo_bin("kagisecure")
         .unwrap()
         .args(["item", "add", "--help"])
@@ -552,6 +715,9 @@ fn a_secret_value_cannot_be_given_on_the_command_line() {
     assert!(help.contains("--secret <LABEL>"));
     assert!(!help.contains("--secret-value"));
     assert!(help.contains("--value-stdin"));
+    assert!(!help.contains("--note <TEXT>"));
+    assert!(!help.contains("--note <NOTE>"));
+    assert!(help.contains("--note-file <PATH>"));
 }
 
 /// The vault is written atomically, so a save leaves no stray files behind.
@@ -875,4 +1041,265 @@ fn a_file_that_is_not_a_vault_is_still_an_ordinary_error() {
         .assert()
         .code(1)
         .stderr(contains("not a kagisecure vault"));
+}
+
+/// `env agent-access` says what it changed only once the change is on disk. A later target in
+/// the same command that does not exist rolls the whole transaction back — and nothing may have
+/// been printed claiming the earlier one was allowed.
+#[test]
+fn agent_access_reports_nothing_that_did_not_commit() {
+    let fx = Fixture::new();
+    fx.init();
+    fx.add_sample();
+
+    let out = fx
+        .cmd()
+        .args([
+            "env",
+            "agent-access",
+            "--allow",
+            "--item",
+            "Acme staging",
+            "--environment",
+            "no-such-environment",
+        ])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .failure();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert!(
+        !stdout.contains("agent access allowed"),
+        "claimed a change that was rolled back: {stdout}"
+    );
+    let vault = Vault::open_with_password(&fx.vault, PASSWORD.as_bytes()).unwrap();
+    assert!(!vault.find_item("Acme staging").unwrap().agent_visible);
+
+    // The same change on its own commits, and then says so, naming the item by id.
+    let out = fx
+        .cmd()
+        .args(["env", "agent-access", "--allow", "--item", "Acme staging"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    let vault = Vault::open_with_password(&fx.vault, PASSWORD.as_bytes()).unwrap();
+    let item = vault.find_item("Acme staging").unwrap();
+    assert!(item.agent_visible);
+    assert!(
+        stdout.contains(&format!("item {}: agent access allowed", item.id)),
+        "{stdout}"
+    );
+}
+
+/// `env agent-access --item --field` toggles one field's own agent-visibility override, leaving
+/// the item's and every other field's alone — the CLI's route to the state
+/// `docs/mcp-server.md` §2.6 requires before an agent's `add_variables` may `bind_to` it, which
+/// until this was added only the app's `VaultSession::set_field_agent_visible` could produce.
+#[test]
+fn agent_access_can_target_one_field() {
+    let fx = Fixture::new();
+    fx.init();
+    fx.add_sample();
+
+    {
+        let vault = Vault::open_with_password(&fx.vault, PASSWORD.as_bytes()).unwrap();
+        let item = vault.find_item("Acme staging").unwrap();
+        let token_field = item.fields.iter().find(|f| f.label == "token").unwrap();
+        assert!(!token_field.agent_visible);
+    }
+
+    let out = fx
+        .cmd()
+        .args([
+            "env",
+            "agent-access",
+            "--allow",
+            "--item",
+            "Acme staging",
+            "--field",
+            "token",
+        ])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+
+    {
+        let vault = Vault::open_with_password(&fx.vault, PASSWORD.as_bytes()).unwrap();
+        let item = vault.find_item("Acme staging").unwrap();
+        let token_field = item.fields.iter().find(|f| f.label == "token").unwrap();
+        let username_field = item.fields.iter().find(|f| f.label == "username").unwrap();
+        assert!(token_field.agent_visible, "the named field is now shared");
+        assert!(
+            !item.agent_visible,
+            "--field must not also grant the item, which is a separate, broader decision"
+        );
+        assert!(
+            !username_field.agent_visible,
+            "an unrelated field on the same item is untouched"
+        );
+        assert!(
+            stdout.contains(&format!("item {} field {}", item.id, token_field.id)),
+            "{stdout}"
+        );
+    }
+
+    // Revoking the item's own visibility clears every field's override with it — the same
+    // cascade `VaultSession::set_agent_visible` performs — so a later re-share never silently
+    // brings back a per-field grant the user forgot about.
+    fx.cmd()
+        .args(["env", "agent-access", "--allow", "--item", "Acme staging"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success();
+    fx.cmd()
+        .args(["env", "agent-access", "--deny", "--item", "Acme staging"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success();
+    let vault = Vault::open_with_password(&fx.vault, PASSWORD.as_bytes()).unwrap();
+    let item = vault.find_item("Acme staging").unwrap();
+    let token_field = item.fields.iter().find(|f| f.label == "token").unwrap();
+    assert!(
+        !token_field.agent_visible,
+        "denying the item cascades to clear its fields' overrides too"
+    );
+}
+
+/// `--field` without `--item` is a usage error, not a silent no-op: a field is meaningless
+/// without knowing which item it belongs to.
+#[test]
+fn agent_access_field_without_item_is_a_usage_error() {
+    let fx = Fixture::new();
+    fx.init();
+    fx.add_sample();
+
+    fx.cmd()
+        .args(["env", "agent-access", "--allow", "--field", "token"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .code(2);
+}
+
+/// Ctrl-C, or closing the terminal, reaches the child of `kagisecure run` — the terminal signals
+/// its foreground process *group*, and the child has to be in it.
+///
+/// A regression put every injected child in a process group of its own (the MCP agent's reason
+/// for that — ending a whole group on lock — does not apply to a terminal the user is watching),
+/// so a `SIGINT` from the terminal ended `kagisecure run` and left the child running, detached,
+/// with the secret in its environment. This drives the binary the way a shell does — in a job of
+/// its own, then signalled as a group — and checks the child dies with it.
+#[cfg(unix)]
+#[test]
+fn a_terminal_interrupt_reaches_the_child_of_run() {
+    use std::io::Write;
+    use std::os::unix::process::CommandExt;
+
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    for signal in ["INT", "HUP"] {
+        let fixture = Fixture::new();
+        fixture.init();
+        fixture.add_sample();
+        let pid_file = fixture._dir.path().join("child.pid");
+
+        let mut cli = std::process::Command::new(assert_cmd::cargo::cargo_bin!("kagisecure"));
+        cli.arg("--vault")
+            .arg(&fixture.vault)
+            .arg("--password-stdin")
+            .env_remove("KAGISECURE_VAULT")
+            .args([
+                "run",
+                "--env",
+                "TOKEN=Acme staging/token",
+                "--",
+                "sh",
+                "-c",
+                &format!("echo $$ > {}; exec sleep 30", pid_file.display()),
+            ])
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            // What a job-control shell does for a foreground job: a group of its own, which the
+            // terminal then signals as a whole.
+            .process_group(0);
+        let mut cli = cli.spawn().expect("spawn kagisecure");
+        cli.stdin
+            .take()
+            .expect("stdin")
+            .write_all(format!("{PASSWORD}\n").as_bytes())
+            .expect("password");
+
+        let started = std::time::Instant::now();
+        let child_pid = loop {
+            if let Ok(text) = std::fs::read_to_string(&pid_file)
+                && !text.trim().is_empty()
+            {
+                break text.trim().to_owned();
+            }
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(20),
+                "the child never started"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        };
+
+        // The terminal's Ctrl-C (or hang-up): the signal goes to the foreground job's group.
+        let group = format!("-{}", cli.id());
+        std::process::Command::new("kill")
+            .args([&format!("-{signal}"), "--", &group])
+            .status()
+            .expect("kill");
+
+        let started = std::time::Instant::now();
+        while alive(&child_pid) {
+            if started.elapsed() > std::time::Duration::from_secs(10) {
+                // Do not leave the child behind for the rest of the suite.
+                let _ = std::process::Command::new("kill")
+                    .args(["-KILL", &child_pid])
+                    .status();
+                panic!("SIG{signal} to the terminal's job did not reach the child of `run`");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = cli.wait();
+    }
+}
+
+/// `env add-var` refuses a name that is not an identifier, as a usage error, before it asks for
+/// the password: the name would otherwise be written verbatim as a `.env` key by `env write`,
+/// where a newline or `=` becomes a line of its own.
+#[test]
+fn env_add_var_refuses_a_name_that_is_not_an_identifier() {
+    let fixture = Fixture::new();
+    fixture.init();
+    fixture
+        .cmd()
+        .args(["env", "create", "prod"])
+        .write_stdin(format!("{PASSWORD}\n"))
+        .assert()
+        .success();
+    for bad in ["A=B", "OK\nPATH=/tmp/evil", "1ST", "DASH-ED"] {
+        fixture
+            .cmd()
+            .args([
+                "env",
+                "add-var",
+                "--environment",
+                "prod",
+                "--name",
+                bad,
+                "--literal",
+            ])
+            .write_stdin(format!("{PASSWORD}\nvalue\n"))
+            .assert()
+            .code(2)
+            .stderr(contains("not a usable variable name"));
+    }
 }

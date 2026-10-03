@@ -24,12 +24,18 @@ pub const EXTENSION_SOCKET_FILE: &str = "extension.sock";
 /// Derived from the agent endpoint so the two always share a directory: on macOS,
 /// `~/Library/Application Support/kagisecure/run/extension.sock` next to `daemon.sock`.
 ///
+/// The override means what `KAGISECURE_SOCKET` means, through the same
+/// [`Endpoint::parse`]: a socket path on Unix, a named pipe name on Windows. Two variables that
+/// name the same kind of thing must not be read two different ways.
+///
 /// # Errors
 ///
-/// [`EndpointError::NoDataDir`] if there is no home directory to put it in.
+/// [`EndpointError::NoDataDir`] if there is no home directory to put it in, or
+/// [`EndpointError::Unsupported`] if [`EXTENSION_SOCKET_ENV`] names something this platform
+/// cannot listen on.
 pub fn extension_endpoint() -> Result<Endpoint, EndpointError> {
     if let Some(explicit) = std::env::var_os(EXTENSION_SOCKET_ENV) {
-        return Ok(Endpoint::Path(PathBuf::from(explicit)));
+        return Endpoint::parse(&explicit);
     }
     let agent = Endpoint::discover()?;
     match agent.path() {
@@ -96,6 +102,12 @@ pub fn app_group_container(team_id: &str) -> Option<PathBuf> {
 /// has none, cannot carry the App Group entitlement, and therefore has no Safari extension to
 /// serve. Returning `None` is what lets the setup screen say that in words instead of offering a
 /// path nothing will ever connect to.
+///
+/// Unlike [`EXTENSION_SOCKET_ENV`], this override is still read as a path rather than through
+/// [`Endpoint::parse`]: a Safari app extension and an App Group container exist only on macOS,
+/// so there is no second platform for the value to mean something else on. On a platform with no
+/// filesystem sockets a path here fails at `bind`, and [`Endpoint::name`] makes that failure say
+/// which value was wrong and why — the caller shows it as the reason Safari is not being served.
 #[must_use]
 pub fn safari_endpoint(team_id: Option<&str>) -> Option<Endpoint> {
     if let Some(explicit) = std::env::var_os(SAFARI_SOCKET_ENV) {
@@ -151,11 +163,25 @@ mod tests {
     #[test]
     #[ignore = "run by the parent test above, with the environment variable set"]
     fn the_environment_override_is_taken_verbatim_inner() {
-        let endpoint = extension_endpoint().expect("endpoint");
-        assert_eq!(
-            endpoint.path().unwrap(),
-            std::path::Path::new("/tmp/override-extension.sock")
-        );
+        // A Unix path is what the parent sets, because that is what the override means on Unix.
+        // On Windows the same string is not an endpoint at all — there are no filesystem sockets
+        // — and the contract is that it is refused with a sentence naming the value, rather than
+        // accepted and then unbindable.
+        #[cfg(not(windows))]
+        {
+            let endpoint = extension_endpoint().expect("endpoint");
+            assert_eq!(
+                endpoint.path().unwrap(),
+                std::path::Path::new("/tmp/override-extension.sock")
+            );
+        }
+        #[cfg(windows)]
+        {
+            let error = extension_endpoint().expect_err("a path is not a Windows endpoint");
+            let text = error.to_string();
+            assert!(text.contains("/tmp/override-extension.sock"), "{text}");
+            assert!(text.contains("named pipe"), "{text}");
+        }
     }
 
     #[test]
@@ -182,7 +208,13 @@ mod tests {
         let text = path.to_string_lossy();
         assert!(text.contains("Group Containers"), "{text}");
         assert!(text.contains("4CZNJKU58K.com.kagisecure"), "{text}");
-        assert!(text.ends_with("run/safari.sock"), "{text}");
+        // Compared by path component, not by a `/`-joined string literal, so this holds
+        // regardless of the platform's separator.
+        assert!(
+            path.ends_with(std::path::Path::new("run").join("safari.sock")),
+            "{}",
+            path.display()
+        );
     }
 
     #[test]

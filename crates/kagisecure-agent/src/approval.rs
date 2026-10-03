@@ -24,7 +24,8 @@ use std::collections::VecDeque;
 use std::sync::{Condvar, Mutex};
 use std::time::Duration;
 
-use kagisecure_ipc::protocol::ErrorCode;
+use kagisecure_extension_ipc::origin::AgentOriginRendering;
+use kagisecure_ipc::protocol::{AgentFillField, ErrorCode};
 use kagisecure_ipc::server::PeerIdentity;
 
 /// How long an unanswered approval waits before it counts as `APPROVAL_TIMEOUT`
@@ -53,17 +54,30 @@ pub enum ApprovalKind {
     /// of variable names, and a fill lease is scoped to an origin and an item, which are not the
     /// same shape and must not be able to satisfy each other (ADR-0020).
     FillCredential,
+    /// An **agent** asks for a login to be typed into a browser tab (`request_fill`,
+    /// [ADR-0036](../../../docs/decisions/0036-agent-requested-browser-fill.md)).
+    ///
+    /// The second browser kind, and deliberately not a flavour of [`Self::FillCredential`]: the
+    /// person who caused this one is not at the keyboard, so nothing the human path remembers may
+    /// excuse it and nothing it grants may be remembered. It mints **nothing** — no fill lease,
+    /// no env lease, ever — and `outcome_for` answers it as a single full review whatever the UI
+    /// sends: never presence-only, never "for this session". A grant of it and a grant of a
+    /// `FillCredential` never satisfy each other (`crossing::Approved::from_grant` takes the kind
+    /// it expects). What the sheet shows beyond the common fields is
+    /// [`ApprovalRequest::agent_fill`].
+    AgentFill,
 }
 
 impl ApprovalKind {
-    /// Whether granting this mints a lease.
+    /// Whether granting this mints a lease. Never for [`Self::AgentFill`].
     #[must_use]
     pub fn mints_lease(self) -> bool {
         matches!(self, Self::WriteEnvFile | Self::RunWithEnv)
     }
 
     /// Whether granting this mints a **fill** lease, which is a different store with different
-    /// scoping rules — see the variant documentation.
+    /// scoping rules — see the variant documentation. Never for [`Self::AgentFill`]: an agent's
+    /// approval must not make the human's next click silent (ADR-0036 §6).
     #[must_use]
     pub fn mints_fill_lease(self) -> bool {
         matches!(self, Self::FillCredential)
@@ -78,6 +92,7 @@ impl ApprovalKind {
             Self::WriteEnvFile => "write_env_file",
             Self::RunWithEnv => "run_with_env",
             Self::FillCredential => "fill_credential",
+            Self::AgentFill => "request_fill",
         }
     }
 }
@@ -115,6 +130,21 @@ pub struct ApprovalRequest {
     pub variables: Vec<String>,
     /// The resolved argv for `run_with_env`, empty otherwise.
     pub command: Vec<String>,
+    /// Whether the caller passed `overwrite: true`, i.e. asked for an existing file to be
+    /// replaced. `false` for every kind that does not write a file.
+    pub overwrite_requested: bool,
+    /// Whether a file already exists at [`Self::target_path`] right now. `None` when the request
+    /// is not about a file.
+    ///
+    /// Checked when the request is built, so it is what was true a moment before the sheet went
+    /// up — not a promise about what is true when the write happens.
+    pub target_exists: Option<bool>,
+    /// When a file is already there, whether **kagisecure** wrote it in this unlock session.
+    ///
+    /// `Some(false)` is the destructive case the sheet has to state plainly: the bytes about to
+    /// be replaced are the user's own, and nothing here can bring them back (threat-model M-16).
+    /// `None` when there is no file, or the request is not about one.
+    pub target_written_by_us: Option<bool>,
     /// `Some(false)` means "inside a git work tree and not ignored" — the red callout in
     /// ui-spec.md §10.2. `None` means not inside a work tree at all.
     pub gitignored: Option<bool>,
@@ -134,9 +164,19 @@ pub struct ApprovalRequest {
     /// page's otherwise. This is the origin that was *matched*, so it is what the lease is keyed
     /// on and what the audit entry records.
     pub origin: Option<String>,
-    /// The top-level page's origin, when it differs from [`Self::origin`]. `Some` here is the
-    /// visible signal that the form is in a third party's frame.
+    /// The top-level page's origin, when the fill is not a plain top-frame load. `Some` here is
+    /// the visible signal that the form is in a third party's frame.
+    ///
+    /// `Some("null")` is the platform serialization of an **opaque** origin: the browser could
+    /// not establish an embedder. It must never be rendered literally — see
+    /// [`Self::top_origin_unknown`].
     pub top_origin: Option<String>,
+    /// Whether the form is in a frame whose **embedder could not be established**.
+    ///
+    /// True whenever the browser did not itself report that this was frame 0. The sheet must
+    /// then disclose "this form is inside a frame on an unknown site" rather than showing a
+    /// top-frame load or the literal string `null` (D-7).
+    pub top_origin_unknown: bool,
     /// The item that would be filled.
     pub item_id: Option<String>,
     /// Its title, so the sheet does not show a bare uuid.
@@ -161,9 +201,136 @@ pub struct ApprovalRequest {
     /// The extension's **self-reported** id. Display-only, and only ever the pinned one, because
     /// anything else was refused at `Hello`.
     pub extension_id: Option<String>,
+    /// Ask for a fresh proof that a human is present, **not** for the sheet.
+    ///
+    /// Set only for a fill whose exact origin, item and field set the human already reviewed at a
+    /// full sheet in this unlock session and chose **Allow for this session** for — the fill lease
+    /// is that review's memory ([ADR-0037](../../../docs/decisions/0037-every-fill-needs-a-fresh-presence-proof.md)).
+    /// The app answers it with the LocalAuthentication check alone, and a cancelled or unavailable
+    /// check is a denial.
+    ///
+    /// What it never excuses is the check itself. The reason it exists: a browser- or OS-automation
+    /// agent can produce input the browser marks `isTrusted`, so "the user clicked in the page"
+    /// proves nothing about a human. Touch ID, the login password or an Apple Watch does. A grant of
+    /// such a request also never mints or extends a lease — `outcome_for` forces
+    /// [`Grant::session`] off, whatever button a UI claims was pressed.
+    pub presence_only: bool,
+
+    // --- ADR-0036: an agent-requested browser fill. `None` for every other kind. -------------
+    /// What the agent-fill sheet shows that no other sheet does. `Some` exactly when
+    /// [`Self::kind`] is [`ApprovalKind::AgentFill`] — build such a request with
+    /// [`Self::for_agent_fill`], which also copies the scope into the common fields above so the
+    /// [`Grant`] carries it.
+    pub agent_fill: Option<AgentFillFacts>,
+
+    // --- ADR-0035 §14: values from a shared vault. Empty for the personal vault. -----------
+    /// Where the values come from, when that is a shared vault: `Shared vault “Ops” — 4
+    /// members`. `None` for the personal vault.
+    pub shared_source: Option<String>,
+    /// One line per value about to be released that changed since this device last approved
+    /// releasing it — or was never released from this device — naming who changed it and when:
+    /// ``DATABASE_URL changed by Alice, 2 days ago``. Names, labels and times only. Empty for
+    /// the personal vault, and when nothing changed.
+    pub changed_since_approval: Vec<String>,
+}
+
+/// The facts an agent-fill sheet states (ADR-0036 §5), beyond the common fields.
+///
+/// Metadata only, like the rest of [`ApprovalRequest`]: names, paths, pids, flags and an origin.
+/// No member has a type a secret value could be put in — `String`s that are names, never a
+/// `Secret` or a `FillValue` — and `agent_fill_facts_have_no_member_a_value_fits_in` pins the list.
+///
+/// Two identity stories are told on this sheet, and the field names keep them apart: the
+/// **agent** (who asked, over the MCP socket) and the **browser** (where the value would be
+/// typed, over the extension socket).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentFillFacts {
+    /// The agent's **self-reported** name, from MCP `clientInfo`. Render it as a quotation; it is
+    /// unverified.
+    pub agent_name: String,
+    /// The sidecar's pid, from the kernel: the process a grant is bound to (ADR-0036,
+    /// implementation decision 3).
+    pub sidecar_pid: u32,
+    /// The sidecar's executable, resolved from that pid.
+    pub sidecar_executable: Option<String>,
+    /// The sidecar's parent pid, resolved from the kernel — never the one the sidecar reports.
+    /// What the app checks the code signature of, for "started by".
+    pub parent_pid: Option<u32>,
+    /// The sidecar's parent executable, resolved from the kernel: what "this agent" means for
+    /// blocking (ADR-0036 §9.3). `None` when the kernel could not say; the sheet then says so.
+    pub parent_executable: Option<String>,
+    /// The item that would be filled.
+    pub item_id: String,
+    /// Its title, so the sheet does not show a bare uuid.
+    pub item_title: String,
+    /// Which fields would be written. Names, never values.
+    pub fields: Vec<AgentFillField>,
+    /// Whether this is page one of an identifier-first sign-in (ADR-0036 §7.3): the username is
+    /// written now, and the password on the next page, in the same tab, without another sheet —
+    /// the sheet says *"username now, password on the next page"*. Always `false` for a
+    /// one-time code, which is its own request (§7.4).
+    pub two_step: bool,
+    /// The page's origin as the browser established it, split for rendering so a look-alike is
+    /// obvious (registrable domain emphasized, the rest dimmed, punycode decoded beside it).
+    pub page_origin: AgentOriginRendering,
+    /// The saved website that covered the page, in ASCII serialization.
+    pub saved_website: String,
+    /// Whether the page's host is not byte-equal to the saved website's — the "this page is a
+    /// subdomain of it" disclosure.
+    pub page_host_differs: bool,
+    /// The browser the app established from the native host's process ancestry, exactly as the
+    /// fill sheet shows it. `None` means no recognized browser.
+    pub browser: Option<String>,
+    /// That browser's pid, for the code-signature check.
+    pub browser_pid: Option<u32>,
+    /// That browser's executable path.
+    pub browser_executable: Option<String>,
+    /// Whether the extension-side peer is an app extension we ship (Safari) rather than a native
+    /// host a browser launched. Safari never offers agent fills, so `false` in practice; carried
+    /// so the app picks its signature requirement the same way for both fill sheets.
+    pub browser_is_app_extension: bool,
+    /// The native messaging host's pid — "our helper" on the sheet.
+    pub host_pid: Option<u32>,
+    /// The native messaging host's executable.
+    pub host_executable: Option<String>,
+    /// The extension's **self-reported** id. Only ever the pinned one.
+    pub extension_id: Option<String>,
 }
 
 impl ApprovalRequest {
+    /// The request for an agent fill described by `facts`.
+    ///
+    /// The scope — origin, item, field names, browser — is copied into the common fields from the
+    /// facts, so what the [`Grant`] carries and what the sheet shows cannot disagree. The caller
+    /// is the sidecar, so `client_*` is the sidecar: its pid from the kernel, its self-reported
+    /// name. Never presence-only.
+    #[must_use]
+    pub fn for_agent_fill(facts: AgentFillFacts) -> Self {
+        Self {
+            kind: ApprovalKind::AgentFill,
+            client_name: facts.agent_name.clone(),
+            client_pid: Some(facts.sidecar_pid),
+            client_pid_from_kernel: true,
+            client_executable: facts.sidecar_executable.clone(),
+            origin: Some(facts.page_origin.ascii()),
+            item_id: Some(facts.item_id.clone()),
+            item_title: Some(facts.item_title.clone()),
+            fill_fields: facts.fields.iter().map(|f| f.as_str().to_owned()).collect(),
+            browser: facts.browser.clone(),
+            browser_pid: facts.browser_pid,
+            browser_executable: facts.browser_executable.clone(),
+            browser_is_app_extension: facts.browser_is_app_extension,
+            extension_id: facts.extension_id.clone(),
+            // No lease, so no lease life to show or to clamp.
+            requested_ttl_seconds: 0,
+            requested_uses: 1,
+            max_ttl_seconds: 0,
+            presence_only: false,
+            agent_fill: Some(facts),
+            ..Self::default()
+        }
+    }
+
     /// Fill in the caller-identity fields from what the kernel and the handshake said.
     pub fn with_identity(mut self, identity: &PeerIdentity) -> Self {
         self.client_name = identity
@@ -195,6 +362,9 @@ impl Default for ApprovalRequest {
             variables: Vec::new(),
             command: Vec::new(),
             gitignored: None,
+            overwrite_requested: false,
+            target_exists: None,
+            target_written_by_us: None,
             requested_ttl_seconds: kagisecure_core::lease::DEFAULT_TTL_SECONDS,
             requested_uses: kagisecure_core::lease::DEFAULT_USES,
             max_ttl_seconds: kagisecure_core::lease::MAX_TTL_SECONDS,
@@ -202,6 +372,7 @@ impl Default for ApprovalRequest {
             expires_at: 0,
             origin: None,
             top_origin: None,
+            top_origin_unknown: false,
             item_id: None,
             item_title: None,
             fill_fields: Vec::new(),
@@ -210,6 +381,10 @@ impl Default for ApprovalRequest {
             browser_executable: None,
             browser_is_app_extension: false,
             extension_id: None,
+            presence_only: false,
+            agent_fill: None,
+            shared_source: None,
+            changed_since_approval: Vec::new(),
         }
     }
 }
@@ -254,10 +429,22 @@ pub enum Decision {
     },
     /// Refuse. Returns `USER_DENIED` with no partial write.
     Deny,
+    /// Refuse, and refuse every agent fill from the same agent for the next thirty minutes
+    /// without asking (ADR-0036 §9.3). Returns `USER_DENIED`, and [`Outcome::block_agent`] tells
+    /// the agent-fill broker to set the block.
+    ///
+    /// Only an [`ApprovalKind::AgentFill`] sheet offers it. For any other request it is exactly
+    /// [`Self::Deny`]: there is no block for a caller of the other tools to be put under.
+    DenyAndBlock,
 }
 
 /// The answer an IPC thread gets back.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// Only this module can make one: `Self::grant` is private, so a struct literal outside it does
+/// not compile. That is what makes a [`Grant`] mean something — the only `Outcome` that carries one
+/// is the one [`ApprovalQueue::ask`] returned for a request somebody [resolved](ApprovalQueue::resolve)
+/// with an allow.
+#[derive(Debug)]
 pub struct Outcome {
     /// Whether to proceed.
     pub granted: bool,
@@ -275,7 +462,18 @@ pub struct Outcome {
     /// fill channel has no use counter, so "once" and "for this session" differ only in whether a
     /// lease is minted at all. Rather than have the extension service infer that from a use count
     /// that means nothing to it, the queue says which button was pressed.
+    ///
+    /// Always `false` for a [presence-only](ApprovalRequest::presence_only) request.
     pub session: bool,
+    /// Whether the human pressed **Deny and block this agent** ([`Decision::DenyAndBlock`]) on an
+    /// agent-fill sheet. Always `false` for every other kind of request, and for any grant.
+    pub block_agent: bool,
+    /// The proof, when there is one. `Some` exactly when [`Self::granted`] is true.
+    ///
+    /// Private on purpose — see the type's documentation. The public fields above are a readout for
+    /// the MCP channel and for tests; a caller that releases a value takes the [`Grant`] with
+    /// [`Self::into_grant`] instead, because a readout can be edited and a `Grant` cannot.
+    grant: Option<Grant>,
 }
 
 impl Outcome {
@@ -287,7 +485,102 @@ impl Outcome {
             uses: 0,
             verification,
             session: false,
+            block_agent: false,
+            grant: None,
         }
+    }
+
+    /// The grant, or why there is none.
+    ///
+    /// # Errors
+    ///
+    /// [`Self::code`] when the request was refused, timed out or swept by a lock, so the caller
+    /// can say which.
+    pub fn into_grant(self) -> Result<Grant, ErrorCode> {
+        self.grant.ok_or(self.code)
+    }
+}
+
+/// Proof that a human granted one specific [`ApprovalRequest`].
+///
+/// # Why this is a type rather than a `bool`
+///
+/// The invariant the browser channel rests on is *every response that carries a secret comes from
+/// a granted `ask`, and every grant in the app went through the biometric gate*
+/// ([ADR-0037](../../../docs/decisions/0037-every-fill-needs-a-fresh-presence-proof.md)). A
+/// `granted: bool`, or an early return that skips `ask` because some other state said "fine",
+/// satisfies the compiler just as well as the real thing; the lease short-circuit that ADR-0037
+/// removed was exactly that. A `Grant` cannot be made up:
+///
+/// * its fields are private and it has no public constructor, so only this module can build one;
+/// * this module builds one in exactly one place, `outcome_for`, for a [`Decision::AllowOnce`] or
+///   [`Decision::AllowSession`] handed to [`ApprovalQueue::resolve`] — which the app calls only
+///   after `LAContext.evaluatePolicy` succeeded (`AgentService.allow`);
+/// * it is not `Clone`, so one grant is one crossing, not a token to keep;
+/// * it carries the scope the human was shown, copied from the request, so the code that builds a
+///   value can check that it is building the value that was approved rather than trusting that the
+///   two agree.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Grant {
+    kind: ApprovalKind,
+    origin: Option<String>,
+    item_id: Option<String>,
+    fill_fields: Vec<String>,
+    presence_only: bool,
+    session: bool,
+    ttl_seconds: u64,
+    verification: ClientVerification,
+}
+
+impl Grant {
+    /// What kind of request was granted.
+    #[must_use]
+    pub fn kind(&self) -> ApprovalKind {
+        self.kind
+    }
+
+    /// The origin the human was shown, for a fill.
+    #[must_use]
+    pub fn origin(&self) -> Option<&str> {
+        self.origin.as_deref()
+    }
+
+    /// The item the human was shown, for a fill.
+    #[must_use]
+    pub fn item_id(&self) -> Option<&str> {
+        self.item_id.as_deref()
+    }
+
+    /// The field names the human was shown, for a fill: `username`, `password`,
+    /// `one-time password`.
+    #[must_use]
+    pub fn fill_fields(&self) -> &[String] {
+        &self.fill_fields
+    }
+
+    /// Whether this was a [presence-only](ApprovalRequest::presence_only) confirmation rather than a
+    /// review at a full sheet.
+    #[must_use]
+    pub fn presence_only(&self) -> bool {
+        self.presence_only
+    }
+
+    /// Whether the human pressed **Allow for this session**. Never true for a presence-only grant.
+    #[must_use]
+    pub fn session(&self) -> bool {
+        self.session
+    }
+
+    /// The lease life the human agreed to, already clamped to the request's ceiling.
+    #[must_use]
+    pub fn ttl_seconds(&self) -> u64 {
+        self.ttl_seconds
+    }
+
+    /// What the app said about the caller's signature when it granted this.
+    #[must_use]
+    pub fn verification(&self) -> &ClientVerification {
+        &self.verification
     }
 }
 
@@ -355,6 +648,12 @@ impl ApprovalQueue {
             state.next_id = state.next_id.wrapping_add(1);
             let id = format!("req-{}", state.next_id);
             request.id.clone_from(&id);
+            // An agent fill is always the full sheet (ADR-0036 §5): cleared here, before the UI
+            // can see it, as well as in `outcome_for`, so a caller that set it by mistake cannot
+            // turn the sheet into a bare presence prompt.
+            if request.kind == ApprovalKind::AgentFill {
+                request.presence_only = false;
+            }
             request.created_at = kagisecure_core::unix_now();
             request.expires_at = request.created_at + APPROVAL_TIMEOUT_SECONDS;
             state.pending.push_back(Pending {
@@ -485,31 +784,63 @@ impl ApprovalQueue {
 ///
 /// The clamping is the enforcement of "the user may shorten the TTL but not lengthen it beyond
 /// the tool's max" (ui-spec.md §10.2). It happens here, once, rather than in each UI.
+///
+/// This is also the **only** place a [`Grant`] is constructed. A presence-only request is granted
+/// as "once" whichever allow the UI sent: a presence confirmation proves a human is there, it does
+/// not re-review the scope, so it must not be able to mint or extend the memory of a review
+/// (ADR-0037).
+///
+/// An [`ApprovalKind::AgentFill`] is clamped harder still (ADR-0036 §5, §6): it is never
+/// presence-only, "for this session" is "once", and it carries no lease life — there is no lease
+/// to mint, whichever button a UI claims was pressed.
 fn outcome_for(
     request: &ApprovalRequest,
     decision: &Decision,
     verification: ClientVerification,
 ) -> Outcome {
-    match decision {
-        Decision::Deny => Outcome::refused(ErrorCode::UserDenied, verification),
-        Decision::AllowOnce => Outcome {
-            granted: true,
-            code: ErrorCode::Internal,
-            ttl_seconds: request.requested_ttl_seconds.min(request.max_ttl_seconds),
-            uses: 1,
-            verification,
-            session: false,
-        },
-        Decision::AllowSession { ttl_seconds, uses } => Outcome {
-            granted: true,
-            code: ErrorCode::Internal,
-            ttl_seconds: (*ttl_seconds)
+    let agent_fill = request.kind == ApprovalKind::AgentFill;
+    let (ttl_seconds, uses, session) = match decision {
+        Decision::Deny => return Outcome::refused(ErrorCode::UserDenied, verification),
+        Decision::DenyAndBlock => {
+            return Outcome {
+                block_agent: agent_fill,
+                ..Outcome::refused(ErrorCode::UserDenied, verification)
+            };
+        }
+        Decision::AllowOnce | Decision::AllowSession { .. } if agent_fill => (0, 1, false),
+        Decision::AllowOnce => (
+            request.requested_ttl_seconds.min(request.max_ttl_seconds),
+            1,
+            false,
+        ),
+        Decision::AllowSession { ttl_seconds, uses } => (
+            (*ttl_seconds)
                 .min(request.max_ttl_seconds)
                 .min(request.requested_ttl_seconds.max(1)),
-            uses: (*uses).min(request.requested_uses).max(1),
+            (*uses).min(request.requested_uses).max(1),
+            true,
+        ),
+    };
+    let presence_only = request.presence_only && !agent_fill;
+    let session = session && !request.presence_only;
+    Outcome {
+        granted: true,
+        code: ErrorCode::Internal,
+        ttl_seconds,
+        uses,
+        verification: verification.clone(),
+        session,
+        block_agent: false,
+        grant: Some(Grant {
+            kind: request.kind,
+            origin: request.origin.clone(),
+            item_id: request.item_id.clone(),
+            fill_fields: request.fill_fields.clone(),
+            presence_only,
+            session,
+            ttl_seconds,
             verification,
-            session: true,
-        },
+        }),
     }
 }
 
@@ -655,6 +986,277 @@ mod tests {
     fn resolving_an_unknown_id_is_false_rather_than_a_panic() {
         let queue = ApprovalQueue::new();
         assert!(!queue.resolve("req-nope", &Decision::AllowOnce, verified()));
+    }
+
+    fn fill_request(presence_only: bool) -> ApprovalRequest {
+        ApprovalRequest {
+            kind: ApprovalKind::FillCredential,
+            origin: Some("https://example.com".to_owned()),
+            item_id: Some("item-1".to_owned()),
+            fill_fields: vec!["password".to_owned()],
+            requested_ttl_seconds: 300,
+            requested_uses: 1,
+            max_ttl_seconds: 900,
+            presence_only,
+            ..ApprovalRequest::default()
+        }
+    }
+
+    fn answer(request: ApprovalRequest, decision: &Decision) -> Outcome {
+        let queue = Arc::new(ApprovalQueue::new());
+        let asker = Arc::clone(&queue);
+        let thread = std::thread::spawn(move || asker.ask(request));
+        let delivered = queue.next(Duration::from_secs(5)).expect("delivered");
+        assert!(queue.resolve(&delivered.id, decision, verified()));
+        thread.join().expect("asker")
+    }
+
+    #[test]
+    fn deny_and_block_is_a_denial_that_marks_only_an_agent_fill() {
+        let blocked = answer(
+            ApprovalRequest::for_agent_fill(agent_fill_facts()),
+            &Decision::DenyAndBlock,
+        );
+        assert!(!blocked.granted);
+        assert!(blocked.block_agent, "the broker is told to set the block");
+        assert_eq!(blocked.into_grant().unwrap_err(), ErrorCode::UserDenied);
+
+        // Any other sheet has no agent block to set: it is a plain denial.
+        let other = answer(fill_request(false), &Decision::DenyAndBlock);
+        assert!(!other.granted);
+        assert!(!other.block_agent);
+        assert_eq!(other.into_grant().unwrap_err(), ErrorCode::UserDenied);
+
+        let denied = answer(
+            ApprovalRequest::for_agent_fill(agent_fill_facts()),
+            &Decision::Deny,
+        );
+        assert!(!denied.block_agent, "a plain denial blocks nothing");
+    }
+
+    #[test]
+    fn a_grant_carries_the_scope_the_human_was_shown() {
+        let grant = answer(fill_request(false), &Decision::AllowOnce)
+            .into_grant()
+            .expect("allow once is a grant");
+        assert_eq!(grant.kind(), ApprovalKind::FillCredential);
+        assert_eq!(grant.origin(), Some("https://example.com"));
+        assert_eq!(grant.item_id(), Some("item-1"));
+        assert_eq!(grant.fill_fields(), ["password".to_owned()]);
+        assert!(!grant.presence_only());
+        assert!(!grant.session(), "allow once is not a session");
+        assert!(grant.verification().verified);
+    }
+
+    #[test]
+    fn a_refusal_carries_no_grant() {
+        let outcome = answer(fill_request(false), &Decision::Deny);
+        assert!(!outcome.granted);
+        let refused = outcome.into_grant().expect_err("a denial is not a grant");
+        assert_eq!(refused, ErrorCode::UserDenied);
+
+        let queue = ApprovalQueue::new();
+        queue.deny_all();
+        assert!(
+            queue.ask(fill_request(true)).into_grant().is_err(),
+            "a lock is not a grant"
+        );
+    }
+
+    #[test]
+    fn a_presence_confirmation_is_never_a_session_whatever_the_ui_pressed() {
+        // A UI that answers a presence-only prompt with "Allow for this session" — by mistake, or
+        // because it was told to — must not be able to extend the memory of a review with it.
+        let outcome = answer(
+            fill_request(true),
+            &Decision::AllowSession {
+                ttl_seconds: 900,
+                uses: 5,
+            },
+        );
+        assert!(outcome.granted);
+        assert!(!outcome.session, "the readout says once");
+        let grant = outcome.into_grant().expect("granted");
+        assert!(grant.presence_only());
+        assert!(!grant.session(), "and so does the grant");
+
+        // The same answer to a full review is a session, so the clamp is about presence_only and
+        // nothing else.
+        let reviewed = answer(
+            fill_request(false),
+            &Decision::AllowSession {
+                ttl_seconds: 900,
+                uses: 5,
+            },
+        )
+        .into_grant()
+        .expect("granted");
+        assert!(reviewed.session());
+        assert_eq!(reviewed.ttl_seconds(), 300, "clamped to what was requested");
+    }
+
+    /// An agent-fill request for `login.example.com`, covered by `https://example.com`.
+    fn agent_fill_facts() -> AgentFillFacts {
+        let origin = kagisecure_extension_ipc::origin::Origin::parse("https://login.example.com")
+            .expect("a valid origin");
+        AgentFillFacts {
+            agent_name: "example-agent".to_owned(),
+            sidecar_pid: 51_234,
+            sidecar_executable: Some("/usr/local/bin/kagisecure-mcp".to_owned()),
+            parent_pid: Some(51_200),
+            parent_executable: Some("/path/to/client".to_owned()),
+            item_id: "item-1".to_owned(),
+            item_title: "Example (work)".to_owned(),
+            fields: vec![AgentFillField::Username, AgentFillField::Password],
+            two_step: false,
+            page_origin: AgentOriginRendering::of(&origin),
+            saved_website: "https://example.com".to_owned(),
+            page_host_differs: true,
+            browser: Some("Google Chrome".to_owned()),
+            browser_pid: Some(400),
+            browser_executable: Some("/Applications/Google Chrome.app".to_owned()),
+            browser_is_app_extension: false,
+            host_pid: Some(401),
+            host_executable: Some("/Applications/Kagisecure.app/kagisecure-nmhost".to_owned()),
+            extension_id: Some("abcdefghijklmnopabcdefghijklmnop".to_owned()),
+        }
+    }
+
+    #[test]
+    fn an_agent_fill_request_carries_its_scope_in_the_common_fields_too() {
+        let request = ApprovalRequest::for_agent_fill(agent_fill_facts());
+        assert_eq!(request.kind, ApprovalKind::AgentFill);
+        assert_eq!(request.origin.as_deref(), Some("https://login.example.com"));
+        assert_eq!(request.item_id.as_deref(), Some("item-1"));
+        assert_eq!(request.fill_fields, ["username", "password"]);
+        assert_eq!(request.client_name, "example-agent");
+        assert_eq!(request.client_pid, Some(51_234));
+        assert!(!request.presence_only);
+        assert_eq!(request.agent_fill, Some(agent_fill_facts()));
+        assert!(!request.kind.mints_lease());
+        assert!(!request.kind.mints_fill_lease());
+        assert_eq!(request.kind.tool(), "request_fill");
+    }
+
+    #[test]
+    fn an_agent_fill_grant_is_never_a_session_or_presence_only() {
+        // A caller that marks the request presence-only, and a UI that answers it "for this
+        // session": neither may turn an agent fill into anything but one full review, once.
+        for decision in [
+            Decision::AllowOnce,
+            Decision::AllowSession {
+                ttl_seconds: 900,
+                uses: 5,
+            },
+        ] {
+            let request = ApprovalRequest {
+                presence_only: true,
+                ..ApprovalRequest::for_agent_fill(agent_fill_facts())
+            };
+            let queue = Arc::new(ApprovalQueue::new());
+            let asker = Arc::clone(&queue);
+            let thread = std::thread::spawn(move || asker.ask(request));
+            let delivered = queue.next(Duration::from_secs(5)).expect("delivered");
+            assert!(
+                !delivered.presence_only,
+                "the UI must be handed a full sheet, not a presence prompt"
+            );
+            assert!(queue.resolve(&delivered.id, &decision, verified()));
+            let outcome = thread.join().expect("asker");
+
+            assert!(outcome.granted);
+            assert!(!outcome.session, "{decision:?} is once for an agent fill");
+            assert_eq!(outcome.ttl_seconds, 0, "there is no lease life to agree to");
+            let grant = outcome.into_grant().expect("granted");
+            assert_eq!(grant.kind(), ApprovalKind::AgentFill);
+            assert!(!grant.presence_only(), "{decision:?}");
+            assert!(!grant.session(), "{decision:?}");
+            assert_eq!(grant.ttl_seconds(), 0);
+            assert!(!grant.kind().mints_lease() && !grant.kind().mints_fill_lease());
+            assert_eq!(grant.origin(), Some("https://login.example.com"));
+            assert_eq!(grant.item_id(), Some("item-1"));
+        }
+    }
+
+    /// `AgentFillFacts` is what a human reads before approving an agent fill, and it reaches the
+    /// app across the FFI. Like the rest of [`ApprovalRequest`] it must have no member a value
+    /// could be put in. The destructuring below names every member with no `..`, so a new one is
+    /// a compile error here, and whoever adds it has to extend the type check with it.
+    #[test]
+    fn agent_fill_facts_have_no_member_a_value_fits_in() {
+        fn type_of<T>(_: &T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        let AgentFillFacts {
+            agent_name,
+            sidecar_pid,
+            sidecar_executable,
+            parent_pid,
+            parent_executable,
+            item_id,
+            item_title,
+            fields,
+            two_step,
+            page_origin,
+            saved_website,
+            page_host_differs,
+            browser,
+            browser_pid,
+            browser_executable,
+            browser_is_app_extension,
+            host_pid,
+            host_executable,
+            extension_id,
+        } = agent_fill_facts();
+        let AgentOriginRendering {
+            scheme,
+            dimmed_prefix,
+            emphasized,
+            port,
+            unicode_host,
+            mixed_script,
+            not_encrypted,
+        } = page_origin;
+        let types = [
+            type_of(&agent_name),
+            type_of(&sidecar_pid),
+            type_of(&sidecar_executable),
+            type_of(&parent_pid),
+            type_of(&parent_executable),
+            type_of(&item_id),
+            type_of(&item_title),
+            type_of(&fields),
+            type_of(&two_step),
+            type_of(&saved_website),
+            type_of(&page_host_differs),
+            type_of(&browser),
+            type_of(&browser_pid),
+            type_of(&browser_executable),
+            type_of(&browser_is_app_extension),
+            type_of(&host_pid),
+            type_of(&host_executable),
+            type_of(&extension_id),
+            type_of(&scheme),
+            type_of(&dimmed_prefix),
+            type_of(&emphasized),
+            type_of(&port),
+            type_of(&unicode_host),
+            type_of(&mixed_script),
+            type_of(&not_encrypted),
+        ];
+        for ty in types {
+            for forbidden in ["Secret", "FillValue", "Zeroizing", "Vec<u8>", "Item"] {
+                assert!(
+                    !ty.contains(forbidden),
+                    "an agent-fill fact has type {ty}, which could hold a value"
+                );
+            }
+        }
+        // The one list is of field *names*: an enum with no payload.
+        assert_eq!(
+            type_of(&fields),
+            "alloc::vec::Vec<kagisecure_ipc::protocol::AgentFillField>"
+        );
     }
 
     #[test]

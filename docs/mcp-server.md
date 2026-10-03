@@ -1,9 +1,13 @@
 # MCP server (`kagisecure-mcp`)
 
-Status: **implemented in M2, and served by the macOS app since M4.** All nine tools below exist
+Status: **implemented in M2, and served by the macOS app since M4.** All ten tools below exist
 and are exercised end to end by `crates/kagisecure-cli/tests/mcp.rs` (against the CLI daemon) and
 `crates/kagisecure-agent/tests/sidecar.rs` (against the library the app hosts). The thing on the
-other end of the IPC socket is now the native app, with a Touch ID approval sheet — see §11. The
+other end of the IPC socket is now the native app, with a Touch ID approval sheet — see §11.
+`request_fill` (§2.10) is the newest: the macOS app serves it
+([ADR-0036](decisions/0036-agent-requested-browser-fill.md) Phases 1–3, Chromium-family browsers),
+behind a switch in Agent access that is off by default; `kagisecure daemon` never serves it, and
+neither does the Windows app. The
 terminal daemon is retained as the headless channel and is a thin wrapper over the same library
 ([ADR-0013](decisions/0013-agent-library-split.md)).
 
@@ -52,14 +56,15 @@ the characters.
 | `write_env_file` | **injection** | yes (biometric) | path + var names + lease id |
 | `run_with_env` | **injection** | yes (biometric) | exit code, stdout/stderr masked by default (`output`) |
 | `revoke_env_file` | cleanup | no | shredded paths |
+| `request_fill` | **fill into a browser tab** | yes, a sheet every time (biometric unless one passed for a fill on that exact origin in the last ten minutes) | the field **names** written |
 
-All nine are implemented, and since M4 both of the behaviours this paragraph used to defer are
+All ten are implemented — `request_fill` as §2.10 describes — and since M4 both of the behaviours this paragraph used to defer are
 real: the approval is a Touch ID (or login-password) gate in the app's own sheet, and
 `add_variables`'s pending entries are typed into a `SecureField` in the app's Agent access →
 Environments editor. `kagisecure env add-var` still works and is what the headless daemon points
 you at.
 
-Nine tools. The list is fixed; there is no plugin mechanism. That is deliberate — a small,
+Ten tools. The list is fixed; there is no plugin mechanism. That is deliberate — a small,
 auditable surface is the product.
 
 Compare 1Password's Environments MCP server (`authenticate`, `create_environment`,
@@ -83,13 +88,31 @@ Result:
 ```json
 {
   "vaults": [
-    { "id": "v_7f3a...", "name": "Personal", "item_count": 42, "environment_count": 3 },
-    { "id": "v_91cd...", "name": "Acme Corp", "item_count": 118, "environment_count": 7 }
+    { "id": "v_7f3a...", "name": "Personal", "item_count": 42, "environment_count": 3, "shared": false },
+    { "id": "v_91cd...", "name": "Acme Corp", "item_count": 118, "environment_count": 7, "shared": false },
+    { "id": "v_0b52...", "name": "Ops", "item_count": 2, "environment_count": 1, "shared": true }
   ]
 }
 ```
 
 Only vaults with `agent_visible = true` appear. See threat-model M-9.
+
+**Shared vaults** ([ADR-0035](decisions/0035-shared-vaults.md) §14; addendum, decisions 88–93)
+are listed with `shared: true` beside the personal vault's logical vaults, and every tool reads
+them the same way: `list_items`, `list_environments` and `describe_item` include what is in them,
+`write_env_file` and `run_with_env` release a shared environment, and `request_fill` fills a
+shared login — with the same sheet, lease and presence rules. What an agent sees of a shared vault
+is only what *this* computer has made visible to agents — a setting of each computer's own, hidden
+by default — so a shared vault with nothing visible is not listed, and its counts are of what is
+visible. A shared vault is read-only to agents: `create_environment` and `add_variables` aimed at
+one are `INVALID_ARGUMENT` (§7), and a personal environment cannot be bound to a shared item. Ids
+are unique across everything listed: where a personal and a shared item or environment share an
+id, the personal one is the one listed and addressed, and an id two shared vaults share names
+neither. Where two listed entries share a *name*, both are listed and the shared one is shown as
+`name (vault)`. The approval sheet names the shared vault and every value about to be released
+that changed since this computer last approved releasing it, or is released from it for the
+first time — who changed it, and when; such a value is asked about again even under a live lease.
+The release is recorded in the personal vault's audit log with the shared vault's id (§6).
 
 ### 2.2 `list_items`
 
@@ -222,6 +245,13 @@ names — by design the server cannot return values, secret or not, even if an a
 }
 ```
 
+The limits in this schema — and `hint`'s 200 characters and the 50 variables of §2.6, and the 64
+arguments of §2.8 — are enforced by the process that owns the vault, not only by the sidecar,
+because each of these strings is shown to a human on an approval sheet or in the app: a name or a
+hint must also be a single line with no control characters (a description may break lines), so an
+agent cannot lay out lines of its own on the sheet. A violation is `INVALID_ARGUMENT`, answered
+before anyone is asked.
+
 Creates an empty environment. Requires a lightweight approval (a confirmation in the app, no
 biometric) because it mutates the vault. `vault_id` is optional; the user's first vault is the
 default. Returns the new environment's metadata.
@@ -250,7 +280,7 @@ supplies the value. So `add_variables` takes **names and optional bindings, neve
         "items": {
           "type": "object",
           "properties": {
-            "name":  { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
+            "name":  { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "maxLength": 128 },
             "bind_to": {
               "type": "object",
               "description": "Optional: bind to an existing vault field instead of prompting the user.",
@@ -277,11 +307,31 @@ supplies the value. So `add_variables` takes **names and optional bindings, neve
 
 There is no `value` property. The schema cannot express one.
 
+**The name pattern is enforced, not advisory.** A name is rendered verbatim — `NAME=value` in a
+`.env` file, a `NAME` key in a child's environment block — so a name carrying `=` or a line break
+would write lines of the caller's choosing into the file (`PATH=/tmp/evil`) or hand a child an
+entry nobody approved. The process that owns the vault checks every name against the pattern above
+(and the 128-character limit) before a sheet goes up, and answers `INVALID_ARGUMENT` for a name
+that fails it, or for a name that appears twice in one request; nothing is asked and nothing
+changes. The check is repeated where names are rendered: `kagisecure_core` stores and renders only
+a validated `VarName`, and a malformed name already in a vault (written by an older build) makes
+`write_env_file` and `run_with_env` refuse rather than print it. The CLI's `env add-var` and `run
+--env` apply the same rule (exit 2).
+
+**`add_variables` adds; it never replaces.** A name the environment already has — typically one
+the user bound to a real credential — is refused with `INVALID_ARGUMENT` before any sheet, and
+again inside the transaction (the user may add it while the sheet is up); nothing changes. There
+is deliberately no MCP tool to remove or rebind a variable: changing an existing one is the user's,
+in the app or with `kagisecure env add-var` / `env rm`, which do replace.
+
 **How the value actually gets in.** Two paths:
 
 1. **Bind** (`bind_to` present): the variable references an existing field in the vault. Nothing
    is entered; the app confirms and the reference is created. This is preferred — rotate once,
-   every environment follows.
+   every environment follows. The target must be one `describe_item` would show — the item
+   visible to agents, in a vault visible to agents, not in the trash — and the field must itself be
+   marked visible to agents; any other target is answered `NOT_FOUND` exactly as one that does not
+   exist.
 2. **Prompt** (`bind_to` absent): the app raises a *pending entry* for that variable name. The
    tool returns immediately with `status: "pending_user_input"` and a deep link
    (`kagisecure://environments/<env_id>/pending`), and the app brings its window forward with a
@@ -369,7 +419,12 @@ Behavior:
   so in red. **The one-click "add the ignore entry" affordance is not built** — the warning is;
   see the roadmap's M4 deferrals.
 - Refuses to clobber a pre-existing file it did not write unless `overwrite: true` **and** the
-  user approves the overwrite specifically.
+  user approves the overwrite specifically. That approval is asked **every time**: no lease covers
+  replacing a file kagisecure did not write, however live and however exactly it matches the
+  directory, file name and variables, because a lease approves writing kagisecure's file, not
+  replacing the user's. "Did not write" is decided by the file itself — its identity against the
+  one kagisecure recorded at that path — so a file the user renamed over kagisecure's since is
+  theirs, and the sheet says so.
 
 ### 2.8 `run_with_env`
 
@@ -421,7 +476,50 @@ Behavior and caveats:
   an equivalent for the user's own terminal, but `run_with_env` never returns an unmasked value to
   an agent — masking is not opt-out here.
 - stdout/stderr are capped (default 64 KiB each) and marked `truncated`.
+- `timeout_seconds` is brought into 1–3600 by the process that spawns the child, not only by the
+  sidecar: a caller that speaks the socket protocol directly cannot ask for a child that is
+  killed at once or one that is never killed. The child runs with no lock held, so a long command
+  does not hold up the app or any other request.
+- **The call is bounded, and it ends the whole process group — not just the command.** The child
+  is spawned as the leader of a process group of its own (Windows: a job object). At the deadline
+  the group gets `SIGTERM`, then `SIGKILL` 2 s later if the command is still there. When the
+  command exits first, anything it left running in its group — a backgrounded helper, a
+  daemon-ish grandchild that inherited the output pipes — is ended the same way (`SIGTERM`, then
+  `SIGKILL` within 2 s; a group with nothing left in it costs nothing). This is a deliberate
+  choice over tracking the group until it empties: the command's result is in, a lock can only
+  reach what is still registered, and a child is deregistered when its call returns, so leaving
+  its group running would leave the injected value alive where no lock can end it. Output is
+  then read for at most 0.5 s more from a pipe that something *outside* the group still holds (a
+  process that deliberately left it with `setsid`, the residual gap below); that stream comes back
+  marked `truncated`. So the reply arrives within `timeout_seconds` plus about 2.5 s, whatever the
+  command's descendants do. `kagisecure run` in a terminal is unaffected: it has no deadline,
+  keeps the child in the terminal's process group, and waits as a shell would. Every signal is
+  sent only while the command's own process is still unreaped, so its group id cannot have been
+  handed to an unrelated process in the meantime.
 - The user's approval sheet shows the resolved executable path, the full argv, and the cwd.
+- **Locking ends the child, not just the vault.** A `run_with_env` command keeps the injected
+  value in its own process environment for as long as it runs, on a thread the ordinary lock
+  hooks (deny every pending approval, drop every lease, shred every file a lease wrote) cannot
+  reach — that thread is blocked waiting on the child, not waiting on the vault. Locking sends
+  `SIGTERM` to the child's whole process group, then `SIGKILL` after a short grace period if
+  anything in it is still alive (Windows: the equivalent job-object terminate, at once — there is
+  no soft-stop signal to send an unmodified process there). The group, not just the one pid, so a
+  command that itself forks a child — a build tool spawning a bundler — does not keep running with
+  the value still in reach after its parent is gone; a process that deliberately detaches itself
+  from the group is the one case this does not reach, the same residual gap
+  `kagisecure-childproc`'s own documentation names for the same reason. The reply for a call caught
+  this way is `VAULT_LOCKED`, exactly as if the request had arrived after the lock rather than
+  before it — never a result that looks like the command ran to completion in an open vault. A
+  `Failed` audit entry follows with detail `KILLED_ON_LOCK (entry <seq>)` (§6).
+- **A lock racing the spawn still wins.** The release is prepared (and its `Allowed` entry
+  committed) before the child is spawned, so a lock can land in between. The last thing before
+  the spawn is a re-check that the agent is still serving; a lock acknowledged by then means
+  nothing starts (`VAULT_LOCKED`, and a `Failed` entry with detail `LOCKED_BEFORE_START`). A lock
+  that lands after that check but before the child is registered has already emptied — and
+  closed — the registry of running children, so the registration is refused and the child killed
+  at once (`KILLED_ON_LOCK`). A lock, once acknowledged, stays in force for the life of that
+  agent: the app or daemon is told about it once, and nothing is served in the moment between
+  being told and taking the vault away.
 
 ### 2.9 `revoke_env_file`
 
@@ -447,6 +545,158 @@ in the tool description to call this when they finish a task.
 out of uses, was revoked already, or died with a vault lock — returns `{"shredded": []}`: nothing
 was left to shred, which is the same end state the caller was asking for. An agent that finishes a
 task and tidies up must not be handed an error for tidying up twice.
+
+**Lock shreds by what was written, not by what is still leased.** A lease that already ran out of
+uses — "Allow once" is the common case, since a single-use lease is consumed by the very write that
+mints it — is gone from the live-lease table before a lock ever happens, but the file it wrote is
+still on disk. Locking shreds it anyway: the record of every path this session has ever written
+outlives the lease that wrote it for exactly this reason (the same ledger `revoke_env_file` walks
+by path after a lease has expired), and the vault lock hook empties that ledger, not just the live
+leases, on every lock.
+
+**Shredding touches only the file that was written.** The ledger records, beside each path, the
+identity of the file kagisecure wrote there (device and inode on Unix; volume serial and file index
+on Windows), read off the very handle the bytes went through. A revoke or a lock opens the path
+without following a symlink in its final component (`O_NOFOLLOW`; `FILE_FLAG_OPEN_REPARSE_POINT` on
+Windows) and overwrites nothing unless that handle is a regular file with the recorded identity.
+Anything else now at the path — a symlink planted after the write, a directory, a different file
+renamed over it — is left exactly as it is, the reply's `shredded` list omits it, and a `Failed`
+audit entry with detail `NOT_SHREDDED_FILE_REPLACED` names the path. Without this, swapping an
+approved `.env` for a symlink to `~/.ssh/id_ed25519` and calling `revoke_env_file` — which needs no
+approval — would have zeroed the key.
+
+### 2.10 `request_fill`
+
+```json
+{
+  "name": "request_fill",
+  "description": "Ask the user to let kagisecure fill a saved login into the browser tab they are looking at. The user approves in the kagisecure app with a biometric. Returns only which fields were filled: this tool never returns a secret value. Works only in a browser with the kagisecure extension, in the tab in front, when that tab's origin is exactly `origin` and is a website saved on the item. On a sign-in that asks for the username first, one approval covers both pages: the username is filled now and `fields_pending` lists the password — press the page's own Next button, then call again for [\"password\"] within 60 seconds, and no second approval is asked. Ask for `one_time_code` in a call of its own: it is approved on its own every time and filled only into a page with a code field, never copied to the clipboard. Be aware: kagisecure never gives you a value, but it types the value into a page you are driving, and an agent that can run script in that page can read it there.",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "item_id": { "type": "string", "description": "From list_items. Titles are not accepted." },
+      "origin":  { "type": "string", "description": "The origin of the page you have open, e.g. https://example.com." },
+      "fields": {
+        "oneOf": [
+          { "type": "array", "items": { "type": "string", "enum": ["username", "password"] },
+            "minItems": 1, "maxItems": 2, "uniqueItems": true },
+          { "type": "array", "items": { "type": "string", "const": "one_time_code" },
+            "minItems": 1, "maxItems": 1 }
+        ],
+        "default": ["username", "password"]
+      }
+    },
+    "required": ["item_id", "origin"],
+    "additionalProperties": false
+  }
+}
+```
+
+Result: `{ "status": "filled", "fields_written": ["username", "password"], "fields_pending": [] }`.
+Field **names** only; `fields_pending` is non-empty only when the page asked for the username first
+and the same approval may write the password on the next page (below). Everything else is an error
+(§7).
+
+**kagisecure never gives the agent a value. It types the value into a page the agent is driving, on
+a site saved for that login, after the user approves — and an agent that can run script in that
+page can read it there.** That is the true sentence for this tool, and it is stated here, in the
+tool's description and in the server instructions rather than in a caveat. §1's invariant is about
+the MCP channel and still holds: the result names fields, and the IPC reply it maps onto
+(`Response::FillResult`) has no member a value fits in, so `kagisecure-mcp` and `kagisecure-ipc`
+still compile without `secret-material`. What leaves the channel is the same shape as
+`write_env_file`'s file, which an agent with file access can read (threat-model N-6). Approving an
+agent fill is trusting that agent with that login, for that site, for as long as it can read the
+page. [ADR-0036](decisions/0036-agent-requested-browser-fill.md) §8 has the whole argument.
+
+**Fields.** `username`, `password` or both, or `one_time_code` **on its own**: a code never rides
+along with a password, because the pair is the account. At least one field, none twice. A call
+that breaks this is `INVALID_ARGUMENT`, checked by the sidecar before anything is asked. `item_id`
+takes an id exactly as `describe_item` does; a malformed one is `NOT_FOUND`. Unknown properties are
+refused, not ignored.
+
+**Status: served by the macOS app, Phases 1–3.** Username and password on a single page,
+identifier-first sign-ins across two pages, and one-time codes, in a Chromium-family browser with
+the extension, under the approval-fatigue limits of ADR-0036 §9 (below). The switch, "Let agents
+ask to fill logins in your browser" in Agent access, is off by default and asks for Touch ID (or
+the login password) to turn on; while it is off every call is `FILL_UNAVAILABLE`. A Safari session
+never declares the capability, so a user whose only connected browser is Safari gets
+`FILL_UNAVAILABLE` too (ADR-0036 §12). `kagisecure daemon` has no browser extension to ask and
+never will, and the Windows app does not offer agent fills at all: every call there is
+`FILL_UNAVAILABLE`. The Rust and extension halves are tested headlessly; no agent fill has yet been
+driven end to end in a real browser with the real app (ADR-0036, "Implementation status").
+
+**Identifier-first sign-ins** (ADR-0036 §7.3). When the tab in front asks for the username alone —
+a username box and no password box — a request for `["username", "password"]` is one approval for
+two pages, and the sheet says so ("username now, password on the next page"). The first call
+writes the username and returns `fields_written: ["username"]`, `fields_pending: ["password"]`.
+The agent presses the page's own Next button and calls again for `["password"]`, same item, from
+the same `kagisecure-mcp` process, within 60 seconds of the approval. That call raises no sheet: it
+is served if the same tab, in the same browser session, is in front at `origin`, which is the same
+site as page one (the same origin or a subdomain of it — the extension's own rule) and saved for
+the item, with a password field. Page two may be a new document or the same one with its form
+swapped in place. Anything else about that call — another tab or site, or no password field yet —
+is `NO_MATCHING_TAB`, and it spends the pending step: the agent's next call is a new request with a
+sheet of its own. So is a call for another item, from another agent, after the 60 seconds, or
+after a lock. If the password step never comes, the log records that the username was written and
+the password never was.
+
+**One-time codes** (ADR-0036 §7.4). `["one_time_code"]` is its own request with its own sheet and
+biometric, every time: approving a password never approves a code, and a pending identifier-first
+step does not either. The tab in front must have a one-time-code field; the code is written there
+or nowhere — never onto the clipboard, which every process the user runs can read. The code is
+audited like every one-time code the browser receives, under the tool name `totp_code`, before it
+leaves the app. As for passwords: kagisecure never gives the agent the code, and an agent that can
+run script in the page can read it there.
+
+**The order of the checks** (ADR-0036 §11.1), each answered before the next is made:
+
+1. **Enabled, and not blocked or limited.** Off — or no kernel-established sidecar process (and
+   parent) to bind the grant and the limits to — is `FILL_UNAVAILABLE`, before the vault's lock
+   state and before the item, so it is the same for every item id, real, hidden or made up. Then,
+   in this order and still before the item: an agent the user blocked is `USER_DENIED`; a request
+   the user denied, or let time out, in the last ten minutes — same agent, item and origin — is
+   `USER_DENIED`; an agent that has had three sheets in ten minutes is `RATE_LIMITED` for the next
+   ten; and while another agent fill is in progress the request is `RATE_LIMITED` with a sentence
+   of its own: one at a time, never a queue of sheets. None of these raises a sheet. "The agent"
+   is the sidecar's parent program as the kernel reports it, never the name the client reports.
+   Then the arguments (`INVALID_ARGUMENT`; an `origin` that is not an http(s) origin is one too).
+2. **Vault unlocked**: `VAULT_LOCKED`; a vault file that no longer continues the session:
+   `VAULT_CONFLICT`.
+3. **The item**, by exactly `describe_item`'s rule: absent, hidden, in a hidden vault or trashed are
+   one `NOT_FOUND`, the same bytes, down the same path, before any browser is asked.
+4. **The fields**: a requested field the item has no value for, or an archived item:
+   `NOTHING_TO_FILL`.
+5. **A browser to ask**: no connected extension session that declared agent fills:
+   `FILL_UNAVAILABLE`.
+6. **The tab.** Every connected browser reports the tab in front; exactly one, across all of them,
+   must be the visible top frame of the active tab, at exactly `origin`, on a site saved for the
+   item, with the fields asked for — or, for username and password, an identifier-first page one.
+   For page two of an identifier-first sign-in only the browser and tab of page one are asked
+   (above). Otherwise `NO_MATCHING_TAB` — one code, one message, whatever
+   the reason, so it is not an oracle for an item's websites. A tab in front on a site the item is
+   not saved for (a look-alike) is also reported to the user when it can be the agent's own — the
+   only tab in front, or at exactly `origin` — and a second one in the same unlock session blocks
+   the agent until the user unblocks it.
+7. **Audit pre-flight**: `AUDIT_UNAVAILABLE`. Asked before check 5, not after 6: it does not
+   depend on the tab, and answered after a tab was chosen it would say one had been. For the same
+   reason a lock while the browsers are being asked is `VAULT_LOCKED` right after they have
+   answered, before the tab is chosen (ADR-0036, implementation decision 36).
+8. **The user**: `USER_DENIED` or `APPROVAL_TIMEOUT`. The user may also deny and block the agent
+   for thirty minutes. A denial or a timeout answers the identical request for ten minutes (gate 1),
+   so retrying a timed-out `request_fill` at once gets `USER_DENIED`.
+9. **Delivery**: the extension redeems a single-use, 30-second grant bound to this sidecar process,
+   the tab, the document and the origin; any change is `NO_MATCHING_TAB`, and an audit entry that
+   cannot be written is `AUDIT_UNAVAILABLE` — in both cases nothing was typed. Each page of an
+   identifier-first sign-in is delivered under a grant of its own, and both are bound to the 60
+   seconds of the flow.
+
+`crates/kagisecure-agent/tests/agent_fill.rs` and `agent_fill_adversarial.rs` assert this, and that
+the value of the item reaches no byte of the reply; `agent_fill_limits.rs` asserts the limits by
+counting the sheets shown; `agent_fill_steps_and_codes.rs` asserts the two-page flow, one-time
+codes and the tripwire's follow-up; `agent_fill_sidecar.rs` sweeps a successful fill, a successful
+two-page fill and a successful code fill for the password, the code and its seed in every byte the
+real sidecar writes; `crates/kagisecure-cli/tests/mcp.rs` asserts the daemon's
+`FILL_UNAVAILABLE`.
 
 ## 3. How the invariant is enforced
 
@@ -508,8 +758,9 @@ sequenceDiagram
     A->>A: verify peer identity (code signature of peer_pid)
     A->>A: lease lookup (env + dir + scope)
     alt valid lease covers request
-        A->>FS: write .env (0600)
+        A->>A: take one use of it
     else no lease, or narrower lease
+        A->>A: audit entries still unwritten? write them now, or refuse AUDIT_UNAVAILABLE
         A->>U: approval sheet:<br/>caller, dir, var names, TTL
         U->>B: fingerprint
         B-->>A: unwrap vault key
@@ -518,16 +769,19 @@ sequenceDiagram
             S-->>C: error USER_DENIED
             C-->>M: "The user declined."
         end
-        A->>A: mint lease{env, dir, ttl, uses}
-        A->>FS: write .env (0600)
+        A->>A: mint lease{env, dir, ttl, uses}, take one use
     end
-    A->>A: append audit entry (names only)
+    A->>A: one transaction: re-check env, resolve values,<br/>write Allowed audit entry (names only)
+    alt audit entry could not be written
+        A-->>S: AUDIT_UNAVAILABLE (nothing released, minted lease revoked)
+    end
+    A->>FS: write .env (0600), no lock held
     A-->>S: InjectResult{path, var_names, lease_id, expires_at}
     S-->>C: tool result
     C-->>M: names + path, no values
 ```
 
-The critical property: **step 8 (the approval sheet) is rendered by the app, in its own window.**
+The critical property: **step 9 (the approval sheet) is rendered by the app, in its own window.**
 The model cannot see it, cannot fill it, cannot fabricate its outcome, and cannot distinguish
 "user denied" from "user was in a meeting". A prompt injection can cause the *request* to be made
 — it cannot cause it to be granted.
@@ -554,15 +808,37 @@ Rules:
 | Rule | Rationale |
 | --- | --- |
 | Leases are **memory-only**, never written to disk | Restarting the app is a clean slate |
-| A lease dies on: expiry, use exhaustion, vault lock, screen lock, sleep, app exit, explicit revoke | Locking must mean locking |
+| A lease dies on: expiry, use exhaustion, vault lock, app exit, explicit revoke | Locking must mean locking |
+| In the native app (macOS/Windows), OS screen lock and sleep also kill every lease via a vault lock | `kagisecure daemon` has no screen-lock/sleep hook (no OS session to watch), so a daemon lease outlives those events until it expires, is exhausted, or is locked/revoked explicitly |
 | Directory match is **exact after canonicalization**, not prefix | `/Users/x/code` must not authorize `/Users/x/code/../../../tmp` |
 | A request broader than any existing lease (more variables, different dir, different env) triggers a **fresh biometric** | No privilege creep |
-| No "always allow" / "remember forever" option exists in v1 | The whole product is the prompt |
+| `write_env_file` with `overwrite: true` onto a file kagisecure did not write is never covered by a lease | Replacing the user's file is a different question from writing kagisecure's |
+| No "always allow" / "remember forever" option exists in v1 — except the machine vault's standing grants (below) | The whole product is the prompt, for every vault a person uses |
 | Default TTL 15 min, max 24 h, user can always shorten what the agent requested | Agent asks, human decides |
 | Leases are listed in the app with one-click revoke, and a menu-bar/tray indicator shows the count of active leases | Visibility |
 
 `run_with_env` leases are additionally bound to `(command, cwd)`; changing either requires a new
 approval.
+
+### 5.1 Standing grants and the unattended socket *(accepted for macOS; the engine is built, the app is not — [ADR-0042](decisions/0042-unattended-agent-access.md))*
+
+The one exception to "the whole product is the prompt" is the **machine vault**: a separate vault
+for machine credentials, armed by a person with a presence proof — arming persists across
+restarts until a person disarms it. Jobs that kagisecure itself starts on a schedule reach it
+through a second endpoint, the **unattended socket**, named to them in `KAGISECURE_SOCKET`. A
+request there is answered only if it comes from a live run's process tree, and a value is released
+only under a **standing grant** a person created in the app with a presence proof: `run_with_env`
+for an exact command, directory and variable set with output `none`, or `request_fill` for one
+machine-vault login at one exact https origin in the run's own browser. Grants persist, carry
+per-run and total limits and a hard expiry, and are suspended by anything unexpected; no tool and
+no IPC message creates, widens or proposes one. The ordinary socket is unchanged: it serves the
+machine vault only with the ordinary sheet and a presence proof, and only while the personal vault
+is unlocked, and there only its environments (ADR-0042 implementation decision 14). On the
+unattended socket, `run_with_env`'s reply never carries output and names the grant where a lease
+would be; `request_fill` answers `FILL_UNAVAILABLE` until unattended sign-ins are built. The
+engine is `kagisecure-agent`'s `unattended` module; the macOS app starts it at launch and arms it
+when the person does (Agent access → Unattended jobs). Where such credentials belong, and what unattended use costs, is in
+[unattended-credentials.md](unattended-credentials.md).
 
 ## 6. Audit log
 
@@ -578,6 +854,42 @@ Denied requests are kept, deliberately: a burst of denials is the signal that so
 things, and it is the only evidence a user will have that a prompt injection attempted an
 exfiltration.
 
+**Audit before release.** For the two tools that release values — `write_env_file` and
+`run_with_env` — the order is fixed: the checks that decide the release (the environment still
+exists and is still visible to agents, and every variable bound to an item field still reaches an
+item `list_items` and `describe_item` would show — a binding is a route to a value, not a grant,
+and the user may have hidden or trashed its item since; the per-field flag is not part of this
+check, because it decides whether `describe_item` discloses a field, and a user may bind a
+variable to a field kept out of it so that it is injected without being listed) are made again
+against the vault file as it is on disk, the
+values are resolved, and an `Allowed` entry describing the release (tool, environment, variable
+names, target, lease) is written to the file — all in one transaction. Only once that write has
+succeeded, and with no lock held, is the file written or the command started. An `Allowed` entry
+therefore means "authorized and committed to be released": no value leaves without a record,
+whatever happens afterwards. If the entry cannot be written, nothing is released
+(`AUDIT_UNAVAILABLE`, §7). If a committed release then fails or ends abnormally, a second entry
+follows — outcome `Failed`, the same tool, lease, target and variable names, detail
+`"<CODE> (entry <seq>)"` naming the `Allowed` entry (`WRITE_FAILED`, `FILE_EXISTS`, `INVALID_PATH`,
+`SPAWN_FAILED`, `RUN_FAILED`, `TIMED_OUT`, `LOCKED_BEFORE_START` (the vault locked between the
+release and the spawn, so nothing started), `KILLED_ON_LOCK` — a `run_with_env` child still running
+when the vault locked, §2.8). That second entry, and every entry for a denial, a refusal, a
+metadata tool, a revoke or a lock, is written best-effort: it never changes the reply, and a write
+that fails leaves it queued for the next one rather than lost. A revoke or a lock that leaves a
+written path alone because it no longer names the file kagisecure wrote adds a `Failed` entry with
+detail `NOT_SHREDDED_FILE_REPLACED` and that path (§2.9). `KILLED_ON_LOCK` is a partial
+exception to "queued rather than lost": it is written by the lock itself, directly onto the vault a
+moment before that vault is gone for good, because by the time an ordinary best-effort write would
+run, there is no vault left in the handle to queue it on — see
+[ADR-0039](decisions/0039-transactional-vault-writes-and-the-lock-file.md)'s lock-hook design for
+why that moment is the only one left.
+
+An entry that cannot be saved immediately — another kagisecure process holds the vault's write
+lock, the disk is full — is not dropped: it waits in a pending queue and is written by the next
+transaction that succeeds ([ADR-0039](decisions/0039-transactional-vault-writes-and-the-lock-file.md)
+§5), keeping the time it actually happened. The release entries above are the exception by
+design ([ADR-0040](decisions/0040-audit-before-release.md)): they are never merely queued, because
+the release waits for them.
+
 ## 7. Error semantics
 
 Errors are MCP tool errors with a stable machine-readable `code` and a human `message`. The
@@ -587,12 +899,21 @@ message is written for the *model*, so it should say what to do next.
 | --- | --- | --- |
 | `APP_NOT_RUNNING` | The native app is not running or not reachable over IPC | Tell the user to open kagisecure. Do not retry in a loop. |
 | `VAULT_LOCKED` | App is running, vault is locked | Tell the user to unlock. |
-| `USER_DENIED` | The user declined the approval | Stop. Do not re-request the same thing. |
+| `USER_DENIED` | The user declined the approval — for `request_fill` also: the user blocked this agent, or already declined (or let time out) the identical request in the last ten minutes | Stop. Do not re-request the same thing. |
 | `APPROVAL_TIMEOUT` | No response in 60 s | May retry once, after telling the user. |
-| `NOT_FOUND` | Unknown vault/item/environment id | Re-list. |
-| `NOT_AGENT_VISIBLE` | Exists but the user has not made it visible to agents | Tell the user how to enable it; do not retry. |
+| `NOT_FOUND` | Unknown vault/item/environment id, **or** one the user has not made visible to agents | Re-list. |
 | `INVALID_PATH` | Path not absolute, not a directory, or refused by policy | Fix the path. |
+| `INVALID_ARGUMENT` | An argument breaks a documented rule of the tool's schema — a variable name that does not match `^[A-Za-z_][A-Za-z0-9_]*$`, a name repeated in one request or already in the environment, a string over its length limit, a `request_fill` field set that is empty, repeats a field or combines `one_time_code` with another — or `create_environment` / `add_variables` names a shared vault or shared environment the agent can see (agents cannot change a shared vault, §2.1); nothing was asked and nothing changed | Fix the argument. Do not retry it unchanged. |
 | `FILE_EXISTS` | Target exists and `overwrite` is false | Ask the user, then retry with `overwrite: true`. |
+| `VAULT_BUSY` | Another kagisecure process (the CLI, a second app) held the vault file's write lock for more than 5 s; nothing was changed | Wait a few seconds, then retry once. |
+| `VAULT_CONFLICT` | The vault file on disk was restored from an older copy, replaced, or removed while the vault was unlocked; the app refuses to build on it or overwrite it, so nothing is changed or released | Tell the user to open kagisecure and resolve it. Do not retry until they have. |
+| `FILL_UNAVAILABLE` | `request_fill` cannot be served at all: agent fills are turned off, or no browser with the kagisecure extension is connected. Answered before the item is looked up | Tell the user. Do not retry. |
+| `NOTHING_TO_FILL` | `request_fill` named a field the item has no value for, or an archived item | Check `describe_item`. |
+| `NO_MATCHING_TAB` | `request_fill` found no tab to fill: the tab in front is not at `origin`, is not a sign-in page kagisecure recognizes (for a one-time code: has no code field), is not visible, is not a site saved for this item, or changed before the fill; or more than one browser has such a tab in front; or page two of an identifier-first sign-in is not the same sign-in in the same tab | Bring the right tab to the front; retry at most once. |
+| `RATE_LIMITED` | `request_fill` was refused without asking: this agent has had three approval sheets in ten minutes and is refused for the next ten (the user has been told), or — with its own sentence — another agent fill is in progress and they are asked one at a time. Answered before the item is looked up | Stop. Do not retry — unless the message says another fill is in progress, then retry once after it finishes. |
+| `AUDIT_UNAVAILABLE` | `write_env_file` or `run_with_env` was about to release values, and the audit entry that must be written first could not be (a full disk, a broken or conflicting vault file, another process holding the write lock); **nothing was released** — no file written, no command run | Tell the user the vault cannot be written right now. Do not retry in a loop. |
+| `NOT_GRANTED` | Only on the unattended socket (§5.1): the request is not covered by a standing grant of the calling run's job, or does not come from a run kagisecure started. One message for every reason; a request no grant covers has suspended every grant of the job and ended the run | Stop. Do not retry or try variations; the owner has been told. |
+| `UNATTENDED_PAUSED` | Only on the unattended socket (§5.1): unattended jobs are not armed, so nothing is released | Tell the user unattended jobs are paused; do not retry. |
 | `INTERNAL` | Bug | Report it. |
 
 **Every code in this table is one the sidecar can actually return.** That is a rule, not an
@@ -600,25 +921,89 @@ observation, because each row is an instruction to the *model*: a code nothing p
 advice about a situation that cannot arise, and a model that has been told what to do will
 eventually find an excuse to do it.
 
-Two codes were in an earlier draft of this table and were removed for failing that rule, rather
-than given implementations to justify the text:
+A third code, `NOT_AGENT_VISIBLE` ("exists but the user has not made it visible to agents"), was
+removed for a different reason: it was an **enumeration oracle**. A caller that cannot see a thing
+could still learn that the thing exists, by walking ids and watching which ones answered
+`NOT_AGENT_VISIBLE` rather than `NOT_FOUND` — which is exactly the enumeration `agent_visible`
+exists to prevent (threat-model M-8). Hidden and absent now share one code *and one identical
+message*, on every tool, and the code no longer exists in the protocol enum, so it cannot come
+back by accident.
 
-- `RATE_LIMITED` ("back off"). There is no rate limiter. What bounds a hostile agent here is the
-  approval sheet and the lease — §5 — not a counter.
+Two further codes were in an earlier draft of this table and were removed for failing the rule
+above, rather than given implementations to justify the text:
+
+- `RATE_LIMITED` ("back off"), while there was no rate limiter. What bounds a hostile agent on the
+  injection tools is the approval sheet and the lease — §5 — not a counter. It has since come back,
+  scoped to `request_fill`, with the one limiter that bounds something no lease does (below).
 - `LEASE_EXPIRED` ("request a fresh injection"). Leases are matched *implicitly*: `write_env_file`
   and `run_with_env` look for a live lease covering the request and, finding none, ask the human
   again. No tool takes a lease id in order to *act*, so no call can fail because a lease expired.
   The one tool that accepts a `lease_id` at all is `revoke_env_file`, which is cleanup — §2.9 — and
   revoking a lease that is already gone is a successful no-op.
 
-If either mechanism is ever built, its code comes back with it.
+If either mechanism is ever built, its code comes back with it — as `RATE_LIMITED` has.
+
+`VAULT_BUSY` and `VAULT_CONFLICT` exist because the vault file has more than one writer: the app
+(or `kagisecure daemon`) serving this protocol, and the CLI beside it. Every request first brings
+the app's copy up to date with the file, so a change made elsewhere — `kagisecure env
+agent-access --deny`, say — applies to the very next request, and every write is a transaction on
+the file as it is at that moment. `VAULT_CONFLICT` is what that check answers when the file no
+longer continues what this session last saw on disk; it is reported for every tool except
+`revoke_env_file`, which is cleanup and keeps working. (`request_fill`'s first gate answers before
+the file is read, §2.10, so a switched-off `request_fill` is `FILL_UNAVAILABLE` whatever the file
+says.) Both codes arrived with protocol version 2.
+
+`AUDIT_UNAVAILABLE` is what "audit before release" (§6) answers when it cannot keep its promise.
+`write_env_file` and `run_with_env` release a value only after the entry recording the release is
+on disk, so when that write fails they fail closed: nothing is released, a lease the call minted
+is revoked, and a `Failed` entry with detail `AUDIT_UNAVAILABLE` is kept for the next write that
+succeeds. If entries from an earlier failed write are still waiting, those two tools try to write
+them *before* showing an approval sheet, and refuse with this code without asking the human if
+that fails — a sheet for a release that would then be refused is a question with no answer. Every
+other tool keeps working while the audit log cannot be written (its entry waits, and the app shows
+the failure). The code arrived with protocol version 2 as well: no build speaking version 2 was
+released before it was added.
+
+`INVALID_ARGUMENT` is the agent's own check of the schema rules above, made by the process that
+owns the vault because the sidecar is a convenience, not a boundary: a caller speaking the socket
+protocol directly skips it. It too arrived with protocol version 2, which is still unreleased. It
+also answers a write aimed at a shared vault (ADR-0035 addendum, decision 27), with one fixed
+sentence, and only for a shared vault or environment the agent can already see — one it cannot see
+is `NOT_FOUND`, as ever, so the answer says nothing the listing did not. There is no
+`UNRESOLVED_CONFLICT`: shared vaults merge last-writer-wins and leave nothing to refuse a release
+over (decision 80).
+
+`FILL_UNAVAILABLE` is `request_fill`'s first and fifth gates (§2.10): "agent fills are on, and
+there is a browser to ask". When the switch is off it is answered before the vault's lock state and
+before the item, so it cannot vary with either. `NOTHING_TO_FILL` and `NO_MATCHING_TAB` are gates 4,
+6 and 9. All three arrived with protocol version 2, alongside the request and reply they belong to.
+
+`RATE_LIMITED` is back, scoped to `request_fill` (ADR-0036 §9.1), because there a counter bounds
+something no lease protects: **the human's attention**. Every agent fill still needs its own sheet
+and biometric, so the limiter adds nothing to *access*; what it stops is an agent raising sheets
+until the human clicks through one. Two cases produce it, both at gate 1, before the item is looked
+up and without a sheet: an agent that has had **three sheets in ten minutes** is refused for the
+next ten minutes, and the user is told once (not once per request); and while **another agent
+fill is in progress** anywhere in the app, a second request is refused at once rather than queued,
+with a sentence saying so — the one case where retrying once, after that fill, is reasonable. "An
+agent" is the sidecar's parent program as the kernel reports it; every client under the same
+program shares one budget, which over-counts in the safe direction. The two related refusals that
+are answered `USER_DENIED` instead — a blocked agent, and a repeat of a request the user already
+declined or let time out in the last ten minutes — are a human's answer, not a budget. The
+numbers are fixed, not settings. It arrived with protocol version 2 as well, which no build
+speaking it was released before.
 
 Two rules about error content:
 
-1. **No oracles.** `NOT_FOUND` and `NOT_AGENT_VISIBLE` are distinguishable — because the user's
-   configuration is not a secret and a confusing "not found" for a hidden item causes bad agent
-   behavior. But nothing distinguishes "wrong password guessed" cases, and no error ever varies
-   based on secret *contents*.
+1. **No oracles.** "Does not exist" and "exists but the user has not shared it" are one answer:
+   the same `NOT_FOUND` code and the same message, byte for byte, on every tool. An earlier draft
+   had them distinguishable, reasoning that the user's configuration is not a secret and that a
+   confusing "not found" causes bad agent behavior; that was wrong, because the *existence* of an
+   id is exactly what an agent denied access to a vault must not be able to confirm. Nothing
+   distinguishes "wrong password guessed" cases either, and no error ever varies based on secret
+   *contents*. The same goes for a release that cannot resolve a binding: the reply is one fixed
+   sentence that names nothing — never the text of the underlying error, which was written for the
+   vault's owner and named the item by its title — and the audit entry records a code and ids.
 2. **No values in messages.** Enforced by the same type barrier as §3.
 
 ## 8. SEP-2322 (multi-round-trip) — considered, not adopted
@@ -662,6 +1047,22 @@ Or, if installed via Homebrew:
 claude mcp add --transport stdio kagisecure -- /opt/homebrew/bin/kagisecure-mcp
 ```
 
+**Quoting, and which shell this command is for.** Every other snippet on this page is JSON or
+TOML, so a Windows install path's backslashes are escaped the same way on every platform
+(`setup.rs::escape_for_quoted_string`). This one is different: it's a line for an interactive
+shell, and a shell's quoting rules are a fact about *which shell*, not about the data. The path is
+therefore quoted for whichever shell the build actually targets, decided at compile time in
+`setup.rs::quote_for_shell` rather than guessed at render time:
+
+- **On Windows**, for PowerShell — the shell Windows Terminal opens by default. The path is
+  single-quoted, with an embedded `'` doubled to `''` (PowerShell's own escape inside a
+  single-quoted string). No `&`-call operator: `&` is only needed when a quoted string names the
+  *command itself*, and here the path is an **argument** to `claude`, which is already the
+  command.
+- **Everywhere else**, for a POSIX shell. The path is left bare when it has none of a POSIX
+  shell's special characters — true of every real install path above — and single-quoted
+  otherwise, with an embedded `'` closed and reopened as `'\''`.
+
 ### Claude Desktop
 
 `claude_desktop_config.json`:
@@ -702,21 +1103,31 @@ args = []
 }
 ```
 
-### Windows paths
+### Windows
+
+The Windows build ships as a per-user MSI with no admin/UAC prompt
+([ADR-0034](decisions/0034-windows-distribution-a-per-user-signed-msi.md);
+[docs/windows-port.md](windows-port.md)). It installs flat into
+`%LOCALAPPDATA%\Programs\Kagisecure\` — `Kagisecure.App.exe`, `kagisecure_ffi.dll`,
+`kagisecure-mcp.exe`, `kagisecure-nmhost.exe` and `kagisecure.exe` all in that one directory, none
+of them on `PATH` (see [docs/releasing.md](releasing.md) §10.5–10.6) — so an MCP client's config
+needs the sidecar's expanded absolute path:
 
 ```json
 {
   "mcpServers": {
     "kagisecure": {
-      "command": "C:\\Program Files\\WindowsApps\\kagisecure\\kagisecure-mcp.exe",
+      "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Kagisecure\\kagisecure-mcp.exe",
       "args": []
     }
   }
 }
 ```
 
-> Assumption: the MSIX install path is not stable enough to document literally; the app will emit
-> the correct absolute path. A `kagisecure mcp path` CLI subcommand prints it on both platforms.
+`%LOCALAPPDATA%` resolves to that same `C:\Users\<you>\AppData\Local` path; most clients' config
+files want it expanded, not left as a literal environment variable. As on macOS, `kagisecure mcp
+path` prints the exact installed path and `kagisecure mcp install <client> --write` edits the
+client's own config file directly — see "Let the CLI write it" below.
 
 ### Let the CLI write it
 
@@ -847,7 +1258,10 @@ kagisecure: /usr/local/bin/kagisecure-mcp - ✔ Connected
 ```
 
 If your app or daemon is on a non-default socket, pass it through:
-`claude mcp add ... -e KAGISECURE_SOCKET=/path/to/daemon.sock -- ...`.
+`claude mcp add ... -e KAGISECURE_SOCKET=/path/to/daemon.sock -- ...`. On Windows the same
+variable takes a **named pipe name** rather than a path (`kagisecure-mine.sock`, or
+`\\.\pipe\kagisecure-mine.sock`), because Windows has no filesystem sockets — see
+[architecture.md](architecture.md) §4.2.
 
 ### 11.4 Use it
 

@@ -1,0 +1,65 @@
+<Page
+    x:Class="Kagisecure.App.Views.RecoveryCodePage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Grid>
+        <StackPanel
+            MaxWidth="440"
+            Padding="32"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center"
+            Spacing="12">
+
+            <FontIcon Glyph="&#xE72E;" FontSize="36" HorizontalAlignment="Center" Opacity="0.6" />
+            <TextBlock
+                Text="Write this down"
+                Style="{StaticResource TitleTextBlockStyle}"
+                HorizontalAlignment="Center"
+                AutomationProperties.AutomationId="ks.recoveryCode.title" />
+            <TextBlock
+                Text="This recovery code is the only way back into your vault if you forget your master password. kagisecure cannot show it to you again — store it somewhere safe, separate from this computer."
+                TextWrapping="Wrap"
+                Opacity="0.75"
+                TextAlignment="Center" />
+
+            <Border
+                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
+                BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                BorderThickness="1"
+                CornerRadius="8"
+                Padding="16"
+                Margin="0,12,0,0">
+                <TextBlock
+                    Text="{x:Bind ViewModel.RecoveryCode}"
+                    FontFamily="Consolas"
+                    FontSize="18"
+                    TextWrapping="Wrap"
+                    TextAlignment="Center"
+                    IsTextSelectionEnabled="True"
+                    AutomationProperties.AutomationId="ks.recoveryCode.code" />
+            </Border>
+
+            <Button
+                Content="Copy"
+                HorizontalAlignment="Center"
+                Command="{x:Bind ViewModel.CopyCommand}"
+                AutomationProperties.AutomationId="ks.recoveryCode.copy" />
+            <TextBlock Text="{x:Bind ViewModel.CopiedNotice, Mode=OneWay}" Opacity="0.7" FontSize="12" HorizontalAlignment="Center" />
+
+            <CheckBox
+                Content="I've written this down somewhere safe"
+                Margin="0,12,0,0"
+                IsChecked="{x:Bind ViewModel.Acknowledged, Mode=TwoWay}"
+                AutomationProperties.AutomationId="ks.recoveryCode.acknowledge" />
+
+            <Button
+                Content="Done"
+                Style="{StaticResource AccentButtonStyle}"
+                HorizontalAlignment="Stretch"
+                IsEnabled="{x:Bind ViewModel.CanContinue, Mode=OneWay}"
+                Click="OnDoneClicked"
+                AutomationProperties.AutomationId="ks.recoveryCode.done" />
+        </StackPanel>
+    </Grid>
+</Page>

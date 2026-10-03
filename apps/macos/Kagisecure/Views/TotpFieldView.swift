@@ -2,43 +2,83 @@ import SwiftUI
 
 import KagisecureFFI
 
-/// A live one-time password with the countdown ring from ui-spec.md §4.2.
+/// A one-time password in the detail pane, with the countdown ring from ui-spec.md §4.2.
+///
+/// # Masked until touched (ADR-0038 user decision 2)
+///
+/// The code is a secret for as long as it is valid, so the field starts masked. "Show" asks for
+/// presence once and starts it running live, from a `TotpRelease`, for at most five minutes after
+/// that touch — use does not extend it — or until the item is deselected or the vault locks.
+/// Copying a running code needs no second touch; copying a masked one is its own one-use release
+/// and its own touch (the ring, the button, ⌥⌘C alike).
 ///
 /// # Why it recomputes rather than counts down
 ///
 /// The obvious implementation keeps the code and decrements a number once a second. That drifts:
 /// `Timer` fires late under load, and after ten minutes the ring and the code disagree about
 /// which window they are in — which is precisely the roadmap's soak-test criterion. So every tick
-/// asks Rust for the code *at the current wall-clock second* instead. `Totp::code_at` is one
-/// HMAC; doing it once a second costs nothing measurable, and it cannot drift because it never
-/// counts.
+/// asks the release for the code *at the current wall-clock second* instead (`codeAt`). That is
+/// one HMAC; doing it once a second costs nothing measurable, and it cannot drift because it
+/// never counts.
 struct TotpFieldView: View {
     @Bindable var store: VaultStore
     let item: ItemView
     let field: FieldView
 
     @State private var snapshot: TotpSnapshot?
-    @State private var failure: String?
     @State private var copied = false
 
+    private var releases: ItemReleases { store.releases }
+    private var live: Bool { releases.isLive(totp: field) }
+
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { context in
-            content
-                .onChange(of: context.date) { _, _ in refresh() }
+        Group {
+            if live {
+                TimelineView(.periodic(from: .now, by: 1)) { context in
+                    running
+                        .onChange(of: context.date) { _, _ in refresh() }
+                }
+                .onAppear(perform: refresh)
+            } else {
+                masked
+            }
         }
-        .onAppear(perform: refresh)
-        .onChange(of: field.id) { _, _ in refresh() }
+        // A hidden code leaves nothing behind in the view's own state.
+        .onChange(of: live) { _, isLive in
+            if !isLive {
+                snapshot = nil
+                copied = false
+            }
+        }
     }
 
+    // MARK: - Masked
+
+    private var masked: some View {
+        HStack(spacing: 12) {
+            Text("••• •••")
+                .font(.system(.title2, design: .monospaced).weight(.medium))
+                .foregroundStyle(.secondary)
+                .accessibilityLabel(ItemReleases.concealedLabel(field.label, action: String(localized: "Show")))
+                .accessibilityIdentifier("ks.totp.masked")
+            Button("Show") {
+                store.attemptRelease { try await releases.showTotp(item: item, field: field) }
+            }
+            .buttonStyle(.bordered)
+            .disabled(releases.pending != nil)
+            .help("Show the code (⌘R)")
+            .accessibilityLabel("Show the one-time password")
+            .accessibilityIdentifier("ks.totp.show")
+            Spacer(minLength: 4)
+            copyButton
+        }
+    }
+
+    // MARK: - Running
+
     @ViewBuilder
-    private var content: some View {
-        if let failure {
-            Label(failure, systemImage: "exclamationmark.triangle")
-                .font(.callout)
-                .foregroundStyle(.orange)
-                .fixedSize(horizontal: false, vertical: true)
-                .accessibilityIdentifier("ks.totp.error")
-        } else if let snapshot {
+    private var running: some View {
+        if let snapshot {
             HStack(spacing: 12) {
                 Button(action: copy) {
                     TotpRing(snapshot: snapshot)
@@ -49,12 +89,14 @@ struct TotpFieldView: View {
                 .accessibilityIdentifier("ks.totp.ring")
 
                 VStack(alignment: .leading, spacing: 2) {
+                    // No `.textSelection`: a code is a secret for its whole window, and selecting
+                    // it would carry it past the concealed pasteboard type and the timed clear
+                    // (ADR-0038 surface #2). The ring and the copy button are the way out.
                     Text(snapshot.grouped)
                         .font(.system(.title2, design: .monospaced).weight(.medium))
                         .foregroundStyle(snapshot.isExpiring ? AnyShapeStyle(.orange) : AnyShapeStyle(.primary))
                         .contentTransition(.numericText())
                         .animation(.default, value: snapshot.code)
-                        .textSelection(.enabled)
                         .accessibilityIdentifier("ks.totp.code")
                     if let caption = snapshot.caption {
                         Text(caption)
@@ -66,43 +108,57 @@ struct TotpFieldView: View {
 
                 Spacer(minLength: 4)
 
-                Button(action: copy) {
-                    Image(systemName: copied ? "checkmark" : "doc.on.doc")
+                Button {
+                    releases.hideTotp(field)
+                } label: {
+                    Image(systemName: "eye.slash")
                 }
                 .buttonStyle(.borderless)
-                .keyboardShortcut("c", modifiers: [.command, .option])
-                .help("Copy the code (⌥⌘C)")
-                .accessibilityLabel("Copy the one-time password")
-                .accessibilityIdentifier("ks.totp.copy")
+                .help("Hide the code (⌘R)")
+                .accessibilityLabel("Hide the one-time password")
+                .accessibilityIdentifier("ks.totp.hide")
+
+                copyButton
             }
+            // The code is spoken once shown — necessary for a VoiceOver user to use it at all, and
+            // the same value that is on screen for everybody else (W-19). Masked, it is not.
             .accessibilityElement(children: .contain)
             .accessibilityLabel(
-                "One-time password \(snapshot.grouped), \(snapshot.secondsRemaining) seconds left")
+                "One-time password \(snapshot.grouped), \(Int(snapshot.secondsRemaining)) seconds left")
             .accessibilityIdentifier("ks.totp.field")
         } else {
             Text("—").foregroundStyle(.tertiary)
         }
     }
 
-    private func refresh() {
-        do {
-            let view = try store.session.totpCode(
-                itemId: item.id, fieldId: field.id, at: TotpCountdown.unixNow())
-            if snapshot?.code != view.code {
-                copied = false
-            }
-            snapshot = TotpSnapshot(view)
-            failure = nil
-        } catch {
-            snapshot = nil
-            failure = VaultStore.message(for: error)
+    private var copyButton: some View {
+        Button(action: copy) {
+            Image(systemName: copied ? "checkmark" : "doc.on.doc")
         }
+        .buttonStyle(.borderless)
+        .disabled(!live && releases.pending != nil)
+        .keyboardShortcut("c", modifiers: [.command, .option])
+        .help(live ? Text("Copy the code (⌥⌘C)") : Text("Copy the code without showing it (⌥⌘C)"))
+        .accessibilityLabel("Copy the one-time password")
+        .accessibilityIdentifier("ks.totp.copy")
+    }
+
+    private func refresh() {
+        guard let view = releases.totpCode(field, at: TotpCountdown.unixNow()) else {
+            snapshot = nil
+            return
+        }
+        if snapshot?.code != view.code {
+            copied = false
+        }
+        snapshot = TotpSnapshot(view)
     }
 
     private func copy() {
-        guard let snapshot else { return }
-        PasteboardService.copy(snapshot.code, label: field.label)
-        copied = true
+        store.attemptRelease {
+            try await releases.copyTotp(item: item, field: field)
+            copied = true
+        }
     }
 }
 
@@ -124,7 +180,7 @@ struct TotpRing: View {
                 )
                 .rotationEffect(.degrees(-90))
                 .animation(.linear(duration: 0.9), value: snapshot.fraction)
-            Text("\(snapshot.secondsRemaining)")
+            Text(verbatim: "\(snapshot.secondsRemaining)")
                 .font(.system(size: diameter * 0.38, weight: .medium, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
@@ -149,13 +205,20 @@ struct TotpRing: View {
 struct TotpSetupSheet: View {
     @Environment(\.dismiss) private var dismiss
 
-    /// The URI already stored on the field, if this is an edit rather than a first setup.
-    var existingUri: String = ""
+    /// For a field that is already set up: fetch its stored setup, behind its own presence
+    /// prompt (`EditReveal`). `nil` for a new field. The sheet never prefills on its own
+    /// (ADR-0038 §5, user decision 4) — this runs only when the person presses
+    /// "Show current setup".
+    var revealExisting: (() async -> String?)?
+
     /// Where the finished `otpauth://` URI goes.
     let onSave: (String) -> Void
 
     @State private var mode: SetupMode = .uri
     @State private var uriText = ""
+    /// The stored setup exactly as "Show current setup" put it in `uriText`, until it is masked
+    /// again or edited — what the five-minute cap compares against (`EditReveal`).
+    @State private var shownUri: String?
     @State private var secretText = ""
     @State private var issuer = ""
     @State private var account = ""
@@ -180,6 +243,23 @@ struct TotpSetupSheet: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .accessibilityIdentifier("ks.totpSetup.mode")
+
+            if let revealExisting, uriText.isEmpty {
+                Button {
+                    Task {
+                        if let uri = await revealExisting() {
+                            mode = .uri
+                            uriText = uri
+                            shownUri = uri
+                        }
+                    }
+                } label: {
+                    Label("Show current setup", systemImage: "eye")
+                }
+                .buttonStyle(.borderless)
+                .help("Asks for Touch ID or your Mac password, then fills in the stored setup")
+                .accessibilityIdentifier("ks.totpSetup.showCurrent")
+            }
 
             switch mode {
             case .uri: uriForm
@@ -208,9 +288,17 @@ struct TotpSetupSheet: View {
         }
         .padding(22)
         .frame(width: 480)
-        .onAppear {
-            guard !existingUri.isEmpty else { return }
-            uriText = existingUri
+        // User decision 5: a seed shown to edit is cleared again at five minutes if untouched,
+        // like every other value shown in edit mode. Clearing it keeps the stored setup: the sheet
+        // only ever writes what Save composes.
+        .task(id: shownUri) {
+            guard shownUri != nil else { return }
+            try? await Task.sleep(for: EditReveal.lifetime)
+            guard !Task.isCancelled else { return }
+            if EditReveal.shouldRemask(shown: shownUri, current: uriText) {
+                uriText = ""
+            }
+            shownUri = nil
         }
     }
 
@@ -222,8 +310,7 @@ struct TotpSetupSheet: View {
                 .lineLimit(2...4)
                 .accessibilityIdentifier("ks.totpSetup.uri")
             Text(
-                "This is what a service's QR code encodes. Most sites offer it as “can't scan the "
-                    + "code?” — the whole URI, including the secret."
+                "This is what a service's QR code encodes. Most sites offer it as “can't scan the code?” — the whole URI, including the secret."
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -289,7 +376,7 @@ struct TotpSetupSheet: View {
                         Text(snapshot.grouped)
                             .font(.system(.title2, design: .monospaced).weight(.medium))
                             .accessibilityIdentifier("ks.totpSetup.previewCode")
-                        Text(snapshot.caption ?? "Check this against the service before saving.")
+                        (snapshot.caption.map { Text($0) } ?? Text("Check this against the service before saving."))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .accessibilityIdentifier("ks.totpSetup.previewCaption")
@@ -301,10 +388,9 @@ struct TotpSetupSheet: View {
                 HStack(spacing: 8) {
                     Image(systemName: "questionmark.circle")
                         .foregroundStyle(.tertiary)
-                    Text(
-                        mode == .uri
-                            ? "Paste a URI to see the code it produces."
-                            : "Enter a Base32 secret to see the code it produces.")
+                    (mode == .uri
+                        ? Text("Paste a URI to see the code it produces.")
+                        : Text("Enter a Base32 secret to see the code it produces."))
                         .foregroundStyle(.secondary)
                         .accessibilityIdentifier("ks.totpSetup.previewEmpty")
                     Spacer()

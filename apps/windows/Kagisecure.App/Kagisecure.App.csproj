@@ -1,0 +1,90 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The WinUI 3 desktop shell (Tier 3 of docs/windows-port.md). Unpackaged (WindowsPackageType=None)
+    so it runs with `dotnet run`/the built exe without an MSIX install step; the machine's installed
+    Windows App Runtime (framework-dependent, not self-contained) is what WinUI actually loads
+    against at run time.
+
+    Like Kagisecure.Interop, this project does not build kagisecure_ffi.dll itself: run
+    `cargo xtask bindgen-cs` first, and this project copies the staged DLL next to its own output
+    the same way Kagisecure.Interop does.
+  -->
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetPlatformMinVersion>10.0.19041.0</TargetPlatformMinVersion>
+    <RootNamespace>Kagisecure.App</RootNamespace>
+    <AssemblyName>Kagisecure.App</AssemblyName>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Kagisecure.ico</ApplicationIcon>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <UseWinUI>true</UseWinUI>
+    <EnableMsixTooling>false</EnableMsixTooling>
+    <WindowsPackageType>None</WindowsPackageType>
+    <WindowsAppSDKSelfContained>false</WindowsAppSDKSelfContained>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>false</AllowUnsafeBlocks>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <DefaultLanguage>en-US</DefaultLanguage>
+    <!--
+      MVVMTK0045 ("[ObservableProperty] on a field is superseded by a partial property") cannot be
+      resolved the way the toolkit recommends: partial properties are a C# 13 feature, and
+      apps/windows/global.json pins the 8.0.4xx SDK band, whose bundled Roslyn does not accept
+      LangVersion 13 at all (CS1617). Forcing a newer Roslyn in just this project, via a
+      Microsoft.Net.Compilers.Toolset package reference, was tried and rejected: 4.12.0 (the
+      version contemporaneous with C# 13/.NET 9 GA) compiles LangVersion 13 but the
+      CommunityToolkit.Mvvm 8.4.2 source generator then fails to emit the partial property's
+      implementation (CS9248) under it, and 4.14.0's own MSBuild tasks need a .NET 9 runtime the
+      pinned 8.0.4xx `dotnet.exe` cannot host. Bumping CommunityToolkit.Mvvm itself does not change
+      any of this — the blocker is the language version, not the library. So: field-backed
+      [ObservableProperty] stays, and the diagnostic is suppressed here rather than left to litter
+      every view model with a per-property #pragma. Revisit this the day global.json moves to a
+      9.0.1xx+ SDK.
+    -->
+    <NoWarn>$(NoWarn);MVVMTK0045</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.5.1" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.9169" />
+    <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
+    <!-- SystemEvents.SessionSwitch / PowerModeChanged, for auto-lock on screen lock and system sleep (ui-spec.md §6.2). -->
+    <PackageReference Include="Microsoft.Win32.SystemEvents" Version="8.0.0" />
+    <!--
+      TOTP setup's QR import (ui-spec.md §9, ZXingQrCodeReader.cs). Windows has no built-in QR
+      *decoder* API (WIC/Windows.Graphics.Imaging read the image container — PNG/JPEG/... — but
+      none of it understands barcodes), so this is the one third-party dependency this feature
+      needs. ZXing.Net (Apache-2.0, nuget.org/packages/ZXing.Net) is the de facto .NET port of the
+      ZXing barcode library: actively maintained, no native/P-Invoke component (pure managed code
+      decoding a caller-supplied pixel buffer via RGBLuminanceSource, which keeps AllowUnsafeBlocks
+      off above), and used only for decoding here — the QR PNG the decoding test encodes is built
+      with Windows' own BitmapEncoder instead, so this package pulls in no image-writing surface at
+      all, just the barcode math.
+    -->
+    <PackageReference Include="ZXing.Net" Version="0.16.11" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Kagisecure.Interop\Kagisecure.Interop.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <!-- Where `cargo xtask bindgen-cs` stages the DLL; same layout Kagisecure.Interop uses. -->
+    <KagisecureNativeDir Condition="'$(KagisecureNativeDir)' == ''">$(MSBuildThisFileDirectory)..\..\..\target\windows\$(Configuration)\</KagisecureNativeDir>
+    <KagisecureNativeDll>$(KagisecureNativeDir)kagisecure_ffi.dll</KagisecureNativeDll>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(KagisecureNativeDll)" Link="kagisecure_ffi.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+    <Content Include="Assets\Kagisecure.ico" />
+  </ItemGroup>
+
+  <Target Name="KagisecureRequireNativeLibrary" BeforeTargets="BeforeBuild" Condition="!Exists('$(KagisecureNativeDll)')">
+    <Error Text="kagisecure_ffi.dll is not at $(KagisecureNativeDll). Run `cargo xtask bindgen-cs` from the repository root first (add --release for a Release build)." />
+  </Target>
+
+</Project>

@@ -32,3 +32,17 @@ extension BrowserManifestView: @retroactive Identifiable {
     /// The absolute path of the file. One manifest per browser, one path per manifest.
     public var id: String { path }
 }
+
+extension ItemView {
+    /// The item's password — the field the vault designates by id as its primary secret
+    /// (`primarySecretFieldId`), if it still holds a value. The one definition ⇧⌘C, Quick Access ⏎
+    /// and ⌘R's unfocused fallback share, and the field the presence prompt calls "the password".
+    ///
+    /// Never picked by label or by position: both can be changed in the edit sheet without a
+    /// presence check, so "the field called password" or "the first concealed field" would let a
+    /// relabelled or reordered PIN take its place.
+    var passwordField: FieldView? {
+        guard let id = primarySecretFieldId else { return nil }
+        return fields.first { $0.id == id && $0.concealed && $0.hasValue }
+    }
+}

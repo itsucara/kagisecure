@@ -7,7 +7,7 @@
 //!    lowercase, trimmed, with any leading `'\u{feff}'` removed
 //!    ([`dialect::normalize_header_cell`]).
 //! 3. Choose a dialect: `--format` when the caller named one, or an exact match of the normalized
-//!    header against [`dialect::detect`]'s signature table otherwise. Either way, the dialect's
+//!    header against `dialect::detect`'s signature table otherwise. Either way, the dialect's
 //!    own `Columns::resolve` still validates that every column it needs is present — an explicit
 //!    `--format` skips *detection*, never *validation*.
 //! 4. Stream the rows one at a time through the dialect's `map_row`, pushing an item per non-empty

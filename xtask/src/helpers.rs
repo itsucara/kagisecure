@@ -19,8 +19,9 @@ pub const HELPERS: [&str; 3] = ["kagisecure-mcp", "kagisecure-nmhost", "kagisecu
 /// Where inside `Contents` they go. Must match `kagisecure_agent::bundle::HELPERS_DIR`.
 pub const HELPERS_DIR: &str = "Helpers";
 
-/// The crate each of them comes out of.
-const PACKAGES: [&str; 3] = ["kagisecure-mcp", "kagisecure-nmhost", "kagisecure-cli"];
+/// The crate each of them comes out of. `pub(crate)` so `dist_windows` can build the same three
+/// packages for a Windows target without a second copy of the list drifting from this one.
+pub(crate) const PACKAGES: [&str; 3] = ["kagisecure-mcp", "kagisecure-nmhost", "kagisecure-cli"];
 
 /// Apple silicon.
 pub const AARCH64: &str = "aarch64-apple-darwin";

@@ -6,6 +6,16 @@
 - **Refines:** [ADR-0007](0007-m2-daemon-and-ipc-deviations.md),
   [ADR-0013](0013-agent-library-split.md), [architecture.md](../architecture.md) §4.2
 
+> **Amended by [ADR-0036](0036-agent-requested-browser-fill.md) (2026-09-26):** the host is full
+> duplex on macOS and Linux. The app may send a `Push` (two opaque ids, no value) at any time; a
+> second thread writes each one to stdout between replies, re-encoded from its typed form like
+> everything else (§2), and an app frame that is neither a push nor a reply is dropped. Requests
+> are still answered one at a time, in order, each exactly once. On Windows the host stays lock
+> step and forwards no pushes, since Windows never offers agent fills. After a reconnect the host
+> replays the last `Hello` it forwarded before anything else, and keeps the app's answer to itself,
+> so a session survives a lock and unlock with its capabilities. It still holds nothing and
+> decides nothing (§1).
+
 ## Context
 
 A browser extension cannot open a Unix socket. Chromium's only channel to a local program is

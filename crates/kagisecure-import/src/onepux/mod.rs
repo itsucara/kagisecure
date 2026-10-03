@@ -51,7 +51,7 @@ use std::path::Path;
 
 use ciborium::Value as Cbor;
 use kagisecure_core::Totp;
-use kagisecure_core::model::FieldKind;
+use kagisecure_core::model::{FieldKind, SecretText};
 use serde_json::Value;
 use zeroize::Zeroizing;
 use zip::ZipArchive;
@@ -583,7 +583,7 @@ fn apply_details(
     if let Some(notes) = details.notes_plain.take()
         && !notes.trim().is_empty()
     {
-        item.notes = Some(notes);
+        item.notes = Some(SecretText::new(notes));
     }
 
     for field in std::mem::take(&mut details.login_fields) {

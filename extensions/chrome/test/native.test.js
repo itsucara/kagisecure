@@ -12,6 +12,8 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 // ---------------------------------------------------------------------------------------
 // A fake browser
@@ -185,4 +187,272 @@ test("a dropped port fails everything waiting rather than hanging", async () => 
   const reply = await inFlight;
   assert.equal(reply.reply, "error");
   assert.equal(native.state().status, "disconnected");
+});
+
+// ---------------------------------------------------------------------------------------
+// Pushes and capabilities (ADR-0036)
+// ---------------------------------------------------------------------------------------
+
+/** The port's message listeners, reached through a fresh Chromium `KsNative`. */
+function loadNativeWithPort() {
+  const native = loadNative();
+  const listeners = [];
+  const realConnect = globalThis.chrome.runtime.connectNative;
+  globalThis.chrome.runtime.connectNative = (name) => {
+    const port = realConnect(name);
+    const addListener = port.onMessage.addListener;
+    port.onMessage.addListener = (fn) => {
+      listeners.push(fn);
+      addListener(fn);
+    };
+    return port;
+  };
+  return { native, deliver: (frame) => listeners.forEach((fn) => fn(frame)) };
+}
+
+test("chromium declares agent_fill at hello", async () => {
+  const native = loadNative();
+  scripted = [welcome(true)];
+  await native.ensureHello();
+  const hello = sent.find((body) => body.ask === "hello");
+  assert.deepEqual(hello.capabilities, ["agent_fill"]);
+  assert.deepEqual(Array.from(native.CAPABILITIES), ["agent_fill"]);
+});
+
+test("safari_never_declares_agent_fill", async () => {
+  // The Safari build: the same file, told apart by the scheme of its own URL and nothing else.
+  const safariSent = [];
+  globalThis.chrome = {
+    runtime: {
+      id: "5A1B2C3D-0000-4000-8000-000000000000",
+      lastError: null,
+      getURL: () => "safari-web-extension://5A1B2C3D-0000-4000-8000-000000000000/",
+      getManifest: () => ({ version: "0.1.0" }),
+      // Safari has a `connectNative` of its own; it must not be what decides anything.
+      connectNative: () => {
+        throw new Error("the Safari build must not open a port");
+      },
+      sendNativeMessage: (_application, envelope, callback) => {
+        safariSent.push(envelope.body);
+        setTimeout(() => callback(welcome(true)), 0);
+      },
+    },
+  };
+  delete globalThis.KsNative;
+  delete require.cache[require.resolve("../../shared/native.js")];
+  require("../../shared/native.js");
+  const native = globalThis.KsNative;
+
+  assert.equal(native.isSafari, true);
+  assert.deepEqual(Array.from(native.CAPABILITIES), []);
+  await native.ensureHello();
+  const hello = safariSent.find((body) => body.ask === "hello");
+  assert.ok(hello, "no hello was sent");
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(hello, "capabilities"),
+    false,
+    "the Safari hello declared capabilities",
+  );
+
+  // And the native handler, which rewrites the JavaScript side's `hello` and builds its own for
+  // every other connection, strips the list in the one and never adds it to the other — so a
+  // Safari session declares nothing even if this file ever did.
+  const swift = fs.readFileSync(
+    path.join(
+      __dirname,
+      "..",
+      "..",
+      "..",
+      "apps",
+      "macos",
+      "KagisecureSafariExtension",
+      "SafariWebExtensionHandler.swift",
+    ),
+    "utf8",
+  );
+  assert.match(swift, /body\["capabilities"\]\s*=\s*\[String\]\(\)/);
+  assert.match(swift, /"capabilities":\s*\[String\]\(\)/);
+  assert.doesNotMatch(swift, /"agent_fill"/, "the handler names the capability as a value");
+});
+
+test("a push frame goes to the push listener and never answers a request", async () => {
+  const { native, deliver } = loadNativeWithPort();
+  scripted = [welcome(true)];
+  await native.ensureHello();
+
+  const pushes = [];
+  native.onPush((push) => pushes.push(push));
+
+  // A request in flight: its reply is queued behind the two pushes below.
+  scripted = [{ reply: "status", unlocked: true }];
+  const inFlight = native.call({ ask: "status" });
+  deliver({ ksx: 1, push: { push: "locate", probe_id: "probe-1" } });
+  deliver({ ksx: 1, push: { push: "deliver", probe_id: "probe-1", grant_id: "grant-1" } });
+  assert.deepEqual(pushes, [
+    { push: "locate", probe_id: "probe-1" },
+    { push: "deliver", probe_id: "probe-1", grant_id: "grant-1" },
+  ]);
+  // The request is answered by its own reply, not by either push.
+  assert.deepEqual(await inFlight, { reply: "status", unlocked: true });
+});
+
+test("a frame that is both a reply and a push, or neither, is no push", async () => {
+  const { native, deliver } = loadNativeWithPort();
+  scripted = [welcome(true)];
+  await native.ensureHello();
+  const pushes = [];
+  native.onPush((push) => pushes.push(push));
+
+  deliver({ ksx: 1, id: "x99", push: { push: "locate", probe_id: "p" } });
+  deliver({ ksx: 1, body: {}, push: { push: "locate", probe_id: "p" } });
+  deliver({ ksx: 2, push: { push: "locate", probe_id: "p" } });
+  deliver({ ksx: 1, push: "locate" });
+  deliver({ ksx: 1 });
+  deliver(null);
+  assert.deepEqual(pushes, []);
+});
+
+test("a push listener that throws does not break the port", async () => {
+  const { native, deliver } = loadNativeWithPort();
+  scripted = [welcome(true)];
+  await native.ensureHello();
+  native.onPush(() => {
+    throw new Error("listener bug");
+  });
+  deliver({ ksx: 1, push: { push: "locate", probe_id: "p" } });
+  scripted = [{ reply: "status", unlocked: true }];
+  assert.equal((await native.call({ ask: "status" })).reply, "status");
+});
+
+// ---------------------------------------------------------------------------------------
+// Automatic reconnect after the port drops
+// ---------------------------------------------------------------------------------------
+
+test("auto-reconnect is off by default: a dropped port is left disconnected", async () => {
+  const native = loadNative();
+  scripted = [welcome(true)];
+  await native.ensureHello();
+  disconnected();
+  assert.equal(native.state().status, "disconnected");
+
+  // Long enough to cross the real schedule's first step, several times over, if anything had
+  // been scheduled.
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(
+    sent.filter((b) => b.ask === "hello").length,
+    1,
+    "nothing retries on its own until background.js opts in",
+  );
+});
+
+test("once enabled, a dropped port retries hello on its own, with backoff", async () => {
+  const native = loadNative();
+  native.enableAutoReconnect([5, 10, 15]);
+  try {
+    scripted = [welcome(true)];
+    await native.ensureHello();
+    assert.equal(native.state().status, "ready");
+
+    // The port drops — a lock, a crash of the helper, or the helper going away.
+    disconnected();
+    assert.equal(native.state().status, "disconnected");
+
+    // Nothing was scripted to answer with, as if the app were still unreachable: the retry's own
+    // `hello` gets the fake port's default "no reply scripted" error, so it must try again.
+    await new Promise((r) => setTimeout(r, 40));
+    const helloCount = sent.filter((b) => b.ask === "hello").length;
+    assert.ok(helloCount >= 2, `expected at least one automatic retry, saw ${helloCount}`);
+    assert.equal(native.state().status, "error", "still not connected, since nothing answered");
+
+    // The app comes back: the next retry's `hello` gets a real welcome and the loop stops.
+    scripted.push(welcome(true));
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(native.state().status, "ready", "a later retry re-established the session");
+
+    const afterSuccess = sent.filter((b) => b.ask === "hello").length;
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(
+      sent.filter((b) => b.ask === "hello").length,
+      afterSuccess,
+      "the schedule stops once hello succeeds again",
+    );
+  } finally {
+    native.disableAutoReconnect();
+  }
+});
+
+test("a welcome that reports the vault as locked still stops the retry loop", async () => {
+  const native = loadNative();
+  native.enableAutoReconnect([5, 10]);
+  try {
+    scripted = [welcome(true)];
+    await native.ensureHello();
+    disconnected();
+
+    // The retry's own hello succeeds, but the vault is locked — a legitimate `welcome`, not a
+    // failure to reach the app at all, so nothing further should be scheduled.
+    scripted.push(welcome(false));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(native.state().status, "locked");
+
+    const afterWelcome = sent.filter((b) => b.ask === "hello").length;
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(
+      sent.filter((b) => b.ask === "hello").length,
+      afterWelcome,
+      "a locked-but-reachable app is not retried further",
+    );
+  } finally {
+    native.disableAutoReconnect();
+  }
+});
+
+test("disableAutoReconnect cancels a pending retry", async () => {
+  const native = loadNative();
+  native.enableAutoReconnect([20]);
+  scripted = [welcome(true)];
+  await native.ensureHello();
+  disconnected();
+
+  native.disableAutoReconnect();
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(
+    sent.filter((b) => b.ask === "hello").length,
+    1,
+    "turning it off cancels whatever was pending",
+  );
+});
+
+test("Safari never schedules a reconnect: there is no port for it", async () => {
+  const safariSent = [];
+  globalThis.chrome = {
+    runtime: {
+      id: "5A1B2C3D-0000-4000-8000-000000000000",
+      lastError: null,
+      getURL: () => "safari-web-extension://5A1B2C3D-0000-4000-8000-000000000000/",
+      getManifest: () => ({ version: "0.1.0" }),
+      connectNative: () => {
+        throw new Error("the Safari build must not open a port");
+      },
+      sendNativeMessage: (_application, envelope, callback) => {
+        safariSent.push(envelope.body);
+        setTimeout(() => callback(welcome(true)), 0);
+      },
+    },
+  };
+  delete globalThis.KsNative;
+  delete require.cache[require.resolve("../../shared/native.js")];
+  require("../../shared/native.js");
+  const native = globalThis.KsNative;
+  native.enableAutoReconnect([5]);
+  try {
+    await native.ensureHello();
+    // Safari has no `dropPort` path at all — nothing here should ever schedule anything — but the
+    // guard in `scheduleReconnect` is asserted directly by there being no port to disconnect and
+    // no further hellos appearing on their own.
+    await new Promise((r) => setTimeout(r, 40));
+    assert.equal(safariSent.filter((b) => b.ask === "hello").length, 1);
+  } finally {
+    native.disableAutoReconnect();
+  }
 });

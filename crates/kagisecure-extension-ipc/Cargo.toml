@@ -18,6 +18,10 @@ kagisecure-core = { workspace = true, features = ["proto"] }
 # directory, and for `executable_for_pid`/`kernel_peer`, so both channels identify a peer the
 # same way. No protocol type is imported: the two wire formats share nothing (ADR-0019).
 kagisecure-ipc = { workspace = true }
+# For the Unicode rendering of a punycode host on the agent-fill sheet (`origin::AgentOriginRendering`).
+# Already in the tree through `url`, with the same features; named directly because `url` does not
+# re-export it.
+idna = "1.1"
 interprocess = "2.4"
 psl = "2.1"
 serde = { version = "1", features = ["derive"] }

@@ -87,10 +87,21 @@ enum PasteboardService {
     /// A human sentence for the Settings pane and the copy confirmation.
     static func clearDescription(seconds: Int) -> String {
         switch seconds {
-        case 0: "Never cleared"
-        case 60: "Cleared after 1 minute"
-        case let s where s % 60 == 0: "Cleared after \(s / 60) minutes"
-        default: "Cleared after \(seconds) seconds"
+        case 0: String(localized: "Never cleared")
+        case 60: String(localized: "Cleared after 1 minute")
+        case let s where s % 60 == 0: String(localized: "Cleared after \(s / 60) minutes")
+        default: String(localized: "Cleared after \(seconds) seconds")
+        }
+    }
+
+    /// The same interval without the "Cleared after" lead-in, for the Settings picker's choices
+    /// ("Never", "1 minute", "15 seconds").
+    static func clearIntervalDescription(seconds: Int) -> String {
+        switch seconds {
+        case 0: String(localized: "Never")
+        case 60: String(localized: "1 minute")
+        case let s where s % 60 == 0: String(localized: "\(s / 60) minutes")
+        default: String(localized: "\(seconds) seconds")
         }
     }
 }

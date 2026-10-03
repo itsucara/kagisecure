@@ -104,14 +104,90 @@ pub fn placeholder_sidecar_path() -> PathBuf {
     crate::bundle::installed_helper(SIDECAR)
 }
 
+/// Escape a path for a JSON string literal or a TOML basic string.
+///
+/// The two formats agree on the escapes that a filesystem path can actually need: a backslash
+/// and a double quote. Without this a Windows path is pasted into `claude_desktop_config.json`
+/// as `"C:\Program Files\..."`, where `\P` and `\k` are invalid escape sequences and the whole
+/// file fails to parse — the snippet looks right and the client silently starts no server. The
+/// same is true of Codex's TOML, whose basic strings escape identically.
+///
+/// On macOS and Linux this changes nothing for any path a real install has; it also stops a `"`
+/// or `\` in an unusual path from producing a broken snippet there.
+fn escape_for_quoted_string(path: &Path) -> String {
+    path.display()
+        .to_string()
+        .replace('\\', r"\\")
+        .replace('"', "\\\"")
+}
+
+/// Quote the sidecar path for the Claude Code snippet's one shell command line.
+///
+/// Every other snippet here is JSON or TOML, and [`escape_for_quoted_string`] already handles
+/// those. This is the one snippet that is a shell command, and a command line's quoting rules
+/// come from the shell that runs it — a fact about the platform, not a formatting preference —
+/// so which shell it targets is decided here, once, at compile time, rather than guessed at
+/// render time for a shell nobody asked about:
+///
+/// * **Windows** targets PowerShell, the default shell Windows Terminal opens (`cmd.exe` and
+///   PowerShell quote differently, and PowerShell is the one a fresh install actually lands in).
+///   [`quote_for_powershell`] wraps the path in single quotes and doubles any embedded `'`, which
+///   is PowerShell's own escape for a literal quote inside a single-quoted string. No `&`-call
+///   operator is needed: `&` is only required when a quoted string names the *command itself*
+///   (`& 'C:\Program Files\...\foo.exe'`); here the path is one **argument** to `claude`, which is
+///   already the command, so `claude mcp add ... -- 'C:\Program Files\...'` parses as a single
+///   argument on its own.
+/// * **Everywhere else** targets a POSIX shell (`sh`/`bash`/`zsh` — what a terminal on macOS or
+///   Linux actually runs). [`quote_for_posix_shell`] leaves the path bare when it contains none of
+///   a POSIX shell's special characters, which is every path an ordinary install has today and is
+///   what `the_claude_code_snippet_is_the_command_from_the_docs` pins verbatim; only a path that
+///   actually needs it — a space being the realistic case, since macOS is happy to put an app
+///   under `~/Library/Application Support/...` — is single-quoted, with an embedded `'`
+///   closed-and-reopened as `'\''` (POSIX has no escape *inside* a single-quoted string).
+#[must_use]
+fn quote_for_shell(path: &Path) -> String {
+    let raw = path.display().to_string();
+    if cfg!(windows) {
+        quote_for_powershell(&raw)
+    } else {
+        quote_for_posix_shell(&raw)
+    }
+}
+
+/// PowerShell single-quoting: wrap, doubling any embedded `'`.
+///
+/// Unlike the POSIX case below there is no "leave it bare" branch: a single-quoted PowerShell
+/// string does no interpolation at all, so quoting unconditionally costs nothing and a bare path
+/// with a space in it (`C:\Program Files\...`, the common case) would otherwise split into two
+/// arguments.
+fn quote_for_powershell(raw: &str) -> String {
+    format!("'{}'", raw.replace('\'', "''"))
+}
+
+/// POSIX single-quoting, applied only when the path needs it.
+///
+/// A path made only of characters no POSIX shell treats specially is returned unchanged — which
+/// is what every snippet rendered before this function existed did, and what
+/// `the_claude_code_snippet_is_the_command_from_the_docs` continues to assert byte-for-byte.
+/// Anything else is wrapped in single quotes, with an embedded `'` closed and reopened as `'\''`.
+fn quote_for_posix_shell(raw: &str) -> String {
+    const SAFE: &str = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-";
+    if !raw.is_empty() && raw.chars().all(|c| SAFE.contains(c)) {
+        raw.to_owned()
+    } else {
+        format!("'{}'", raw.replace('\'', r"'\''"))
+    }
+}
+
 /// The snippet for one client.
 #[must_use]
 pub fn snippet_for(client: SetupClient, sidecar: &Path) -> Snippet {
-    let path = sidecar.display();
+    let shell_quoted = quote_for_shell(sidecar);
+    let quoted = escape_for_quoted_string(sidecar);
     let body = match client {
         SetupClient::ClaudeCode => format!(
             "# Claude Code — run this once, in the project you want kagisecure available in:\n\
-             claude mcp add --transport stdio kagisecure -s local -- {path}\n\
+             claude mcp add --transport stdio kagisecure -s local -- {shell_quoted}\n\
              \n\
              # Check it:\n\
              claude mcp list\n\
@@ -120,10 +196,10 @@ pub fn snippet_for(client: SetupClient, sidecar: &Path) -> Snippet {
              claude mcp remove kagisecure -s local"
         ),
         SetupClient::ClaudeDesktop | SetupClient::Cursor => format!(
-            "{{\n  \"mcpServers\": {{\n    \"kagisecure\": {{\n      \"command\": \"{path}\",\n      \"args\": []\n    }}\n  }}\n}}"
+            "{{\n  \"mcpServers\": {{\n    \"kagisecure\": {{\n      \"command\": \"{quoted}\",\n      \"args\": []\n    }}\n  }}\n}}"
         ),
         SetupClient::Codex => {
-            format!("[mcp_servers.kagisecure]\ncommand = \"{path}\"\nargs = []")
+            format!("[mcp_servers.kagisecure]\ncommand = \"{quoted}\"\nargs = []")
         }
     };
     Snippet {
@@ -145,6 +221,11 @@ pub fn all_snippets(sidecar: &Path) -> Vec<Snippet> {
 }
 
 /// That client's standard configuration file, when it has one.
+///
+/// Only Claude Desktop differs by platform: it follows each OS's own convention for
+/// application data, where Codex and Cursor both use a dot-directory in `$HOME` on every
+/// platform (`%USERPROFILE%\.codex` and `%USERPROFILE%\.cursor` on Windows, which is what those
+/// tools actually read).
 #[must_use]
 pub fn config_path(client: SetupClient) -> Option<PathBuf> {
     let dirs = directories::BaseDirs::new()?;
@@ -161,7 +242,22 @@ pub fn config_path(client: SetupClient) -> Option<PathBuf> {
                         .join("claude_desktop_config.json"),
                 )
             }
-            #[cfg(not(target_os = "macos"))]
+            // `%APPDATA%` — the roaming one, which is where Claude Desktop for Windows keeps
+            // `claude_desktop_config.json`, and not `%LOCALAPPDATA%`, which is where its
+            // installed program files go. `BaseDirs::config_dir` is `FOLDERID_RoamingAppData`
+            // here, so this is `%APPDATA%\Claude\claude_desktop_config.json`. Falling through to
+            // the `~/.config` branch below, as this used to, would have named a directory
+            // Windows has no concept of and nothing would ever read.
+            #[cfg(windows)]
+            {
+                Some(
+                    dirs.config_dir()
+                        .join("Claude")
+                        .join("claude_desktop_config.json"),
+                )
+            }
+            // Linux and the BSDs: XDG.
+            #[cfg(not(any(target_os = "macos", windows)))]
             {
                 Some(
                     home.join(".config")
@@ -185,11 +281,89 @@ mod tests {
             SetupClient::ClaudeCode,
             Path::new("/opt/bin/kagisecure-mcp"),
         );
-        assert!(s.body.contains(
-            "claude mcp add --transport stdio kagisecure -s local -- /opt/bin/kagisecure-mcp"
-        ));
+        // Quoted per the shell this build's snippet targets (`quote_for_shell`): bare on a POSIX
+        // build, since this path has none of a POSIX shell's special characters and that is what
+        // mcp-server.md §9 shows verbatim; single-quoted on a Windows build, since PowerShell
+        // quoting is unconditional (`quote_for_powershell`) — a Windows build never renders the
+        // macOS doc's exact bytes, only its equivalent for the shell it targets.
+        let path = if cfg!(windows) {
+            "'/opt/bin/kagisecure-mcp'"
+        } else {
+            "/opt/bin/kagisecure-mcp"
+        };
+        assert!(s.body.contains(&format!(
+            "claude mcp add --transport stdio kagisecure -s local -- {path}"
+        )));
         assert!(s.body.contains("claude mcp remove kagisecure -s local"));
         assert!(s.config_path.is_none(), "Claude Code has no file to write");
+    }
+
+    /// PowerShell quoting is exercised directly rather than through `cfg!(windows)`, so this
+    /// holds on every platform this crate builds on and not only on a Windows CI runner.
+    #[test]
+    fn a_plain_path_is_quoted_unconditionally_for_powershell() {
+        assert_eq!(
+            quote_for_powershell(r"C:\Program Files\Kagisecure\Helpers\kagisecure-mcp.exe"),
+            r"'C:\Program Files\Kagisecure\Helpers\kagisecure-mcp.exe'"
+        );
+    }
+
+    /// PowerShell's escape for a literal `'` inside a single-quoted string is `''`, not `\'`.
+    #[test]
+    fn an_embedded_single_quote_is_doubled_for_powershell() {
+        assert_eq!(
+            quote_for_powershell(r"C:\Users\o'brien\kagisecure-mcp.exe"),
+            r"'C:\Users\o''brien\kagisecure-mcp.exe'"
+        );
+    }
+
+    /// The common case — no special characters — is left bare, which is what
+    /// `the_claude_code_snippet_is_the_command_from_the_docs` pins for the rendered snippet.
+    #[test]
+    fn an_ordinary_posix_path_is_left_bare() {
+        assert_eq!(
+            quote_for_posix_shell("/opt/homebrew/bin/kagisecure-mcp"),
+            "/opt/homebrew/bin/kagisecure-mcp"
+        );
+    }
+
+    /// A space is the realistic case a real macOS install can have
+    /// (`~/Library/Application Support/...`), and turns one argument into two if left bare.
+    #[test]
+    fn a_posix_path_with_a_space_is_single_quoted() {
+        assert_eq!(
+            quote_for_posix_shell("/Users/x/Application Support/kagisecure-mcp"),
+            "'/Users/x/Application Support/kagisecure-mcp'"
+        );
+    }
+
+    /// POSIX has no escape inside a single-quoted string, so an embedded `'` has to close the
+    /// quoting, contribute an escaped quote, and reopen it: `'\''`.
+    #[test]
+    fn an_embedded_single_quote_closes_and_reopens_the_posix_quoting() {
+        assert_eq!(
+            quote_for_posix_shell("/Users/o'brien/kagisecure-mcp"),
+            r"'/Users/o'\''brien/kagisecure-mcp'"
+        );
+    }
+
+    /// The snippet actually rendered for `SetupClient::ClaudeCode` reflects whichever shell this
+    /// binary targets — asserted end to end, unlike the two tests above which test the quoting
+    /// functions directly regardless of host platform.
+    #[test]
+    fn the_claude_code_snippet_quotes_a_path_with_a_space() {
+        let sidecar = if cfg!(windows) {
+            std::path::PathBuf::from(r"C:\Program Files\Kagisecure\Helpers\kagisecure-mcp.exe")
+        } else {
+            std::path::PathBuf::from("/Users/x/Application Support/kagisecure-mcp")
+        };
+        let expected = if cfg!(windows) {
+            quote_for_powershell(&sidecar.display().to_string())
+        } else {
+            quote_for_posix_shell(&sidecar.display().to_string())
+        };
+        let s = snippet_for(SetupClient::ClaudeCode, &sidecar);
+        assert!(s.body.contains(&format!("-- {expected}")), "{}", s.body);
     }
 
     #[test]
@@ -202,6 +376,36 @@ mod tests {
                 "/opt/bin/kagisecure-mcp"
             );
         }
+    }
+
+    /// A Windows install path goes into a JSON string and a TOML basic string, both of which
+    /// treat `\` as the start of an escape sequence. Asserted on every platform, because the
+    /// symptom on Windows — a config file the client refuses to parse, and therefore no server
+    /// at all — gives the user nothing to go on, and nobody would think to look at a snippet
+    /// that renders perfectly well on a Mac.
+    #[test]
+    fn a_windows_path_survives_json_and_toml_quoting() {
+        let sidecar =
+            std::path::PathBuf::from(r"C:\Program Files\Kagisecure\Helpers\kagisecure-mcp.exe");
+
+        for client in [SetupClient::ClaudeDesktop, SetupClient::Cursor] {
+            let body = snippet_for(client, &sidecar).body;
+            let parsed: serde_json::Value =
+                serde_json::from_str(&body).expect("a backslash path must still be valid JSON");
+            assert_eq!(
+                parsed["mcpServers"]["kagisecure"]["command"]
+                    .as_str()
+                    .expect("command is a string"),
+                sidecar.display().to_string(),
+                "and must round-trip back to the original path"
+            );
+        }
+
+        let toml = snippet_for(SetupClient::Codex, &sidecar).body;
+        assert!(
+            toml.contains(r"C:\\Program Files\\Kagisecure\\Helpers\\kagisecure-mcp.exe"),
+            "TOML basic strings escape backslashes too: {toml}"
+        );
     }
 
     #[test]
@@ -235,15 +439,24 @@ mod tests {
     #[test]
     fn the_placeholder_is_where_a_real_install_puts_the_sidecar() {
         let shown = placeholder_sidecar_path();
-        assert_eq!(
-            shown,
-            std::path::PathBuf::from(
-                "/Applications/Kagisecure.app/Contents/Helpers/kagisecure-mcp"
-            )
-        );
-        // Every snippet the setup screen renders quotes that path verbatim.
+        // Built from the same constants `bundle::installed_helper` composes, joined with
+        // `Path::join` rather than typed out with `/`, so this holds on Windows (`\` separator,
+        // `SIDECAR` carrying a `.exe` suffix) as well as on macOS.
+        let expected = std::path::PathBuf::from(crate::bundle::INSTALLED_APP)
+            .join("Contents")
+            .join(crate::bundle::HELPERS_DIR)
+            .join(SIDECAR);
+        assert_eq!(shown, expected);
+        // Every snippet the setup screen renders quotes that path — verbatim in the shell
+        // snippet, escaped (per `escape_for_quoted_string`) in the JSON and TOML ones, which
+        // matters on Windows where the path itself contains `\`.
+        let raw = shown.display().to_string();
+        let escaped = escape_for_quoted_string(&shown);
         for snippet in all_snippets(&shown) {
-            assert!(snippet.body.contains(&shown.display().to_string()));
+            assert!(
+                snippet.body.contains(&raw) || snippet.body.contains(&escaped),
+                "{snippet:?}"
+            );
         }
     }
 

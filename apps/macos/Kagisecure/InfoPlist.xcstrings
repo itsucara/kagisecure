@@ -1,0 +1,27 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "CFBundleDisplayName": {
+      "shouldTranslate": false
+    },
+    "CFBundleName": {
+      "shouldTranslate": false
+    },
+    "NSFaceIDUsageDescription": {
+      "comment": "Shown above the Touch ID sheet when the Secure Enclave key is used.",
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kagisecure の保管庫のロックを解除します。"
+          }
+        }
+      }
+    },
+    "NSHumanReadableCopyright": {
+      "shouldTranslate": false
+    }
+  },
+  "version": "1.0"
+}

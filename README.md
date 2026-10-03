@@ -11,7 +11,7 @@ inside a local encrypted vault and never enter the model's context window.
 > **Status: M6 complete (core + CLI + MCP sidecar + macOS app + browser autofill in Chromium
 > *and* Safari, wired together); M7 (release engineering) next.** An agent can discover and
 > inject secrets without ever seeing one, and the thing that approves it is now the app:
-> `kagisecure-mcp` implements all nine MCP tools, and the macOS app owns the unlocked vault, runs
+> `kagisecure-mcp` implements the MCP tools, and the macOS app owns the unlocked vault, runs
 > the IPC listener, and raises a native approval sheet — caller identity with a code-signature
 > verdict, the canonical directory, the variable **names**, a `.gitignore` warning, an editable
 > lease TTL, and a Touch ID gate before anything is granted. `kagisecure daemon` is retained as
@@ -39,6 +39,26 @@ inside a local encrypted vault and never enter the model's context window.
 > signed, where on Chrome our own native messaging helper is the half that cannot be attributed.
 > Enable it in Safari → Settings → Extensions. It needs a signed build —
 > `make macos SIGN=developer-id` ([ADR-0025](docs/decisions/0025-developer-id-for-local-builds.md)).
+>
+> **Native apps and QuickType, through system-wide AutoFill**
+> ([ADR-0045](docs/decisions/0045-system-wide-autofill-credential-provider.md)). Enable
+> **Kagisecure** under **System Settings › General › AutoFill & Passwords**. After one Touch ID in
+> the app, suggested logins fill in any app until the vault locks. Needs a build signed with the
+> AutoFill provisioning profile (see the ADR's "Owner steps").
+>
+> **An agent driving your browser can ask for a login to be filled, since M9**
+> ([ADR-0036](docs/decisions/0036-agent-requested-browser-fill.md)). It calls `request_fill` with
+> an item and the site it believes it is on; the browser, not the agent, says which tab is in front
+> and where it really is; a look-alike site is refused before you are asked; and the app raises its
+> own sheet for every fill, with Touch ID unless a fill on that exact site passed it in the last ten
+> minutes — one approval covers both pages of a sign-in that asks
+> for the username first, and a one-time code always needs its own. The agent is told which fields
+> were filled, never a value — but an agent that can run script in the page can read what was
+> typed there, and the sheet says so. Off by default (Agent access → "Let agents ask to fill logins
+> in your browser"), macOS and Chromium-family browsers only: not in Safari yet, and never on
+> Windows. **Not yet seen working end to end**: the Rust and extension halves are tested
+> headlessly, and the browser scenarios are written but have not been run with a real browser and
+> the real app.
 >
 > Two honest caveats, and one thing not yet seen working. Touch ID for *unlock* still falls back to
 > the master password: `keychain-access-groups` is a restricted entitlement that AMFI validates
@@ -119,7 +139,9 @@ prompt, and performs the injection itself.
    256-bit printable recovery code (Base32 with a checksum) that unlocks the vault independent of
    the master password or any enrolled biometric. See
    [docs/vault-format.md §3.2](docs/vault-format.md#32-recovery).
-6. **Local-first and offline.** kagisecure has no network code paths in v1.
+6. **Local-first and offline.** The vault, sharing and agent access never touch a server. The
+   only network request is the macOS app's update check ([ADR-0044](docs/decisions/0044-self-update-with-sparkle.md)),
+   which can be turned off; the Rust workspace has no network code.
 
 ## Install
 
@@ -199,18 +221,25 @@ Your one-time recovery code:
 Write it down now. It is shown once and is not stored anywhere.
 ```
 
-Add an item. Concealed values are prompted for — never typed on the command line, where they
-would land in `ps` output and your shell history:
+Add an item. Concealed values, one-time-password seeds and notes are all prompted for — never
+typed on the command line, where they would land in `ps` output and your shell history:
 
 ```console
 $ kagisecure item add --title "Acme staging" --category api-credential \
-      --field username=deploy --secret token
+      --field username=deploy --secret token --note
 Master password:
 Value for token:
+Note:
 Added 0f9ba24f-c09d-4b48-b4c1-83c6d5ec2c6b
 ```
 
-List and inspect. `item show` prints labels, not values, unless you ask:
+`--note` is a bare switch, not `--note "text"` — the same reason `--secret` only ever takes a
+label. For a note with more than one line, which a prompt cannot take, use `--note-file PATH`
+instead; for scripts, `--value-stdin` reads the note (after every `--secret` and `--totp` value)
+from the next line of standard input, same as it already does for those.
+
+List and inspect. `item show` prints labels, not values, unless you ask — and that includes notes,
+which are secret like any other field:
 
 ```console
 $ kagisecure item list
@@ -224,6 +253,9 @@ token               concealed     <concealed>
 
 Concealed values are hidden. Pass --reveal to print them to this terminal.
 ```
+
+Every `--reveal` — and every `kagisecure totp` — is recorded in the audit log (best-effort: it
+never blocks the value from reaching the terminal, even if the write itself fails).
 
 Run something with the secret in its environment. kagisecure spawns the process itself — no
 shell, so `;` and `$(...)` in an argument are just characters — and replaces injected values in
@@ -239,6 +271,11 @@ $ kagisecure run --no-masking --env TOKEN="Acme staging/token" -- npm run deploy
 Masking is a guard against accidental echo — a stack trace printing a connection string — not a
 security boundary: it is an exact-value substring replacement, so a command that transforms the
 value before printing it defeats it.
+
+`run` and `env write` are audit-first: the log durably records that a release was authorized
+*before* the child is spawned or the `.env` file is written, never after. If that cannot be made
+durable — the vault is busy, or something changed it underneath this process — kagisecure refuses
+with exit 9 and starts nothing, rather than releasing a secret it might fail to have recorded.
 
 Forgotten the master password? That is what the recovery code is for:
 
@@ -326,8 +363,9 @@ signature did or did not establish), the resolved directory, the variable **name
 for a fingerprint before granting anything. Deny needs no fingerprint; nobody answering for 60
 seconds returns `APPROVAL_TIMEOUT`. Afterwards, the app's Audit pane, or
 `kagisecure audit --verify`, shows every call — including the ones you refused — and checks the
-log's hash chain. `kagisecure lock` drops the key and every lease, from a terminal, even when the
-app is what is holding them.
+log's hash chain. `kagisecure lock` drops the key and every lease, ends any `run_with_env` child
+still running with an injected environment, and does this from a terminal even when the app is
+what is holding them.
 
 The full walkthrough is in [docs/mcp-server.md §11](docs/mcp-server.md).
 
@@ -352,9 +390,18 @@ Other things worth knowing:
 | macOS app | SwiftUI + UniFFI | **working (M4–M6)**, universal (arm64 + x86_64; Intel builds but is untested on hardware) |
 | Browser extension (Chrome, Edge, Arc, Brave, Chromium) | MV3 / native messaging | **working (M6)** |
 | Browser extension (Safari) | Safari Web Extension in the app bundle | **working (M6b)**, needs `SIGN=developer-id`; last hop unconfirmed |
-| Windows app | WinUI 3 / C# | deferred (optional / later) |
+| Windows app | WinUI 3 / C# | **working**, verified on Windows 11; not release-signed yet (see below) |
 
-No Electron, no Tauri, no webview. Native UI on both platforms.
+No Electron, no Tauri, no webview. Native UI on both desktops. macOS is the platform with
+published releases (M0–M7, [releasing.md](docs/releasing.md)); Windows has a CLI, an MCP sidecar,
+a native-messaging host, a WinUI 3 app and a per-user MSI installer, built outside the numbered
+roadmap and verified on Windows 11 by the commits that built them — see
+[docs/windows-port.md](docs/windows-port.md) for the full, dated record of what is and is not
+verified. In short, **not yet verified:** Windows Hello on a real device (only fakes and the
+master-password fallback so far), the release code-signing path, a fill from a real Chrome or Edge
+(the native host has only been driven by a stand-in browser), and — **not yet built at all** —
+the Windows app's side of the presence-gated releases merged from the transactional-vault work
+(its Rust half is tested; the C#/WinUI half was written on a Mac with no .NET SDK).
 
 ## The macOS app
 
@@ -412,12 +459,42 @@ on 2026-09-19) fails the build if they drift
 ([ADR-0009](docs/decisions/0009-checked-in-swift-bindings.md)). Point the app at a scratch vault
 with `KAGISECURE_HOME`.
 
+## The Windows app
+
+A WinUI 3 / C# app (`apps/windows/Kagisecure.App`) over a hand-written C ABI
+(`kagisecure-ffi`'s `capi` feature, [ADR-0003](docs/decisions/0003-uniffi-vs-csbindgen.md)'s
+fallback, since `uniffi-bindgen-cs` doesn't support the pinned UniFFI version): first-run and
+lock/unlock, item create/edit/favourite/archive/trash/restore/delete, live TOTP codes, the
+password generator, import (1PUX and CSV), and Agent access (Environments, Leases, MCP setup,
+browser extension setup) with an approval sheet gated by Windows Hello
+(`UserConsentVerifier`, falling back to the master password where Hello is unavailable —
+[ADR-0033](docs/decisions/0033-windows-hello-key-derivation.md)). Authenticode peer
+verification stands in for macOS's code-signature check, structurally weaker by design
+([ADR-0032](docs/decisions/0032-authenticode-peer-verification.md)). As on macOS, nothing
+concealed — a field, a one-time code, the notes — is shown or copied without a fresh presence
+check, which on Windows is Windows Hello (the master password only where Hello is unavailable),
+reached through the C ABI as one fail-closed callback
+([ADR-0038](docs/decisions/0038-app-release-needs-presence.md), "Windows"; written, not yet built
+on Windows).
+
+Build and run it from `apps/windows/README.md`; package a release MSI with:
+
+```powershell
+cargo xtask dist-windows
+```
+
+(per-user, unelevated WiX v5 MSI, every PE Authenticode-signed individually —
+[ADR-0034](docs/decisions/0034-windows-distribution-a-per-user-signed-msi.md),
+[docs/releasing.md](docs/releasing.md) §10). See
+[docs/windows-port.md](docs/windows-port.md) for the full, dated record of what has and has not
+been verified on real hardware.
+
 ## Testing
 
 Three layers, and they answer different questions.
 
 ```console
-$ make check                     # cargo build + cargo test  — 476 Rust tests
+$ make check                     # cargo build + cargo test  — every Rust test in the workspace
 $ make macos-test                # xcodebuild test           — 91 Swift tests
 $ npm --prefix extensions/chrome test   # node --test         — 43 JavaScript tests
 $ make e2e                       # the end-to-end harness    — 75 scenarios
@@ -451,9 +528,9 @@ nothing touches `~/Library/Application Support/kagisecure/`.
 
 | Suite | What it drives | Scenarios |
 | --- | --- | --- |
-| `mcp` | `kagisecure-mcp` over a socket to `kagisecure daemon`, three processes | 21 |
-| `extension` | Microsoft Edge, the real unpacked extension, `kagisecure-nmhost` | 15 + 2 manual |
-| `cli` | `kagisecure` against scratch vaults and the committed golden vector | 18 |
+| `mcp` | `kagisecure-mcp` over a socket to `kagisecure daemon`, three processes | 22 |
+| `extension` | Microsoft Edge, the real unpacked extension, `kagisecure-nmhost`, and a real `kagisecure-mcp` asking for agent fills | 25 + 2 manual |
+| `cli` | `kagisecure` against scratch vaults and the committed golden vector | 20 |
 | `app` | The real `Kagisecure.app` through XCUITest, and a real `kagisecure-mcp` raising its approval sheet | 21 |
 
 The browser suite needs a real login session (an MV3 extension does not load in a headless
@@ -482,6 +559,7 @@ against.
 | [docs/vault-format.md](docs/vault-format.md) | File format, key hierarchy, AEAD choice, item schema |
 | [docs/mcp-server.md](docs/mcp-server.md) | Tool list + schemas, approval flow, lease model, client setup |
 | [docs/browser-extension.md](docs/browser-extension.md) | Autofill: the protocol, approvals and leases, setup for Chromium and Safari, the source layout, testing |
+| [docs/chrome-web-store.md](docs/chrome-web-store.md) | Publishing the Chromium extension: the store package, the dashboard's answers, assets, first upload and updates |
 | [docs/threat-model-browser-extension.md](docs/threat-model-browser-extension.md) | The browser as a new semi-trusted component: assets, adversaries, residual risks |
 | [docs/ui-spec.md](docs/ui-spec.md) | The macOS app: layout, item rendering, lock screen, shortcuts |
 | [docs/import.md](docs/import.md) | Importing from 1PUX and the four CSV exports: mapping, dedupe, the report, what is dropped |

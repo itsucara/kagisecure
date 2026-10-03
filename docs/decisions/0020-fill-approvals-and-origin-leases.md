@@ -1,6 +1,7 @@
 # ADR-0020: Fill approvals share the queue; fill leases do not share the store
 
-- **Status:** Accepted
+- **Status:** Accepted; §4 superseded by
+  [ADR-0037](0037-every-fill-needs-a-fresh-presence-proof.md)
 - **Date:** 2026-09-10
 - **Deciders:** M6 implementation
 - **Refines:** [ADR-0014](0014-approval-queue-over-ffi.md),
@@ -31,7 +32,9 @@ rather than handed from one to the other.
 Consequences that fell out of sharing, both fixed rather than tolerated:
 
 - `VaultHandle::set_lock_hook` **replaces**, so two listeners registering one would have left the
-  other's leases alive past a lock. `add_lock_hook` is the additive form.
+  other's leases alive past a lock. `add_lock_hook` is the additive form. (Later: the replacing
+  `set_lock_hook` was removed altogether, so that no registration — a second MCP agent's included —
+  can displace another; every hook is additive and is retired only by its own guard.)
 - `AgentService.stop()` now **waits** for its poll loop to exit. `Task.cancel()` returns
   immediately, and a loop parked inside `agentNextRequest` could wake up after its service had
   stopped and take a request off a queue that now belongs to somebody else. Bounded at three poll
@@ -62,6 +65,15 @@ a silent substitution is expensive.
 Recorded as a deliberate narrowing, in the strict direction.
 
 ### 4. A lease excuses the biometric and nothing else
+
+> **Superseded by [ADR-0037](0037-every-fill-needs-a-fresh-presence-proof.md) (2026-09-25).** A
+> fill lease now excuses **the sheet** and never the biometric: every fill that crosses a secret
+> goes through `ApprovalQueue::ask` and a fresh LocalAuthentication check, and a lease only turns
+> the full sheet into a presence-only prompt. The reasoning below was wrong in one premise, kept
+> as written so the mistake stays legible: "the user's explicit action in the page" is enforced
+> by `event.isTrusted`, which a browser- or OS-automation agent satisfies with no human present.
+> The durations in the third paragraph are unchanged; the argument for them now bounds how long a
+> sheet is skipped rather than how long a fingerprint is.
 
 Every fill still requires the user's explicit action in the page — the in-field icon or ⌘\ — and
 that is enforced in the content script, not here. What the lease buys is that logging in twice in

@@ -18,10 +18,41 @@ project with no staffing commitment, and dated roadmaps in that situation are fi
 | M6 | Browser-extension autofill (Safari + Chrome) | M3, M4 | complete |
 | M7 | Release engineering (macOS) | M3, M4, M5 | substantially complete — see below |
 | M8 | Import (1PUX and the CSV family) | M1, M3 | scheduled, in progress |
+| M9 | Agent-requested browser fills | M4, M6 | built on macOS with Chromium-family browsers; not yet run in a real browser — see below |
+| M10 | Shared vaults (offline, file exchange) | M1, M3, M4, M8; ADR-0039/0040 implemented | scheduled, in progress — Phases 0, 1 and 2 built (library and CLI), agents and approvals (Phase 4), and the macOS app's UI (Phase 5); see below |
+| M11 | Unattended jobs (machine vault, standing grants, run-browser sign-ins) | M4, M9; ADR-0035 implemented; ADR-0039/0040 implemented | in progress — Phases 0 to 5 built (the documentation page, the core, the engine, the app, shared-vault copies, unattended sign-ins); macOS only; the interactive fill of a machine-vault login is not built; see below |
+
+**Update, 2026-09-26:** M9 — an agent driving the user's browser asks for a saved login to be
+filled into the tab in front, and a human approves each fill in the app
+([ADR-0036](decisions/0036-agent-requested-browser-fill.md)) — was scheduled and built, Phases 1–3,
+ahead of shared vaults ([ADR-0035](decisions/0035-shared-vaults.md), accepted the same day), which
+stays unscheduled. It is recorded as M9 because ADR-0036 proposed a milestone after M8, not
+because M8 is finished.
+
+**Update, 2026-09-27:** shared vaults ([ADR-0035](decisions/0035-shared-vaults.md)) are scheduled
+as **M10**, Phases 0–4 of its addendum's plan, macOS only; the macOS app's shared-vault UI (Phase 5)
+is not scheduled. Phase 0 — the prerequisites — is built. The next free number was M10 because
+ADR-0036's milestone took M9 first, as ADR-0035's proposed roadmap changes anticipated. Those
+changes are applied below: the platform decision paragraph, the Sync subsection and the post-v1
+list.
+
+**Update, 2026-09-27 (later):** unattended jobs ([ADR-0042](decisions/0042-unattended-agent-access.md),
+accepted for macOS the same day) are scheduled as **M11**, in progress: Phase 0, the page
+[unattended-credentials.md](unattended-credentials.md), and Phase 1, the machine vault in
+`kagisecure-core`, are built. The owner chose convenience over defence in depth for it: arming
+persists across restarts with no expiry, with the machine vault's key in the Keychain (ADR-0042,
+"Implementation decisions"). Headless hosts stay out of it
+([ADR-0043](decisions/0043-unattended-access-on-headless-hosts.md), proposed). ADR-0042 asked to
+follow shared vaults; M11 is in progress beside M10 rather than after it, since its Phase 1 needs
+only M10's Phase 0 (the body passthrough and the `format_ver` lever), which is built.
 
 **Platform decision (2026-09-09):** kagisecure is macOS-first. The product is modeled on
-1Password 8's desktop look and feel (see [ui-spec.md](ui-spec.md)) and is single-user, no
-teams/sharing. Windows (formerly M4) and iOS are demoted to unscheduled optional work — see
+1Password 8's desktop look and feel (see [ui-spec.md](ui-spec.md)) and has no accounts, no
+server and no network code. It was scoped as single-user; sharing a vault with a small group, or
+between one person's computers, is designed in
+[ADR-0035](decisions/0035-shared-vaults.md) (accepted; scheduled as M10) as an offline feature in
+which the users move files themselves and kagisecure adds no networking. Windows (formerly M4) and
+iOS are demoted to unscheduled optional work — see
 "Optional / later" below — so they no longer occupy numbered slots or block anything. Import was
 demoted with them in that pass; it has since been **re-scheduled as M8** (2026-09-13), because
 "you cannot get your passwords in" is the one gap that stops a working password manager from being
@@ -29,6 +60,27 @@ usable at all. M5 (password generator + TOTP) can start as soon as M3's core UI 
 M1's core crate exist, in parallel with M4's MCP-integration work. M6 (browser extension) is a
 committed milestone, not optional, but is sequenced after the app and its MCP integration exist
 because it depends on both for native messaging and item lookup.
+
+**Update, 2026-09-25:** Windows work was started, at the user's request, without reversing the
+platform decision above — the "Windows app (optional / later, formerly M4)" entry further down
+still describes the roadmap's own position; this is a record of out-of-roadmap work, not a
+re-scheduling. What landed: a WinUI 3 app shell (first-run, lock/unlock, item CRUD, live TOTP,
+import, Agent access, an approval sheet, Settings and Audit); a hand-written C ABI and C# interop
+layer covering the full UniFFI surface ([ADR-0003](decisions/0003-uniffi-vs-csbindgen.md)'s
+fallback, since `uniffi-bindgen-cs` does not support the pinned UniFFI version); Authenticode peer
+verification, structurally weaker than the macOS check by design
+([ADR-0032](decisions/0032-authenticode-peer-verification.md)); Windows Hello vault-key wrapping
+([ADR-0033](decisions/0033-windows-hello-key-derivation.md)); named-pipe IPC hardened with an
+owner-only DACL, SQOS-identified client connections and a same-user gate; HKCU native-messaging
+registration; and a per-user, unelevated WiX MSI release pipeline with every PE signed
+individually ([ADR-0034](decisions/0034-windows-distribution-a-per-user-signed-msi.md)). See
+[windows-port.md](windows-port.md) for the dated, itemized record of what is and is not verified —
+notably, Windows Hello has been exercised only against fakes and the master-password fallback (no
+Hello-capable device on the machine that built this), the release signing path is unverified (no
+certificate available), a fill from a real Chrome or Edge has not been driven end to end (the
+process-ancestry walk, the Windows browser executable table, registry registration and Authenticode
+browser checks are built and unit-tested, but only a stand-in browser has exercised the native
+host), and none of this has been run against the Unix test suite.
 
 > Assumption: M7 (release engineering) depends on M3–M5, not M6. The password generator and TOTP
 > are required features (see [ui-spec.md](ui-spec.md) §8–§9) and should gate a 1.0 release; the
@@ -534,8 +586,10 @@ turning the browser into a new place secret values are exposed to anything untru
       `github.io`, bare public suffixes, ports, `localhost`, IPv4 and IPv6 literals, IDNs, and the
       iframe policy in both directions. [ADR-0022](decisions/0022-public-suffix-list.md) records
       the list's update policy.
-- [x] Autofill never fires without an explicit user action for that page load; there is no
-      autofill-on-load default. Two entry points reach a fill — the in-field icon's click handler
+- [x] Autofill never fires without an explicit user action for that page load, or an approval in
+      the app, with a biometric, for an agent's request naming that page (M9,
+      [ADR-0036](decisions/0036-agent-requested-browser-fill.md)); there is no autofill-on-load
+      default. Two entry points reach a fill — the in-field icon's click handler
       and the ⌘\ handler — and both check `event.isTrusted`, so a page cannot synthesize either.
       The e2e asserts the password field is empty after a fresh load of a page that *does* match.
 - [x] TOTP copy from the extension popup requires the vault to be unlocked and matches the same
@@ -604,7 +658,10 @@ a different byte order; the ancestry check),
 [ADR-0023](decisions/0023-safari-deferred.md) (Safari deferred — **superseded**),
 [ADR-0024](decisions/0024-safari-app-group-socket.md) (the App Group socket, the identity gate, and
 what an ad-hoc build gets), [ADR-0025](decisions/0025-developer-id-for-local-builds.md)
-(`SIGN=developer-id`, and the Secure Enclave measurement it produced).
+(`SIGN=developer-id`, and the Secure Enclave measurement it produced). Later corrected by
+[ADR-0037](decisions/0037-every-fill-needs-a-fresh-presence-proof.md): a fill lease skips the
+sheet and never the Touch ID check, because a trusted click in the page is not proof of a person
+— superseding ADR-0020 §4.
 
 **Findings, recorded because they changed the plan:**
 
@@ -687,6 +744,14 @@ what an ad-hoc build gets), [ADR-0025](decisions/0025-developer-id-for-local-bui
 
 Shipping to people who are not us. Windows release engineering is unscheduled along with the
 Windows app itself (see "Optional / later").
+
+**Update, 2026-09-25:** a Windows release pipeline was nonetheless built as part of the
+out-of-roadmap Windows work — `cargo xtask dist-windows` produces a per-user, unelevated WiX MSI
+with every PE Authenticode-signed individually
+([ADR-0034](decisions/0034-windows-distribution-a-per-user-signed-msi.md);
+[releasing.md](releasing.md) §10). Unlike the macOS pipeline above, it has not been run with a real
+signing certificate (none is available on the machine that built it), so the signed path is
+unverified; an unsigned run has been verified end to end (install, launch, uninstall).
 
 **Scope**
 
@@ -802,7 +867,8 @@ contributor's spare-time task. Design: [import.md](import.md) and
 - [ ] Zip bombs, `../` entry names, truncated archives, malformed JSON and over-limit item/field
       counts are rejected within the stated limits without OOM. `proptest` runs as part of `cargo
       test`, needing no nightly toolchain (in CI until CI was removed on 2026-09-19, locally
-      since); the cargo-fuzz targets need nightly and run under `make fuzz` instead.
+      since); `cargo-fuzz` targets need nightly and are run by hand from the root `fuzz/` crate
+      (`cargo +nightly fuzz run <target>`), and none covers the import parsers yet.
 - [ ] **Canary tests.** A unique marker seeded as a password by every parser appears in no byte of
       the Markdown report, the JSON report, any `Debug` of the plan or report, or any error — as a
       Rust test and again as an e2e scenario in suite C that runs `import --dry-run`,
@@ -811,6 +877,299 @@ contributor's spare-time task. Design: [import.md](import.md) and
 
 **Not in this milestone:** `.env` import, attachment storage, passkey import, and any Windows
 wizard (there is no Windows app to add one to).
+
+**Update, 2026-09-25:** the last clause is no longer accurate — the out-of-roadmap Windows app
+(see the platform-decision update above) now has an import wizard: 1PUX and the CSV variants,
+detected automatically, a preview of counts and drops, a target-vault picker, commit, and an offer
+to shred the source. Not built: a manual format override or per-item import detail (see
+`apps/windows/README.md`).
+
+---
+
+## M9 — Agent-requested browser fills
+
+Scheduled and built 2026-09-26, from [ADR-0036](decisions/0036-agent-requested-browser-fill.md)'s
+proposed roadmap changes. An agent that has navigated the user's own browser to a sign-in page
+calls `request_fill` with an item and the origin it believes it is on; the browser says which tab
+is in front and where it really is, a human approves on the Mac with a biometric, and the value is
+typed into that page. The tool returns field names, never a value — and an agent that can run
+script in the page can read what was typed there, which the sheet says in one sentence
+(ADR-0036 §8).
+
+**Scope**
+
+- Phases 1–3 of ADR-0036: username and password on one page; identifier-first sign-ins, one
+  approval for two pages; one-time codes, always a separate approval and never via the clipboard;
+  the approval-fatigue limits (one sheet at a time, three per agent per ten minutes, sticky
+  denials, *Deny and block*, a block after a second origin mismatch); the tripwire.
+- macOS with Chromium-family browsers. Off by default, behind a switch in Agent access that needs a
+  presence check to turn on.
+- **Not in scope:** Safari (ADR-0036 Phase 4, unscheduled until the app-to-extension push is
+  measured on that transport) and Windows (excluded, not degraded — every call there is
+  `FILL_UNAVAILABLE`).
+
+**Acceptance criteria** (from ADR-0036; checked 2026-09-26 against what has been run — see its
+"Implementation status" for the detail)
+
+- [x] No tool result carries a value, asserted by the canary with a successful fill. — The real
+      `kagisecure-mcp` binary drives a fill that succeeds, and the marker is in no byte it writes, in
+      six encodings (`crates/kagisecure-agent/tests/agent_fill_sidecar.rs`).
+- [x] A fill lands only in the visible, active, top-frame document whose browser-established origin
+      is covered by the item and equals the agent's claim. — Tested against a scripted service
+      worker over the real extension client, every binding refused when changed alone, and on the
+      extension's side by its unit tests. **Not yet observed in a real browser:** e2e suite B's four
+      agent-fill scenarios are written and have not been run.
+- [x] Every agent fill needs a sheet and a biometric. — In Rust the kind is never presence-only and
+      no lease is minted or consulted (tested). The app's sheet asks Touch ID every time; its unit
+      tests are **compiled, not run**, and no XCUITest drives it.
+- [x] Hidden and absent items are indistinguishable. — One code, one message, one path, before any
+      browser is asked (tested).
+- [x] Sheets per agent are bounded. — Tested by counting the sheets shown on an injectable clock.
+      The app's blocks list and notices are built; their unit tests are compiled, not run.
+- [x] Every request is audited, and nothing is released that could not be. — Tested, including
+      the release transaction failing closed. ADR-0036's implementation decision 37 names the three
+      answers that leave no entry, and why.
+- [x] Safari parity or a documented reason for its absence. — Documented (ADR-0036 §12): Safari's
+      transport opens one connection per message, so the app has nothing to push on. The Browser
+      extension screen says Safari does not support agent fills yet.
+
+**Still open:** an agent fill driven end to end with the real app, a real Touch ID and a real
+browser — `make e2e SUITE=extension` for the browser half and the manual pass in
+[browser-extension.md](browser-extension.md) §7 for the rest; running the app's unit tests
+(`make macos-test`); and Phase 4 (Safari).
+
+---
+
+## M10 — Shared vaults (offline, file exchange)
+
+Scheduled 2026-09-27, from [ADR-0035](decisions/0035-shared-vaults.md) and its addendum of the same
+day, whose decisions, corrections and encoding contract are what is built against. A shared vault
+is its own file of signed, encrypted records; members are people, and every computer has its own
+device key; copies are exchanged by the users — a private git repository or sync folder per shared
+vault (an exchange directory), or a bundle file — and merged as a set union, with conflicting edits
+shown to a person. kagisecure adds no network code, runs no git command and has no sync server.
+
+**Scope**
+
+- The addendum's Phases 0–4, in its corrected order (correction C): prerequisites; crypto and
+  records (`kagisecure-shared`); replica, merge, exchange, enrollment and the CLI; verification;
+  agents and approvals — agents reach shared items only through the existing MCP tools, and
+  ADR-0002 is unchanged.
+- macOS. **Added 2026-09-27:** the macOS app's shared-vault UI (Phase 5), in the owner's
+  simplified form — no conflict resolution (last writer wins), an informational rotation list, and
+  invitations as one file and six words. **Not in scope:** the copied-personal-vault prompt, and
+  Phase 6.
+
+**Status by phase**
+
+- **Phase 0 — prerequisites: built 2026-09-27.** Every vault file keeps its own `format_ver`: this
+  build reads 1 and 2, refuses 3, writes new vaults as 1, and never writes a version 2 file back
+  as 1. The personal vault body holds shared-vault device keys as secret material
+  ([vault-format.md](vault-format.md) §2.3); a vault holding one is written as `format_ver` 2 after
+  a create-new `<vault>.bak-1` backup (§9 rule 3), and "keep this app's version" keeps device keys
+  only the file holds. Golden vector `v2-devices-argon2id-64k.kagivault`. The `kagisecure-shared`
+  crate exists with its error type and the dependencies the addendum settled (`hpke` 0.14.1,
+  `ed25519-dalek` 3.0.0), a dependency guard keeping it — and its public-key crates — out of the
+  MCP, IPC, extension and native-messaging crates and network code out of it, and `deny.toml`
+  bans on network crates; `cargo deny check` passes. **Not yet:** anything that creates or uses a
+  device key, and anything a person can run — that starts with the Phase 2 CLI.
+- **Phase 1 — crypto and records: built 2026-09-27, as a library.** `kagisecure-shared` now holds
+  every format and state machine the later phases build on, specified in
+  [shared-vault-format.md](shared-vault-format.md) and the ADR-0035 addendum, as simplified on
+  2026-09-27 to the **trusted-admin model** (convenience first; admins are trusted, and the
+  adversarial roster defences were dropped — the threat model lists them as known limitations):
+  - *Keys and primitives:* strictly checked device public keys (canonical, not of small order,
+    Ed25519 torsion-free), device key ids and fingerprints (ten groups of five digits and a QR
+    payload); device key pairs generated from the core's generator and loaded from the personal
+    vault's entry; domain-separated Ed25519 signatures over typed, unambiguously framed content,
+    verified strictly; epoch keys wrapped to devices with HPKE (RFC 9180 Base mode, `hpke` pinned
+    to 0.14.1, randomness drawn from the core); record keys.
+  - *Records:* the signed envelope, read by hand within bounds and verified before its body is
+    trusted or its payload decrypted, as a record of the vault being read; the body; item and
+    environment payloads under a payload AAD binding vault, author, kind, parents, roster heads
+    and epoch, with local-only settings cleared on writing and on reading; CBOR scanned before it
+    is decoded and deterministic where it is signed.
+  - *Roster and epochs:* the roster computed from signed roster records from a genesis pinned
+    by the replica's header or a verified invitation — roster records applied in one order, each
+    needing an active admin device at that point, a removed device's records ignored from its
+    removal on, a warning with fewer than two admins and a frozen roster with none, read-only for
+    operations this build does not understand; epochs minted on creation and on removal, wrapped
+    to every current device, older keys granted to devices added later, and each device's key
+    ring, writing under the newest epoch it holds.
+  - *Exchange:* the bundle file and the exchange directory's export (which never replaces the
+    record itself and repairs anything else under its name) and bounded import.
+  - *Tests:* RFC 7748, 8032 and 9180 vectors; golden vectors `device-v1.cbor`,
+    `record-item-v1.ksr`, `record-roster-genesis-v1.ksr` and `record-epoch-new-v1.ksr`; hex known
+    answers for a record key and a wrap; property tests that the roster and key ring are
+    independent of record order and repeats; tests of honest behaviour (a removal stops a device,
+    the unknown operation, one genesis, epochs after a removal, grants to a new device); the
+    `shared_record`, `shared_payloads`, `shared_bundle` and `shared_roster` fuzz targets with a
+    stable driver.
+
+  **Not yet:** anything a person can run. No replica, merge, CLI command or app screen uses any of
+  it, so none of the acceptance criteria below is met by Phase 1 alone; the threat model marks
+  what each mitigation has built ([threat-model.md](threat-model.md), M-22–M-28). The crates it
+  adds have no independent audit of the versions in use (threat-model W-6).
+- **Phase 2 — replica, merge, exchange, enrollment and the CLI: built 2026-09-27.** The library
+  (ADR-0035 addendum, decisions 77–85): the replica, the view, the last-writer-wins merge, writing,
+  create, enroll and join, removal, the informational rotation list, import, export, sync and
+  rebuild. The CLI, on top of it: `shared create|list|status`, `shared item add|set|rm|show
+  [--reveal]` and `shared env create|add-var` (the personal vault's own item and environment
+  argument shapes, reused), `shared invite --role reader|writer|admin --out <file>` (the passphrase
+  is printed once) and `shared join [--passphrase-stdin]`, `shared remove --device|--member
+  [--reason]`, `shared role`, `shared rotation-list`, `shared sync`, `shared import|export
+  --bundle|--dir` and `shared rebuild --from-dir|--from-bundle`, `shared set-dir` — a `<vault>`
+  reference resolves by id, unique id prefix or exact name, the same convention an item or an
+  environment reference already uses. A new exit code, `EXIT_SHARED_REFUSED` (13), for a role or
+  key refusal. Phase 0's carried obligation is discharged: `shared create` and `shared join`, the
+  two commands that can create this personal vault's first shared-vault device key, print the
+  format-upgrade backup's path and the threat-model W-22 caveat when they do, and `kagisecure
+  recover` — the only command that changes the master password or reissues the recovery code —
+  offers (`--delete-backups` to skip asking) to delete every `<vault>.bak-*` beside the vault
+  regardless of which command wrote it. `crates/kagisecure-cli/tests/shared_exchange.rs` drives
+  three personal vaults through the binary alone: create, invite, join, write on each, sync
+  through a shared folder in different orders to one converged `shared item show`, a removed
+  device unable to read a later value, and rebuilding a damaged replica from the exchange folder.
+  **Not yet:** `kagisecure_shared` itself changed nothing to support the CLI (no crate edits were
+  needed); the macOS app's own shared-vault UI is Phase 5, unscheduled.
+- **Phase 3 — verification:** not started.
+- **Phase 4 — agents and approvals: built 2026-09-27, not yet tried in the running app.**
+  (ADR-0035 §14; addendum, decisions 88–93, under the owner's priorities: no conflicts to refuse,
+  since the merge is last-writer-wins.) Shared vaults are served to agents read-only beside the
+  personal vault: the host attaches each open shared vault to the personal vault's handle — the
+  app's `SharedVaultSession` when it opens one, `kagisecure daemon` at start — and the lock
+  detaches them all. The MCP tools (`list_vaults`, now with `shared: true`; `list_items`;
+  `list_environments`; `describe_item`; `write_env_file` and `run_with_env` on a shared
+  environment; `request_fill` on a shared login) and the browser extension's own fills read the
+  personal vault and the attached shared vaults as one catalog (`kagisecure-agent`'s
+  `catalog.rs`): agent visibility is this computer's own setting, hidden by default (the app's
+  item detail, or `kagisecure env agent-access --shared-vault`); a personal id wins over a shared
+  one and two entries with one name are both listed, the shared one as `name (vault)`; writes to a
+  shared vault are `INVALID_ARGUMENT`. The approval sheet, the agent-fill sheet and the daemon's
+  prompt name the shared vault and every value changed since this computer last approved
+  releasing it, which is never released under an earlier lease or presence-only prompt. Releases
+  go to the personal vault's audit log with the shared vault's id. Tests: the extended canary, the
+  roster test and the lexical guard (below), `crates/kagisecure-agent/tests/shared_vaults.rs`, a
+  shared login filled through the real native host (`tests/extension.rs`), and the app's own
+  wiring (`crates/kagisecure-ffi/tests/shared_vaults.rs`). **Not yet:** the Windows app's sheet
+  does not show the two new facts; nothing has been driven through the running app with a real
+  agent.
+- **Phase 5 — the macOS app: built 2026-09-27, not yet tried on two Macs.**
+  ([ui-spec.md](ui-spec.md) §16.) A Shared section in the sidebar; creating a vault (a name and a
+  folder), inviting (a name and a role; a file and six words shown once), joining (the file, the
+  words, the folder found beside the file); a members pane (roles, removal, local names, another
+  computer, the rotation list, rebuilding a damaged copy); shared items in the existing list,
+  detail and edit sheet with the same presence-gated releases; automatic sync on folder changes,
+  app activation and each local change; and every shared vault closed when the personal vault
+  locks. The FFI surface is `SharedVaultSession` (`crates/kagisecure-ffi/src/shared.rs`), tested
+  through two personal vaults and one folder (`crates/kagisecure-ffi/tests/shared_vaults.rs`) and
+  through the app's store (`apps/macos/KagisecureTests/SharedVaultStoreTests.swift`). A shared
+  vault's own Environments pane (ui-spec.md §16.7) — create, bind a variable to a literal or one
+  of the vault's own items, rename, share with agents, delete, with a reader able to view and to
+  flip this device's own agent-visibility flag but nothing else — is built on the same
+  `EnvironmentEditor` the personal vault uses (`EnvironmentEditing`), tested in
+  `crates/kagisecure-ffi/tests/shared_vaults.rs` and
+  `apps/macos/KagisecureTests/SharedEnvironmentsTests.swift`. **Not yet:** shared items in Quick
+  Access, a notice for the personal vault's format upgrade on the first device key, and names
+  that travel between members (roster labels' sealing is undecided).
+
+**Acceptance criteria** (ADR-0035's proposed list, plus Phase 0's own)
+
+- [x] A personal vault holding device keys is written as `format_ver` 2, a version 2 file is never
+      written back as version 1, a version 3 file is refused before any key is derived, and the
+      first upgrade takes a create-new backup. — `crates/kagisecure-core/tests/format_version.rs`,
+      `device_keys.rs`, and the golden vector's two tests in `tests/vault.rs`.
+- [x] `cargo deny check` passes with the public-key dependencies in the graph, with no new
+      duplicate versions.
+- [ ] Two replicas edited offline and exchanged in any order, any number of times, converge to the
+      same state, and no value present in either is lost.
+- [ ] A removed device's records created after the cut are rejected on every replica.
+- [ ] The rotation list for a removed device matches, exactly, the set of current values encrypted
+      under an epoch wrapped to it — including values written late under a stale epoch.
+- [x] No MCP tool and no IPC message can add a device, change a role, import, export or resolve a
+      conflict; asserted by test. — `no_ipc_message_changes_a_shared_roster`
+      (`crates/kagisecure-agent/tests/shared_vaults.rs`) and the lexical guard on
+      `kagisecure_shared::admin` (`crates/kagisecure-shared/tests/dependency_guard.rs`).
+- [x] A value seeded into a shared vault never appears in any byte the sidecar writes (the ADR-0002
+      canary, extended). — `a_value_in_a_shared_vault_never_reaches_the_model`.
+- [ ] No crate and no part of the app gains a network-capable dependency or a socket other than
+      the existing local ones; asserted by a dependency check. — Built for the Rust workspace in
+      Phase 0 (`deny.toml` bans, and `crates/kagisecure-shared/tests/dependency_guard.rs`); left
+      open until the phases that add code are done, and the macOS app is not covered by either.
+
+---
+
+## M11 — Unattended jobs (machine vault, standing grants, run-browser sign-ins)
+
+Scheduled 2026-09-27, from [ADR-0042](decisions/0042-unattended-agent-access.md) (accepted for macOS; headless hosts are
+[ADR-0043](decisions/0043-unattended-access-on-headless-hosts.md)'s, proposed). A separate machine
+vault that a person arms, released only to jobs kagisecure starts on a schedule, under standing
+grants: commands run with pinned variables, and sign-ins of dedicated service accounts typed at one
+exact origin in a browser kagisecure launches for the run. The personal vault, shared vaults and
+the user's own browsers are never unattended. Arming persists across restarts and has no expiry
+(the owner's choice; ADR-0042 implementation decision 1, threat-model W-24).
+
+**Phases** (ADR-0042, "Implementation plan"):
+
+- **Phase 0 — documentation.** Built: [unattended-credentials.md](unattended-credentials.md).
+- **Phase 1 — core.** Built: the machine vault file with no slot of its own
+  (`Vault::create_machine`, `Vault::open_machine`), its key in the personal vault's body and the
+  bytes the app will keep in the Keychain (`MachineVaultKey`), the structural rules enforced on
+  every write, job and grant records of both kinds, `format_ver` 3 and its golden vectors
+  (`crates/kagisecure-core/src/vault/machine.rs`, `tests/machine_vault.rs`).
+- **Phase 2 — the engine in `kagisecure-agent`: command grants.** Built: arming from the
+  Keychain's bytes with no expiry, the scheduler, runs in process groups of their own, ancestry
+  binding, the unattended socket, the release path, suspension, both logs, `NOT_GRANTED` and
+  `UNATTENDED_PAUSED`, the ordinary socket's reads of machine-vault environments, and the
+  `kagisecure-ffi` calls for the app (`crates/kagisecure-agent/src/unattended/`,
+  `tests/unattended.rs`).
+- **Phase 3 — the app.** Built: the Keychain and re-arming at launch, the arm sheet, one-sheet
+  jobs with their grants, environments copied from the personal vault (Update re-approves),
+  Agent access → Unattended jobs with Run Now, Revoke, Re-enable and Pause, the menu-bar state and
+  badge, "While you were away", notifications, and the Audit view's machine log with an Unattended
+  filter (`apps/macos/Kagisecure/Services/UnattendedService.swift`, `Views/UnattendedView.swift`,
+  `Views/NewJobSheet.swift`). Not yet exercised on a Mac by a person.
+- **Phase 4 — shared-vault copies.** Built: copies of shared environments (never a login's field)
+  with their provenance, the vault's policy (an admin's checkbox, allowed by default), copy records
+  every member reads, removed holders flagged, and copies marked when their source changes
+  instead of suspended (`crates/kagisecure-shared/src/unattended.rs`,
+  `crates/kagisecure-ffi/src/unattended_manage.rs`). The app also opens at login after the first
+  arm.
+- **Phase 5 — unattended sign-ins.** Built: the measurement (Edge and Chromium load the extension
+  headless and read the profile's manifest; Chrome and Brave do not — ADR-0042, "Phase 5: the
+  measurement"; a locked screen is still to measure with the owner present), a headless run
+  browser per run with a fresh profile and the job given its control endpoint, an extension
+  endpoint per run gated to that browser's descendants, login grants and the second `Approved`
+  constructor through ADR-0036's broker, strikes and the tripwire, logins copied from the personal
+  vault, and the sheet with the one-time-code switch (`crates/kagisecure-agent/src/unattended/`
+  `browser.rs` and `login.rs`, `crates/kagisecure-ffi/src/unattended_logins.rs`,
+  `e2e/suites/extension/unattended.test.mjs`). Left-site and challenge detection are not built
+  (implementation decision 45), nor the ordinary extension listener's interactive fill of a
+  machine-vault login.
+
+**Acceptance criteria** (ADR-0042's Phase 2 and 3 test lists, plus):
+
+- [x] Each structural rule of the machine vault is refused in `kagisecure-core`, and a personal
+      vault holding a machine key round-trips (Phase 1).
+- [ ] No release from the personal vault or a shared replica is possible without a presence proof,
+      armed or not; asserted by test.
+- [x] A request from any process not descended from a run kagisecure started is refused, whatever
+      grants exist.
+- [x] No MCP tool and no IPC message creates, widens, extends, re-enables or proposes a grant or a
+      job; asserted by test.
+- [ ] A restart leaves the machine vault armed, and it releases only to runs kagisecure starts;
+      pausing disarms and deletes the Keychain item. *(Changed from "a restart leaves it disarmed"
+      by the owner's decision of 2026-09-27.)*
+- [x] A value seeded into the machine vault never appears in any byte the sidecar writes, across a
+      successful unattended release (the ADR-0002 canary, extended).
+- [ ] An unattended fill lands only in the run's own browser, at the login grant's exact origin;
+      a session from any other browser is refused before it can ask anything *(both done: e2e
+      suite B, headless)*; the ordinary extension listener fills a machine-vault login only with a
+      sheet and a presence proof *(not built)*.
+- [ ] A one-time code is never filled unattended unless the login grant's switch is on, and never
+      onto the clipboard.
+- [x] A value seeded as a machine-vault password never appears in any byte the sidecar writes,
+      across a successful unattended fill (e2e suite B, `unattended.test.mjs`).
 
 ---
 
@@ -836,6 +1195,12 @@ ship. `kagisecure-core` and the vault format stay platform-agnostic and sync-rea
 meantime (per [architecture.md](architecture.md) and [vault-format.md](vault-format.md) §9), so
 this work is not blocked when it eventually starts; it is simply not being built now.
 
+**Update, 2026-09-25:** despite the above, Windows work was started at the user's request without
+formally rescheduling this entry — see the dated update on the platform decision near the top of
+this document, and [windows-port.md](windows-port.md) for the itemized, dated record. The
+acceptance criteria below are updated in place to reflect what is now verified, per that record,
+rather than left to imply nothing happened.
+
 > Parity wording note: the original M4 acceptance criteria below said "feature parity checklist
 > against M3 is complete," where M3 at the time meant the *entire* macOS app including MCP
 > integration. Under the current numbering, macOS's MCP integration is M4 and its
@@ -850,20 +1215,46 @@ this work is not blocked when it eventually starts; it is simply not being built
 binding from [ADR-0004](decisions/0004-biometric-key-wrapping.md); named-pipe IPC listener with a
 user-SID DACL; Authenticode signing, MSIX packaging, winget manifest.
 
-**Acceptance criteria** (updated to not assume a stale parity baseline):
+> **Update, 2026-09-25:** "MSIX packaging" above did not happen as scoped —
+> [ADR-0034](decisions/0034-windows-distribution-a-per-user-signed-msi.md) picked a per-user WiX
+> MSI instead, precisely because MSIX's registry/file virtualization would break the
+> `browser_setup.rs` writes this scope also lists. Authenticode signing was built
+> ([ADR-0032](decisions/0032-authenticode-peer-verification.md)). A winget manifest is generated
+> (`cargo xtask winget-manifest`, validated with `winget validate`) but not yet submitted — see the
+> winget item below.
 
-- [ ] The C# binding decision is recorded in ADR-0003 with the evidence (which UniFFI version
-      `uniffi-bindgen-cs` supported on the evaluation date).
+**Acceptance criteria** (updated to not assume a stale parity baseline; checked items and notes
+added 2026-09-25 against the record in [windows-port.md](windows-port.md)):
+
+- [x] The C# binding decision is recorded in ADR-0003 with the evidence (which UniFFI version
+      `uniffi-bindgen-cs` supported on the evaluation date). — Run 2026-09-25: fails C1 (targets
+      UniFFI 0.31, we pin 0.32) and C5; the fallback was taken.
 - [ ] Feature parity checklist against the completed macOS app (M3–M5, and M6 if shipped) is
-      complete, with any gaps listed in the release notes.
+      complete, with any gaps listed in the release notes. — Not written as a formal checklist.
+      Informally: item CRUD, live TOTP, import, agent access, Windows Hello and Settings/Audit
+      exist; QR-code TOTP setup, attachments, section add/rename UI and a manual import-format
+      override do not (`apps/windows/README.md`).
 - [ ] Windows Hello approval gates every injection; a TPM-less machine falls back to password with
-      a clear, non-silent warning.
+      a clear, non-silent warning. — The gate and the fallback are both built and exercised end to
+      end on this machine, which has no Hello device, so only the fallback path has been driven for
+      real; a real Windows Hello prompt has been exercised only against fakes (see
+      `b0bd595`'s commit message and `apps/windows/README.md`).
 - [ ] The app-specific binding is verified: a test tool that obtains Hello consent as the same user
-      but is not kagisecure cannot unwrap the vault key.
-- [ ] Named pipe is not accessible from a second local user account (test with two accounts).
+      but is not kagisecure cannot unwrap the vault key. — Not tested this way. `WindowsHelloServiceTests`
+      cover the DPAPI round trip and fallback against fakes, not an independent consent-only tool.
+- [ ] Named pipe is not accessible from a second local user account (test with two accounts). —
+      Still open; needs a second account. The DACL's shape (owner-only, one allow entry) is
+      asserted by tests; the refusal itself is correct-by-construction, not observed
+      (windows-port.md §2 Tier 1).
 - [ ] Vault files are byte-identical across platforms: a vault created on macOS opens on Windows
-      and vice versa, verified by the shared golden vectors.
-- [ ] `winget install kagisecure` works on a clean Windows VM.
+      and vice versa, verified by the shared golden vectors. — Not specifically re-verified as part
+      of this Windows work.
+- [ ] `winget install kagisecure` works on a clean Windows VM. — Not attempted end to end.
+      **Update, 2026-09-25:** a winget manifest now exists — `cargo xtask winget-manifest`
+      generates it from a built `dist-windows` MSI (`docs/releasing.md` §10.8,
+      [ADR-0034](decisions/0034-windows-distribution-a-per-user-signed-msi.md)'s addendum) — but it
+      is only generated, not submitted to `microsoft/winget-pkgs`; nothing has installed
+      `kagisecure` via `winget` on any machine yet.
 
 ### iOS
 
@@ -873,6 +1264,9 @@ Later; not scoped, not on the roadmap yet. Listed only so it is not mistaken for
 
 The format is a single file, so any file sync the user already runs works today. A first-party,
 conflict-aware sync service is a different, larger project than v1 and is not planned.
+Shared vaults ([ADR-0035](decisions/0035-shared-vaults.md), accepted; M10) make an existing file
+sync safe for several writers by merging exchanged copies instead of replacing the file; they do
+not add a sync service.
 
 ---
 
@@ -881,11 +1275,16 @@ conflict-aware sync service is a different, larger project than v1 and is not pl
 Recorded so they are not mistaken for oversights:
 
 - Linux GUI (GTK4 or a native-ish alternative); the CLI and sidecar already work on Linux from M2.
-- Team/shared vaults, which would need a key-sharing design the current format anticipates
-  (per-item subkeys) but does not implement.
+- ~~Team/shared vaults~~ Scheduled as M10 — see
+  [ADR-0035](decisions/0035-shared-vaults.md) and the M10 section above.
+- ~~Unattended use of machine credentials by scheduled jobs on this Mac~~ Scheduled as M11 — see
+  [ADR-0042](decisions/0042-unattended-agent-access.md) and the M11 section above.
 - SSH agent integration (`SSH_AUTH_SOCK`-style injection for imported SSH Key items).
 - TOTP code injection with per-use approval (distinct from M5's TOTP *generation and display*,
-  which is in scope — see M5's last acceptance criterion).
+  which is in scope — see M5's last acceptance criterion) — **the environment case only**: a code
+  injected into a process or a file, the `run_with_env`-style tool M5's last criterion deferred.
+  The *browser* case, an agent asking for a code to be filled into a page, is M9
+  ([ADR-0036](decisions/0036-agent-requested-browser-fill.md) §7.4).
 - Recovery-code UX hardening beyond v1's one-time print (e.g. re-issuing a new code after use,
   a "verify you saved it" re-entry step, physical-storage guidance).
 - Watchtower-style breach/reuse checking. Explicitly out of scope for the foreseeable future per

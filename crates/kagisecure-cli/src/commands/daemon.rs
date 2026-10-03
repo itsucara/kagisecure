@@ -43,7 +43,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use kagisecure_agent::approval::{ApprovalKind, ApprovalRequest, ClientVerification, Decision};
-use kagisecure_agent::{Agent, AgentConfig, VaultHandle};
+use kagisecure_agent::{Agent, AgentConfig, ReplicaSource, SharedSource, VaultHandle};
 use kagisecure_core::Vault;
 
 use crate::cli::{DaemonArgs, UsageError};
@@ -95,8 +95,39 @@ fn check_auto_approve(auto_approve: bool, debug_build: bool) -> Result<()> {
     Ok(())
 }
 
+/// What `--socket` (or `KAGISECURE_SOCKET`) names, or a usage error saying why it cannot.
+///
+/// The value is a socket path on Unix and a named pipe name on Windows — the platform's own
+/// answer to "where does a local socket live", decided in one place,
+/// [`Endpoint::parse`](kagisecure_ipc::endpoint::Endpoint::parse), which the sidecar's
+/// `Endpoint::discover` also goes through for the same variable.
+///
+/// A [`UsageError`] rather than a plain failure: the user named something this platform cannot
+/// listen on, which is a wrong invocation (exit 2), and the message has to say what to write
+/// instead. Before this, such a value was carried all the way to `bind` and surfaced as
+/// `Unsupported: "not a named pipe path"` — an opaque I/O error out of a flag the user set
+/// deliberately.
+///
+/// # Errors
+///
+/// [`UsageError`] when the value is not usable as an endpoint on this platform.
+fn socket_endpoint(
+    socket: Option<&std::ffi::OsStr>,
+) -> Result<Option<kagisecure_ipc::endpoint::Endpoint>> {
+    let Some(socket) = socket else {
+        return Ok(None);
+    };
+    match kagisecure_ipc::endpoint::Endpoint::parse(socket) {
+        Ok(endpoint) => Ok(Some(endpoint)),
+        Err(e) => Err(UsageError(format!("--socket (or KAGISECURE_SOCKET): {e}")).into()),
+    }
+}
+
 pub fn run(path: &Path, args: &DaemonArgs, input: &mut SecretInput) -> Result<()> {
     check_auto_approve(args.auto_approve, cfg!(debug_assertions))?;
+    // Both usage errors are settled before the master password is asked for: being told that a
+    // flag is wrong *after* typing it is a worse experience than being told before.
+    let endpoint = socket_endpoint(args.socket.as_deref())?;
 
     crate::commands::ensure_exists(path)?;
     let password = input.read("Master password")?;
@@ -104,12 +135,39 @@ pub fn run(path: &Path, args: &DaemonArgs, input: &mut SecretInput) -> Result<()
     drop(password);
 
     let banner_vaults = vault.vault_summaries();
+    // Every shared vault beside this one that a device key here opens is served too, read-only,
+    // until the vault locks (ADR-0035 §14). The attachments are the only thing that keeps them
+    // attached; the lock detaches and drops them, and their keys with them.
+    let shared = ReplicaSource::open_all(path, &vault);
     let handle = VaultHandle::new(vault);
+    let banner_shared: Vec<String> = shared
+        .iter()
+        .filter_map(|source| source.snapshot())
+        .map(|snapshot| {
+            let items = snapshot.items().iter().filter(|i| i.agent_visible).count();
+            let envs = snapshot
+                .environments()
+                .iter()
+                .filter(|e| e.agent_visible)
+                .count();
+            format!(
+                "{:<20} shared: {items} item(s) and {envs} environment(s) visible to agents",
+                snapshot.name()
+            )
+        })
+        .collect();
+    let _attachments: Vec<_> = shared
+        .into_iter()
+        .map(|source| handle.attach_shared(source))
+        .collect();
     let config = AgentConfig {
         // The headless daemon serves no browsers, so it keeps a queue of its own rather than
         // taking the app's shared one (M6).
         queue: None,
-        socket_path: args.socket.clone(),
+        endpoint,
+        // Nor does it serve agent fills: with no broker, every `request_fill` is
+        // `FILL_UNAVAILABLE` before anything is looked up (ADR-0036 §3.1).
+        agent_fill: None,
     };
     let agent = Agent::start(Arc::clone(&handle), &config)
         .context("could not start the kagisecure agent")?;
@@ -147,6 +205,9 @@ pub fn run(path: &Path, args: &DaemonArgs, input: &mut SecretInput) -> Result<()
                 "  [not visible to agents]"
             }
         );
+    }
+    for line in &banner_shared {
+        println!("  vault    {line}");
     }
     println!();
     println!("The kagisecure app is the real approval channel from M4 on. A terminal prompt is");
@@ -290,9 +351,12 @@ fn what(kind: ApprovalKind) -> &'static str {
         ApprovalKind::WriteEnvFile => "write a .env file",
         ApprovalKind::RunWithEnv => "run a command with secrets in its environment",
         // The headless daemon serves the MCP socket only — it never starts the browser-extension
-        // listener, so this arm is unreachable in practice. It is written out rather than left to
-        // a wildcard so that adding a sixth kind is a compile error here too.
+        // listener, so these two arms are unreachable in practice: a fill needs a browser, and
+        // `request_fill` on this daemon answers FILL_UNAVAILABLE before anything is asked. They
+        // are written out rather than left to a wildcard so that adding a kind is a compile
+        // error here too.
         ApprovalKind::FillCredential => "fill a credential into a web page",
+        ApprovalKind::AgentFill => "have a login typed into a browser tab",
     }
 }
 
@@ -319,6 +383,12 @@ fn caller_line(request: &ApprovalRequest) -> String {
 
 fn facts(request: &ApprovalRequest) -> Vec<String> {
     let mut facts = Vec::new();
+    if let Some(source) = request.shared_source.as_deref() {
+        facts.push(format!("from        {source}"));
+    }
+    for change in &request.changed_since_approval {
+        facts.push(format!("changed     {change}"));
+    }
     if let Some(name) = request.environment_name.as_deref() {
         facts.push(format!("environment {name}"));
     }
@@ -394,6 +464,26 @@ mod tests {
             requested_uses: 10,
             ..ApprovalRequest::default()
         }
+    }
+
+    #[test]
+    fn a_shared_release_names_its_vault_and_what_changed() {
+        let request = ApprovalRequest {
+            shared_source: Some("Shared vault “Ops” — 3 members".to_owned()),
+            changed_since_approval: vec!["TOKEN changed by another member, 2 days ago".to_owned()],
+            ..write_request()
+        };
+        let facts = facts(&request).join("\n");
+        assert!(facts.contains("from        Shared vault “Ops” — 3 members"));
+        assert!(facts.contains("changed     TOKEN changed by another member, 2 days ago"));
+        // The personal vault's prompt is unchanged.
+        let personal = facts_of_personal();
+        assert!(!personal.contains("from "));
+        assert!(!personal.contains("changed "));
+    }
+
+    fn facts_of_personal() -> String {
+        facts(&write_request()).join("\n")
     }
 
     #[test]
@@ -502,5 +592,54 @@ mod tests {
     fn a_daemon_without_the_flag_is_unaffected_either_way() {
         assert!(check_auto_approve(false, true).is_ok());
         assert!(check_auto_approve(false, false).is_ok());
+    }
+
+    #[test]
+    fn no_socket_flag_leaves_the_endpoint_to_the_per_user_default() {
+        assert!(
+            socket_endpoint(None)
+                .expect("no flag is not an error")
+                .is_none()
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_socket_flag_is_a_path_taken_verbatim() {
+        let endpoint = socket_endpoint(Some(std::ffi::OsStr::new("/tmp/two-vaults/daemon.sock")))
+            .expect("a path is what Unix listens on")
+            .expect("some endpoint");
+        assert_eq!(
+            endpoint.path(),
+            Some(std::path::Path::new("/tmp/two-vaults/daemon.sock"))
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_socket_flag_is_a_pipe_name_on_windows() {
+        let endpoint = socket_endpoint(Some(std::ffi::OsStr::new("kagisecure-second-vault.sock")))
+            .expect("a pipe name is what Windows listens on")
+            .expect("some endpoint");
+        assert_eq!(endpoint.to_string(), "kagisecure-second-vault.sock");
+        assert!(endpoint.path().is_none(), "a pipe is not a file");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_socket_path_on_windows_is_a_usage_error_that_says_what_to_pass() {
+        let error = socket_endpoint(Some(std::ffi::OsStr::new(r"C:\Users\ada\run\daemon.sock")))
+            .expect_err("Windows cannot listen on a filesystem path");
+        let usage = error
+            .downcast_ref::<UsageError>()
+            .expect("a wrong invocation, not an unexpected error");
+        let text = usage.to_string();
+        assert!(text.contains("--socket"), "{text}");
+        assert!(text.contains(r"C:\Users\ada\run\daemon.sock"), "{text}");
+        assert!(
+            text.contains("named pipe"),
+            "the refusal has to say what Windows accepts: {text}"
+        );
+        assert_eq!(crate::exit_code_for(&error), crate::cli::EXIT_USAGE);
     }
 }

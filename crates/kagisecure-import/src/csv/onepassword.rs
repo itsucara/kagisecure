@@ -3,7 +3,7 @@
 //! Column names are unverified against a real export: `url` may instead be `website`, and
 //! `otpauth` may instead be `one-time password`.
 
-use kagisecure_core::model::{Category, FieldKind};
+use kagisecure_core::model::{Category, FieldKind, SecretText};
 
 use super::dialect::{cell, fallback_title, is_blank, is_truthy, require, split_tags, totp_field};
 use crate::error::Result;
@@ -94,7 +94,7 @@ pub(crate) fn map_row(record: &::csv::StringRecord, columns: &Columns) -> Option
         item.push_field(totp_field(&title_for_totp, otpauth));
     }
     if !notes.is_empty() {
-        item.notes = Some(notes.to_owned());
+        item.notes = Some(SecretText::new(notes.to_owned()));
     }
     for tag in split_tags(tags) {
         item.push_tag(tag);

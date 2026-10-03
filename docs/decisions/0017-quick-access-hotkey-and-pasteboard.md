@@ -81,6 +81,17 @@ about the whole product's shape, not about Quick Access, and is not M5's to make
 
 ## Decision 3 — every copy is marked concealed and cleared on a timer
 
+> **Amended by [ADR-0038](0038-app-release-needs-presence.md) (implemented, 2026-09-25):**
+> copying a concealed field, a one-time code or an item's notes — from the detail pane, the item
+> list's hover action, or Quick Access's `⏎` and `⌥⏎` — first needs a granted presence
+> confirmation: the value comes from a release Rust hands out only after the app's
+> `PresenceGate` confirmed, one prompt per copy, and a refused prompt never reaches
+> `PasteboardService` at all (`changeCount` is untouched). The one exception is copying a value an
+> earlier touch already put on screen, which asks nothing and is audited `SHOWN_EARLIER`. Quick
+> Access's actions moved into `QuickAccessModel`, which holds no value. The concealed-type marker
+> and the timed clear this section describes are unchanged; what changed is what has to be true
+> before either of them runs.
+
 **`PasteboardService` is the only code in the app that writes secret material to the clipboard.**
 Two mitigations, applied together, at one call site so they cannot drift apart:
 

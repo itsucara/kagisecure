@@ -22,17 +22,31 @@
 //!
 //! * No secret value ever appears in an [`Error`] message, a `Debug` rendering or a log line
 //!   (threat-model M-14).
-//! * Vault files are written atomically and mode `0600` on Unix (threat-model M-13).
+//! * Vault files are written atomically: mode `0600` on Unix, and on Windows an owner-only,
+//!   inheritance-protected DACL set when the file is created (`windows_acl`) (threat-model M-13).
 //! * KDF parameters are read from the vault header, never hardcoded in the open path
 //!   (vault-format §9).
+//!
+//! # `unsafe`: forbidden everywhere but one Windows-only module
+//!
+//! The crate is `#![forbid(unsafe_code)]` on every platform except Windows, where it is
+//! `#![deny(unsafe_code)]` instead. The one reason is `windows_acl`: `std` has no API for a
+//! file's security descriptor, so giving the vault the Windows counterpart of `0600` takes
+//! `windows-sys` calls — and `forbid`, by design, cannot be relaxed by a nested `allow` for one
+//! module. Every other module is exactly as `unsafe`-free as `forbid` would make it, and
+//! `windows_acl` states its own `#![allow(unsafe_code)]`, and why, at the top of the file.
+//! `kagisecure-ipc` made the same trade for the same reason (see its crate documentation).
 
-#![forbid(unsafe_code)]
+#![cfg_attr(not(windows), forbid(unsafe_code))]
+#![cfg_attr(windows, deny(unsafe_code))]
 #![warn(missing_docs)]
 
 pub mod audit;
 pub mod error;
 pub mod lease;
 pub mod proto;
+#[cfg(windows)]
+pub mod windows_acl;
 
 pub use error::{Error, Result};
 

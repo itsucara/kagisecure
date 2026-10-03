@@ -10,6 +10,7 @@
 
 use kagisecure_core::model::{Field, FieldValue, Item};
 use kagisecure_core::proto;
+use kagisecure_core::vault::FileConflict;
 
 /// How a field's value should be presented and edited (vault-format.md §5, ui-spec.md §4.2).
 ///
@@ -128,8 +129,8 @@ pub struct FieldView {
     /// pane knows until the user asks to reveal it — deliberately not a length.
     pub has_value: bool,
     /// The value, for a field that is not secret material. `None` for a concealed field: the
-    /// plaintext is fetched on demand through `VaultSession::reveal_field`, so a rendered list of
-    /// fields never carries every secret in the item.
+    /// plaintext comes only from a presence-gated release (`VaultSession::release_field`,
+    /// ADR-0038), one field at a time, so a rendered list of fields never carries a secret.
     pub value: Option<String>,
     /// Optional section name.
     pub section: Option<String>,
@@ -173,8 +174,12 @@ pub struct ItemView {
     pub tags: Vec<String>,
     /// Associated URLs.
     pub urls: Vec<String>,
-    /// Free-form note.
-    pub notes: Option<String>,
+    /// Whether the item has a note — never the note itself (ADR-0038 user decision 3).
+    ///
+    /// Notes are secret, like a concealed field's value, so this view carries only whether there
+    /// is one, exactly as [`FieldView::has_value`] does for a concealed field. The text comes out
+    /// through `VaultSession::release_notes`, behind a presence check.
+    pub has_notes: bool,
     /// Favourited.
     pub favorite: bool,
     /// Archived.
@@ -192,12 +197,35 @@ pub struct ItemView {
     /// Computed here rather than in Swift so that the "username for a Login, hostname for a
     /// Server, masked last four for a card" rule has one implementation. It is never a secret: a
     /// concealed field contributes nothing to it, except a card number's last four digits, which
-    /// ui-spec.md §3 asks for explicitly.
+    /// ui-spec.md §3 asks for explicitly — taken only from a field whose *kind* is
+    /// `CreditCardNumber`, never from one found by its label (see `subtitle`).
+    ///
+    /// A display string, not a value to copy: it may be a URL, a hostname or those masked digits.
+    /// Copying a username reads [`ItemView::username`].
     pub subtitle: Option<String>,
+    /// The item's username — a public field labelled `username`, or failing that `email` — or
+    /// `None`. What ⌘⏎ in Quick Access and Item ▸ Copy Username copy; there is no fallback to the
+    /// subtitle, which may be something else entirely.
+    pub username: Option<String>,
+    /// The id of the item's primary secret — the field "Copy password" (⇧⌘C, Quick Access ⏎)
+    /// copies and ⌘R reveals when nothing is focused — or `None` when it has none.
+    ///
+    /// Designated by field id in the vault (`Item::primary_secret`), so a relabel or a reorder in
+    /// the edit sheet, neither of which asks for presence, cannot move it; the app must not pick
+    /// "the password" any other way (not by label, not as the first concealed field).
+    pub primary_secret_field_id: Option<String>,
+    /// A fingerprint of everything an edit sheet can change about this item, as it was when this
+    /// view was built — an HMAC under a random key private to this session, so it says whether the
+    /// item changed and nothing about what it holds (not an unkeyed hash a guess could be checked
+    /// against). Round-trips through the edit sheet as [`ItemDraft::revision`], and
+    /// [`crate::VaultSession::save_item`] refuses to write if the live item's fingerprint no
+    /// longer matches (`FfiError::ItemChangedElsewhere`) — see `item_revision`
+    /// for what goes into it and why a hash rather than `updated_at`.
+    pub revision: String,
 }
 
 impl ItemView {
-    pub(crate) fn from_core(item: &Item) -> Self {
+    pub(crate) fn from_core(item: &Item, revision_key: &crate::session::RevisionKey) -> Self {
         Self {
             id: item.id.to_string(),
             vault_id: item.vault_id.to_string(),
@@ -208,7 +236,7 @@ impl ItemView {
             fields: item.fields.iter().map(FieldView::from_core).collect(),
             tags: item.tags.clone(),
             urls: item.urls.clone(),
-            notes: item.notes.clone(),
+            has_notes: item.has_notes(),
             favorite: item.favorite,
             archived: item.archived,
             trashed: item.is_trashed(),
@@ -216,6 +244,9 @@ impl ItemView {
             created_at: item.created_at,
             updated_at: item.updated_at,
             subtitle: subtitle(item),
+            username: item.username().map(str::to_owned),
+            primary_secret_field_id: item.primary_secret_field().map(|f| f.id.to_string()),
+            revision: crate::session::item_revision(item, revision_key),
         }
     }
 }
@@ -240,10 +271,17 @@ fn subtitle(item: &Item) -> Option<String> {
         C::CreditCard => {
             // The number is secret material, so the last four have to come from the secret
             // itself. ui-spec.md §3 asks for exactly this and nothing more.
-            let field = item
-                .fields
-                .iter()
-                .find(|f| f.label.eq_ignore_ascii_case("number"))?;
+            //
+            // The field is chosen by its kind, `CreditCardNumber`, never by its label: a label can
+            // be edited without a presence check, so "the field called *number*" would let
+            // anything that drives the edit sheet relabel the PIN or the CVV and have its digits
+            // printed under the title of every list row. A stored secret's kind cannot be changed
+            // without supplying its value (`save_item`), so the kind is a fact the vault vouches
+            // for. A card saved by an older template keeps its number as a plain concealed field
+            // and shows no digits until that field's kind is set to "Card number".
+            let field = item.fields.iter().find(|f| {
+                f.kind == kagisecure_core::proto::FieldKind::CreditCardNumber && f.value.is_secret()
+            })?;
             let secret = field.value.as_secret()?;
             let digits: Vec<u8> = secret
                 .expose()
@@ -265,6 +303,21 @@ fn subtitle(item: &Item) -> Option<String> {
 /// `id` is `None` for a field the user has just added; the core mints one. `value` is the
 /// plaintext the user typed — see [ADR-0008](../../../docs/decisions/0008-ffi-secret-crossings.md)
 /// crossing 2 — and is interpreted as secret material when `concealed` is set.
+///
+/// # `value: None` (ADR-0038 step 3)
+///
+/// Edit mode never prefills a concealed value (user decision 4), so most fields round-trip
+/// through the sheet without the app ever holding their plaintext. `None` means "keep the stored
+/// value of the field with this id" — [`crate::VaultSession::save_item`] leaves that field's
+/// [`kagisecure_core::model::FieldValue`] exactly as it was, byte for byte, rather than
+/// reconstructing it from a value that was never released to the app.
+///
+/// Two things `None` cannot mean, and `save_item` refuses both:
+/// * on a field with no `id` (one the user just added in this edit session) — there is no stored
+///   value to keep, so a new field always needs one;
+/// * on a field being changed from concealed to public — "untick Concealed, then save" must not
+///   become a way to release a secret's plaintext into the public, agent-visible slot without
+///   ever supplying a new value.
 #[derive(Clone, Debug, uniffi::Record)]
 pub struct FieldDraft {
     /// Existing field identifier, or `None` for a new field.
@@ -275,8 +328,8 @@ pub struct FieldDraft {
     pub kind: FieldKind,
     /// Whether the value is secret material.
     pub concealed: bool,
-    /// The value.
-    pub value: String,
+    /// The new value, or `None` to keep the field's stored value unchanged.
+    pub value: Option<String>,
     /// Optional section name.
     pub section: Option<String>,
     /// Per-field agent visibility override.
@@ -298,8 +351,18 @@ pub struct ItemDraft {
     pub tags: Vec<String>,
     /// Associated URLs.
     pub urls: Vec<String>,
-    /// Free-form note.
+    /// The note: `None` keeps the stored note unchanged, `Some("")` removes it, and any other
+    /// string replaces it.
+    ///
+    /// `None` means "keep" for the same reason [`FieldDraft::value`]'s `None` does: the sheet is
+    /// never handed the note ([`ItemView::has_notes`] is all it gets), so an edit that never
+    /// touched it must not be able to erase it by leaving it out.
     pub notes: Option<String>,
+    /// [`ItemView::revision`] as it stood when the edit sheet opened. The sheet copies it in
+    /// unchanged; [`crate::VaultSession::save_item`] compares it against the live item's own
+    /// fingerprint, computed fresh inside the write transaction, and refuses the save with
+    /// `FfiError::ItemChangedElsewhere` if they differ.
+    pub revision: String,
 }
 
 /// Which sidebar section the item list is showing (ui-spec.md §2.2).
@@ -478,6 +541,140 @@ pub enum UnlockKind {
     RecoveryCode,
     /// The platform keystore — Touch ID on macOS.
     PlatformKey,
+}
+
+/// Why [`crate::VaultSession`] stopped writing and is waiting for the human to choose (step 4,
+/// user decision 3): the vault file changed, in a way that means this session's writes can no
+/// longer be trusted to build on what is actually there.
+///
+/// Every kind ends up in the same alert with the same two choices ("keep this app's version" /
+/// "lock and reopen from the file"); the kind only changes what the alert says is different about
+/// the file, and what the overwrite confirmation says would be lost
+/// ([`VaultConflictDetailsView`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum VaultConflictKindView {
+    /// The file no longer continues this session's audit log — the shape an older copy being
+    /// restored takes (`kagisecure_core::Error::VaultDiverged`).
+    Diverged,
+    /// The file at the path no longer decrypts as this vault, or is a different `vault_id`
+    /// (`kagisecure_core::Error::VaultReplaced`).
+    Replaced,
+    /// Something at the path that is not a vault this build can parse at all: not a kagisecure
+    /// file, a damaged one, or one in a newer format (`kagisecure_core::vault::FileConflict::
+    /// Unreadable`).
+    Unreadable,
+    /// The file is gone (`kagisecure_core::Error::VaultNotFound`, seen *after* this session was
+    /// already unlocked — before that, a missing file is `FfiError::NotFound`, not a conflict).
+    Removed,
+}
+
+impl VaultConflictKindView {
+    pub(crate) fn of(conflict: &FileConflict) -> Self {
+        match conflict {
+            FileConflict::Diverged { .. } => Self::Diverged,
+            FileConflict::Replaced { .. } => Self::Replaced,
+            // A newer build's file: shown as unreadable by this build (the view has no kind of
+            // its own for it), and the core refuses to overwrite it.
+            FileConflict::Unreadable { .. } | FileConflict::TooNew { .. } => Self::Unreadable,
+            FileConflict::Missing => Self::Removed,
+        }
+    }
+}
+
+/// What "keep this app's version (overwrite the file)" would discard — the body of the
+/// confirmation shown before it runs ([`crate::VaultSession::conflict_details`]).
+///
+/// Counts and yes/no answers only: nothing here is a secret, a title or a value.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct VaultConflictDetailsView {
+    /// What kind of file is there.
+    pub kind: VaultConflictKindView,
+    /// Identifies the exact file version these details describe: the first 8 bytes of its
+    /// SHA-256, in hex. `None` when there is no file. Pass the whole record back to
+    /// [`crate::VaultSession::keep_app_version_over_conflict`] unchanged.
+    pub file_fingerprint: Option<String>,
+    /// How many audit entries this session's own log holds (what the overwrite writes, before
+    /// its own entry recording the overwrite).
+    pub session_audit_entries: u64,
+    /// For a diverged file — the same vault, an older or separately changed copy — what it holds
+    /// that this session does not. `None` for the other kinds: a replaced or unreadable file is
+    /// lost whole, and a removed one has nothing to lose.
+    pub diverged: Option<DivergedFileView>,
+}
+
+/// [`kagisecure_core::vault::DivergedFile`], for the confirmation copy.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct DivergedFileView {
+    /// Audit entries in the file's log that this session's log does not have.
+    pub audit_entries_only_in_file: u64,
+    /// Items in the file that this session does not have: deleted by the overwrite.
+    pub items_only_in_file: u64,
+    /// Items both have, with different contents: the file's version is replaced.
+    pub items_differing: u64,
+    /// Environments only in the file.
+    pub environments_only_in_file: u64,
+    /// Environments both have, with different contents.
+    pub environments_differing: u64,
+    /// Logical vaults only in the file, or differing (a name, an agent-sharing switch).
+    pub vaults_only_in_file_or_differing: u64,
+    /// The master password (or its KDF cost) differs: the one that opens the file now stops
+    /// working, and the one this app's session last wrote works again.
+    pub master_password_differs: bool,
+    /// The recovery code differs: the one that opens the file now stops working, and the one in
+    /// this app's session — perhaps one that was replaced in the file's version — works again.
+    pub recovery_code_differs: bool,
+    /// Touch ID enrolment differs between the two.
+    pub touch_id_differs: bool,
+}
+
+impl VaultConflictDetailsView {
+    pub(crate) fn from_core(conflict: &FileConflict, session_audit_entries: usize) -> Self {
+        let count = |n: usize| u64::try_from(n).unwrap_or(u64::MAX);
+        Self {
+            kind: VaultConflictKindView::of(conflict),
+            file_fingerprint: conflict.file_sha256().map(|sha| {
+                sha.iter()
+                    .take(8)
+                    .map(|b| format!("{b:02x}"))
+                    .collect::<String>()
+            }),
+            session_audit_entries: count(session_audit_entries),
+            diverged: match conflict {
+                FileConflict::Diverged { lost, .. } => Some(DivergedFileView {
+                    audit_entries_only_in_file: count(lost.audit_entries_only_in_file()),
+                    items_only_in_file: count(lost.items.only_in_file),
+                    items_differing: count(lost.items.differing),
+                    environments_only_in_file: count(lost.environments.only_in_file),
+                    environments_differing: count(lost.environments.differing),
+                    vaults_only_in_file_or_differing: count(
+                        lost.logical_vaults.only_in_file + lost.logical_vaults.differing,
+                    ),
+                    master_password_differs: lost.master_password_differs,
+                    recovery_code_differs: lost.recovery_code_differs,
+                    touch_id_differs: lost.platform_slot_differs,
+                }),
+                _ => None,
+            },
+        }
+    }
+}
+
+/// How [`crate::VaultSession::keep_app_version_over_conflict`] ended, when it did not fail.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum KeepAppVersionOutcome {
+    /// The file now holds this app's version, with an audit entry recording what it replaced.
+    /// Writes work again.
+    Overwritten,
+    /// The file continues this app's session again (someone put the newer file back, say), so
+    /// nothing needed overwriting: the session caught up with the file the ordinary way, losing
+    /// nothing of its own. Writes work again.
+    NoLongerInConflict,
+    /// The file changed again after the confirmation was built, so what it said would be lost is
+    /// no longer accurate. Nothing was written; confirm again with these details.
+    FileChangedAgain {
+        /// What the file holds now.
+        details: VaultConflictDetailsView,
+    },
 }
 
 /// Whether `value` should be stored as secret material.

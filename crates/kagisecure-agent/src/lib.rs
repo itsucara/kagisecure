@@ -52,24 +52,47 @@
 //! shreds every file written under one, and denies every approval still waiting for an answer.
 //! There is no window in which a locked vault still serves an agent.
 
-#![forbid(unsafe_code)]
+// `deny`, not `forbid`: `browser_setup`'s Windows registry module is `#[allow(unsafe_code)]` for
+// the direct Win32 registry calls (`RegCreateKeyExW` et al.) native-messaging registration needs
+// there, and `forbid` cannot be downgraded by an inner `#[allow]` anywhere in the crate, even in
+// one module. Every other module is exactly as unsafe-free as it was.
+#![deny(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod agent;
 pub mod approval;
 pub mod browser_setup;
 pub mod bundle;
+pub mod catalog;
+mod children;
 pub mod extension;
 pub mod fill_lease;
+pub mod release;
 pub mod service;
 pub mod setup;
+pub mod shared;
+pub mod unattended;
 pub mod vault;
 
 pub use agent::{Agent, AgentConfig, AgentError, AgentStatus};
 pub use approval::{
-    APPROVAL_TIMEOUT_SECONDS, ApprovalKind, ApprovalQueue, ApprovalRequest, ClientVerification,
-    Decision,
+    APPROVAL_TIMEOUT_SECONDS, AgentFillFacts, ApprovalKind, ApprovalQueue, ApprovalRequest,
+    ClientVerification, Decision,
 };
-pub use extension::{ExtensionAgent, ExtensionConfig, ExtensionError, ExtensionStatus};
+pub use extension::agent_fill::{
+    AgentFillBlock, AgentFillBlockReason, AgentFillBroker, AgentFillClock, AgentFillNotice,
+    AgentFillTimings,
+};
+pub use extension::{ExtensionAgent, ExtensionConfig, ExtensionError, ExtensionStatus, HostGate};
 pub use fill_lease::{FillLease, FillLeaseStore};
+/// Re-exported because it is now part of this crate's own surface:
+/// [`AgentConfig::endpoint`] and [`ExtensionConfig::endpoint`] take one, so a host that names a
+/// socket location has to be able to build one without depending on `kagisecure-ipc` directly.
+pub use kagisecure_ipc::endpoint::{Endpoint, EndpointError};
+pub use shared::{ReplicaSource, SharedAttachment, SharedSource};
+pub use unattended::browser::RunBrowserSetup;
+pub use unattended::{
+    Engine as UnattendedEngine, UnattendedConfig, UnattendedError, UnattendedNotice,
+    UnattendedStatus,
+};
 pub use vault::VaultHandle;

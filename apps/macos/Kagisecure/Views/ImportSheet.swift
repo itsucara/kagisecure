@@ -110,7 +110,7 @@ struct ImportSheet: View {
         }
     }
 
-    private func busy(_ label: String) -> some View {
+    private func busy(_ label: LocalizedStringKey) -> some View {
         VStack(spacing: 12) {
             ProgressView()
             Text(label).foregroundStyle(.secondary)
@@ -136,20 +136,20 @@ struct ImportSheet: View {
 
     private func totals(_ report: ImportReportView) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("\(report.totals.items) item\(report.totals.items == 1 ? "" : "s") to import")
+            (report.totals.items == 1
+                ? Text("\(Int(report.totals.items)) item to import")
+                : Text("\(Int(report.totals.items)) items to import"))
                 .font(.headline)
                 .accessibilityIdentifier("ks.import.totalItems")
             // Password history *is* imported (import.md §2.7). It is a count here and nowhere
             // else: a list of retired passwords is exactly what a report may not carry.
-            Text(
-                "\(report.totals.historyEntries) password-history "
-                    + "\(report.totals.historyEntries == 1 ? "entry" : "entries") to import"
-            )
+            (report.totals.historyEntries == 1
+                ? Text("\(Int(report.totals.historyEntries)) password-history entry to import")
+                : Text("\(Int(report.totals.historyEntries)) password-history entries to import"))
             .font(.callout)
             .foregroundStyle(.secondary)
             Text(
-                "\(report.totals.fieldsMapped) fields mapped, "
-                    + "\(report.totals.fieldsPreserved) kept as metadata"
+                "\(Int(report.totals.fieldsMapped)) fields mapped, \(Int(report.totals.fieldsPreserved)) kept as metadata"
             )
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -179,23 +179,27 @@ struct ImportSheet: View {
     }
 
     private func duplicateSentence(_ report: ImportReportView) -> String {
-        guard report.vaultAware else { return "Checking this vault for items it already has…" }
+        guard report.vaultAware else { return String(localized: "Checking this vault for items it already has…") }
         if report.duplicates == 0 {
-            return "No duplicates — this vault has none of these items yet."
+            return String(localized: "No duplicates — this vault has none of these items yet.")
         }
-        return "\(report.duplicates) of these are already in this vault."
+        return String(localized: "\(Int(report.duplicates)) of these are already in this vault.")
     }
 
     private var policyExplanation: String {
         switch model.policy {
         case .skip:
-            "Existing items are left exactly as they are. Nothing is overwritten."
+            String(localized: "Existing items are left exactly as they are. Nothing is overwritten.")
         case .update:
-            "Existing items take the source's fields and keep what only this vault knows — your "
-                + "tags, agent visibility and environment bindings. History is merged, not replaced."
+            String(
+                localized:
+                    "Existing items take the source's fields and keep what only this vault knows — your tags, agent visibility and environment bindings. History is merged, not replaced."
+            )
         case .keepBoth:
-            "Existing items are left alone and the imported ones are added beside them, with "
-                + "today's date in the title."
+            String(
+                localized:
+                    "Existing items are left alone and the imported ones are added beside them, with today's date in the title."
+            )
         }
     }
 
@@ -203,7 +207,7 @@ struct ImportSheet: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("By category").font(.headline)
             ForEach(report.byCategory, id: \.category) { entry in
-                Text("\(store.displayName(forCategory: entry.category)): \(entry.items)")
+                Text("\(store.displayName(forCategory: entry.category)): \(Int(entry.items))")
                     .font(.callout)
                     .accessibilityIdentifier("ks.import.category.\(entry.category)")
             }
@@ -218,10 +222,11 @@ struct ImportSheet: View {
     private func dropped() -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text("Not imported").font(.headline)
-            droppedRow(.attachment, "Attachments", "ks.import.droppedAttachments")
-            droppedRow(.passkey, "Passkeys", "ks.import.droppedPasskeys")
+            droppedRow(.attachment, String(localized: "Attachments"), "ks.import.droppedAttachments")
+            droppedRow(.passkey, String(localized: "Passkeys"), "ks.import.droppedPasskeys")
             droppedRow(
-                .passwordHistory, "Unreadable history entries", "ks.import.droppedHistory")
+                .passwordHistory, String(localized: "Unreadable history entries"),
+                "ks.import.droppedHistory")
         }
     }
 
@@ -229,7 +234,7 @@ struct ImportSheet: View {
         _ kind: ImportDropKindView, _ title: String, _ identifier: String
     ) -> some View {
         let note = model.dropped(kind)
-        let count = note?.count ?? 0
+        let count = Int(note?.count ?? 0)
         let explanation = note?.explanation ?? Self.explanation(for: kind)
         return Text("\(title): \(count) — \(explanation)")
             .font(.callout)
@@ -246,12 +251,14 @@ struct ImportSheet: View {
     private static func explanation(for kind: ImportDropKindView) -> String {
         switch kind {
         case .attachment:
-            "kagisecure items do not hold files yet; keep these in the source app"
+            String(localized: "kagisecure items do not hold files yet; keep these in the source app")
         case .passkey:
-            "passkeys cannot be exported meaningfully; keep them where they are"
+            String(localized: "passkeys cannot be exported meaningfully; keep them where they are")
         case .passwordHistory:
-            "password history is imported; this counts only entries with no readable value or "
-                + "timestamp"
+            String(
+                localized:
+                    "password history is imported; this counts only entries with no readable value or timestamp"
+            )
         default:
             ""
         }
@@ -279,10 +286,9 @@ struct ImportSheet: View {
             Table(rows) {
                 TableColumn("Title") { Text($0.row.title) }
                 TableColumn("Category") { row in
-                    Text(
-                        row.row.categoryWasGuessed
-                            ? "\(store.displayName(forCategory: row.row.category)) (guessed)"
-                            : store.displayName(forCategory: row.row.category))
+                    row.row.categoryWasGuessed
+                        ? Text("\(store.displayName(forCategory: row.row.category)) (guessed)")
+                        : Text(store.displayName(forCategory: row.row.category))
                 }
                 TableColumn("Action") { Text(Self.actionName($0.row.action)) }
                 TableColumn("Not imported") { Text(Self.droppedSummary($0.row)) }
@@ -296,10 +302,10 @@ struct ImportSheet: View {
 
     private static func actionName(_ action: ImportItemActionView?) -> String {
         switch action {
-        case .create: "Add"
-        case .update: "Update"
-        case .skip: "Skip"
-        case .keepBoth: "Keep both"
+        case .create: String(localized: "Add")
+        case .update: String(localized: "Update")
+        case .skip: String(localized: "Skip")
+        case .keepBoth: String(localized: "Keep both")
         case nil: "—"
         }
     }
@@ -322,18 +328,17 @@ struct ImportSheet: View {
                         .accessibilityIdentifier("ks.import.result")
 
                     if !outcome.vaultsCreated.isEmpty {
-                        Text(
-                            "Created vault\(outcome.vaultsCreated.count == 1 ? "" : "s"): "
-                                + outcome.vaultsCreated.joined(separator: ", ")
-                        )
+                        let names = outcome.vaultsCreated.joined(separator: ", ")
+                        (outcome.vaultsCreated.count == 1
+                            ? Text("Created vault: \(names)")
+                            : Text("Created vaults: \(names)"))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                     }
 
-                    Text(
-                        "\(outcome.historyAdded) password-history "
-                            + "\(outcome.historyAdded == 1 ? "entry" : "entries") imported"
-                    )
+                    (outcome.historyAdded == 1
+                        ? Text("\(Int(outcome.historyAdded)) password-history entry imported")
+                        : Text("\(Int(outcome.historyAdded)) password-history entries imported"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 }
@@ -359,8 +364,7 @@ struct ImportSheet: View {
                 .font(.headline)
                 .accessibilityIdentifier("ks.import.shredPrompt")
             Text(
-                "\(model.sourceName) is a complete, unencrypted copy of everything you just "
-                    + "imported. \(model.shredWarning)"
+                "\(model.sourceName) is a complete, unencrypted copy of everything you just imported. \(model.shredWarning)"
             )
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -386,8 +390,7 @@ struct ImportSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("ks.import.error")
             Text(
-                "Nothing was imported and your vault is unchanged. Try naming the format above, "
-                    + "or choose a different file."
+                "Nothing was imported and your vault is unchanged. Try naming the format above, or choose a different file."
             )
             .font(.callout)
             .foregroundStyle(.secondary)

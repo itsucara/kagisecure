@@ -137,7 +137,8 @@ one, and mixing them is the usual source of confusion about which is right.
 - **Auto-update is still undecided.** M7's acceptance list asks for a Sparkle-vs-manual decision
   recorded as an ADR either way. It is not in this one, because nothing was built either way: the
   0.1.0 release tells users to `brew upgrade` or watch the releases page, and the decision is the
-  first thing M8 should make.
+  first thing M8 should make. *(Settled by [ADR-0044](0044-self-update-with-sparkle.md):
+  Sparkle.)*
 
 ## Amendment 2026-09-10
 

@@ -164,3 +164,97 @@ test("what comes back is a copy, so a caller cannot edit the memory in place", (
   assert.equal(KsTabMemory.recall(7, SITE, T0 + 2_000).itemId, "item-1");
   assert.equal(KsTabMemory.recall(7, SITE, T0 + KsTabMemory.TTL_MS), null);
 });
+
+// -----------------------------------------------------------------------------------------------
+// B-28: adversarial recall — which origins may inherit an entry, and which must not.
+//
+// The design accepts one carry: down from an origin to a subdomain of it, because that is the
+// shape of `example.com` → `login.example.com` that identifier-first sign-ins have. Everything
+// else is a wrong *yes*: it would offer to continue as somebody at a site the user did not start
+// at. The tests below are the ones that must say no, written as a sibling-suffix attack, a scheme
+// downgrade, a port change and a registrable-domain confusable.
+// -----------------------------------------------------------------------------------------------
+
+/** A look-alike registrable domain. The `.test` TLD makes it obviously not a real site. */
+const CANARY_LOOKALIKE = "https://notexample.test";
+const CANARY_BASE = "https://example.test";
+
+test("B-28: an entry does not carry to a domain that merely ends with the same letters", () => {
+  // `notexample.test` ends with `example.test` as a *string*, which is exactly the mistake a
+  // suffix comparison without the leading dot would make.
+  KsTabMemory.remember(7, "item-1", CANARY_BASE, T0);
+  assert.equal(KsTabMemory.recall(7, CANARY_LOOKALIKE, T0 + 1_000), null);
+  // And the failed recall removed the entry rather than leaving it for the next attempt.
+  assert.equal(KsTabMemory.peek(7, T0 + 1_000), null);
+});
+
+test("B-28: an entry does not carry from a subdomain up to its parent", () => {
+  // The carry is one-directional. Remembering at `login.example.test` must not answer at
+  // `example.test`, or at a sibling under it.
+  KsTabMemory.remember(7, "item-1", "https://login.example.test", T0);
+  assert.equal(KsTabMemory.recall(7, CANARY_BASE, T0 + 1_000), null);
+  KsTabMemory.remember(7, "item-1", "https://login.example.test", T0);
+  assert.equal(KsTabMemory.recall(7, "https://evil.example.test", T0 + 1_000), null);
+});
+
+test("B-28: an entry does not carry across a scheme downgrade", () => {
+  KsTabMemory.remember(7, "item-1", CANARY_BASE, T0);
+  assert.equal(KsTabMemory.recall(7, "http://example.test", T0 + 1_000), null);
+  KsTabMemory.remember(7, "item-1", "http://example.test", T0);
+  assert.equal(KsTabMemory.recall(7, CANARY_BASE, T0 + 1_000), null);
+});
+
+test("B-28: an entry does not carry across a port change", () => {
+  KsTabMemory.remember(7, "item-1", CANARY_BASE, T0);
+  assert.equal(KsTabMemory.recall(7, "https://example.test:8443", T0 + 1_000), null);
+  KsTabMemory.remember(7, "item-1", "https://example.test:8443", T0);
+  assert.equal(KsTabMemory.recall(7, CANARY_BASE, T0 + 1_000), null);
+  // And a subdomain on a different port is not a carry either, because the port is part of the
+  // host string `sameSite` compares.
+  KsTabMemory.remember(7, "item-1", CANARY_BASE, T0);
+  assert.equal(KsTabMemory.recall(7, "https://login.example.test:8443", T0 + 1_000), null);
+});
+
+test("B-28: the accepted carry is exactly one subdomain hop down, and it still works", () => {
+  // The case the whole feature exists for. Asserted alongside the refusals so that a future
+  // tightening that breaks it is visible here rather than only in the e2e suite.
+  KsTabMemory.remember(7, "item-1", CANARY_BASE, T0);
+  assert.equal(KsTabMemory.recall(7, "https://login.example.test", T0 + 1_000).itemId, "item-1");
+  KsTabMemory.remember(7, "item-1", CANARY_BASE, T0);
+  assert.equal(
+    KsTabMemory.recall(7, "https://a.b.c.example.test", T0 + 1_000).itemId,
+    "item-1",
+    "a deeper subdomain is still under the same origin",
+  );
+});
+
+test("B-28: two siblings under one registrable domain do not share a memory", () => {
+  // Deliberately stricter than the app's eTLD+1 rule: `accounts.example.test` and
+  // `login.example.test` are siblings, and the memory says no.
+  KsTabMemory.remember(7, "item-1", "https://accounts.example.test", T0);
+  assert.equal(KsTabMemory.recall(7, "https://login.example.test", T0 + 1_000), null);
+});
+
+test("B-28: a user-hosted site does not carry across to another user on the same host", () => {
+  // The `github.io` case the Public Suffix List is carried for on the Rust side. The browser half
+  // gets this right without the list, because it compares whole origins.
+  KsTabMemory.remember(7, "item-1", "https://alice.github.io", T0);
+  assert.equal(KsTabMemory.recall(7, "https://mallory.github.io", T0 + 1_000), null);
+});
+
+test("B-28: a malformed or empty origin is never a recall", () => {
+  for (const origin of ["", "example.test", "https://", "://example.test", "null", "about:blank"]) {
+    KsTabMemory.remember(7, "item-1", CANARY_BASE, T0);
+    assert.equal(KsTabMemory.recall(7, origin, T0 + 1_000), null, JSON.stringify(origin));
+  }
+  for (const origin of ["", null, undefined, 0]) {
+    assert.equal(KsTabMemory.remember(8, "item-1", origin, T0), false, JSON.stringify(origin));
+  }
+});
+
+test("B-28: an entry made at a trailing-dot host does not answer for the dotless one", () => {
+  // `origin.js` keeps the trailing dot, so the two are different origin strings and must stay
+  // different here — a fold in only one of the two halves is a disagreement.
+  KsTabMemory.remember(7, "item-1", "https://example.test.", T0);
+  assert.equal(KsTabMemory.recall(7, CANARY_BASE, T0 + 1_000), null);
+});

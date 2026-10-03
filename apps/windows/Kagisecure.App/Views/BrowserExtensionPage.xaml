@@ -1,0 +1,100 @@
+<Page
+    x:Class="Kagisecure.App.Views.BrowserExtensionPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:Kagisecure.App.ViewModels"
+    xmlns:converters="using:Kagisecure.App.Converters">
+
+    <Page.Resources>
+        <converters:StringToBoolConverter x:Key="StringToBoolConverter" />
+        <converters:ObjectToVisibilityConverter x:Key="ObjectToVisibilityConverter" />
+    </Page.Resources>
+
+    <ScrollViewer>
+        <StackPanel Padding="24" Spacing="20" MaxWidth="820" HorizontalAlignment="Left">
+            <StackPanel Spacing="8">
+                <TextBlock Text="Fill logins from your browser" Style="{StaticResource TitleTextBlockStyle}"
+                           AutomationProperties.AutomationId="ks.browserExtension.title" />
+                <TextBlock Text="{x:Bind Intro}" TextWrapping="Wrap" Opacity="0.7" />
+            </StackPanel>
+
+            <!-- Listener -->
+            <InfoBar IsOpen="True" IsClosable="False"
+                     Severity="{x:Bind ListenerSeverity(ViewModel.HasListenerError), Mode=OneWay}"
+                     Title="{x:Bind ViewModel.ListenerTitle, Mode=OneWay}"
+                     Message="{x:Bind ViewModel.ListenerDetail, Mode=OneWay}"
+                     AutomationProperties.AutomationId="ks.browserExtension.status" />
+
+            <!-- The helper binary -->
+            <StackPanel Spacing="8">
+                <TextBlock Text="The helper binary" FontWeight="SemiBold" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Visibility="{x:Bind ViewModel.NmhostPath, Mode=OneWay, Converter={StaticResource ObjectToVisibilityConverter}}">
+                    <TextBlock Text="{x:Bind ViewModel.NmhostPath, Mode=OneWay}" FontFamily="Consolas" IsTextSelectionEnabled="True" TextWrapping="Wrap"
+                               VerticalAlignment="Center" AutomationProperties.AutomationId="ks.browserExtension.hostPath" />
+                    <Button Grid.Column="1" Content="Copy" Command="{x:Bind ViewModel.CopyHostPathCommand}" />
+                </Grid>
+                <TextBlock Text="Your browser launches this. It holds no vault and decides nothing — it forwards messages to this app, which is where every check happens."
+                           FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                <InfoBar IsOpen="{x:Bind ViewModel.HostMissing, Mode=OneWay}" IsClosable="False" Severity="Warning"
+                         Message="{x:Bind HostMissingText}" AutomationProperties.AutomationId="ks.browserExtension.warning.hostPath" />
+            </StackPanel>
+
+            <!-- The extension -->
+            <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.ExtensionId, Mode=OneWay, Converter={StaticResource ObjectToVisibilityConverter}}">
+                <TextBlock Text="The extension this app serves" FontWeight="SemiBold" />
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                    <TextBlock Text="{x:Bind ViewModel.ExtensionId, Mode=OneWay}" FontFamily="Consolas" IsTextSelectionEnabled="True"
+                               VerticalAlignment="Center" AutomationProperties.AutomationId="ks.browserExtension.extensionId" />
+                    <Button Grid.Column="1" Content="Copy" Command="{x:Bind ViewModel.CopyExtensionIdCommand}" />
+                </Grid>
+                <TextBlock Text="{x:Bind ExtensionIdHelp}" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+            </StackPanel>
+
+            <!-- Browsers: manifest file + HKCU registry key, with Set up / Remove -->
+            <StackPanel Spacing="10">
+                <TextBlock Text="Browsers" FontWeight="SemiBold" />
+                <InfoBar IsOpen="{x:Bind ViewModel.LastError, Mode=OneWay, Converter={StaticResource StringToBoolConverter}}"
+                         Severity="Error" Message="{x:Bind ViewModel.LastError, Mode=OneWay}" IsClosable="False"
+                         AutomationProperties.AutomationId="ks.browserExtension.warning.manifest" />
+                <ItemsControl ItemsSource="{x:Bind ViewModel.Browsers}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:BrowserManifestRowViewModel">
+                            <StackPanel Padding="12" Spacing="6" Margin="0,4" CornerRadius="8" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                                <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="8">
+                                    <FontIcon Grid.Column="0" Glyph="&#xE73E;" FontSize="14" Visibility="{x:Bind Installed}"
+                                              Foreground="{ThemeResource SystemFillColorSuccessBrush}" VerticalAlignment="Center" />
+                                    <StackPanel Grid.Column="1">
+                                        <TextBlock Text="{x:Bind Browser}" FontWeight="SemiBold" />
+                                        <TextBlock Text="{x:Bind StateText}" FontSize="12" Opacity="0.7" />
+                                    </StackPanel>
+                                    <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="6">
+                                        <Button Content="Set up" Command="{x:Bind InstallCommand}" Visibility="{x:Bind NotInstalled}" />
+                                        <Button Content="Remove" Command="{x:Bind UninstallCommand}" Visibility="{x:Bind Installed}" />
+                                    </StackPanel>
+                                </Grid>
+                                <TextBlock Text="Manifest file" FontSize="12" Opacity="0.7" />
+                                <TextBlock Text="{x:Bind ManifestPath}" FontFamily="Consolas" FontSize="12" IsTextSelectionEnabled="True" TextWrapping="Wrap" />
+                                <TextBlock Text="Registry key (the button also writes its default value: the manifest's path)" FontSize="12" Opacity="0.7" />
+                                <TextBlock Text="{x:Bind RegistryKeyText}" FontFamily="Consolas" FontSize="12" IsTextSelectionEnabled="True" TextWrapping="Wrap" />
+                                <Expander Header="What this writes" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">
+                                    <TextBlock Text="{x:Bind Body}" FontFamily="Consolas" FontSize="12" IsTextSelectionEnabled="True" TextWrapping="Wrap" />
+                                </Expander>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </StackPanel>
+
+            <!-- Then load the extension -->
+            <StackPanel Spacing="6">
+                <TextBlock Text="Then load the extension" FontWeight="SemiBold" />
+                <TextBlock Text="1. Open chrome://extensions (or edge://extensions)." TextWrapping="Wrap" />
+                <TextBlock Text="2. Turn on Developer mode." TextWrapping="Wrap" />
+                <TextBlock Text="3. Choose “Load unpacked” and pick the extensions/shared folder." TextWrapping="Wrap" />
+                <TextBlock Text="4. Check that the ID matches the one above, then reload this page." TextWrapping="Wrap" />
+                <TextBlock Text="The keyboard shortcut is Ctrl+\ in the browser. There is no autofill on page load, ever: the extension only asks for a value when you click the key icon in a field or press the shortcut."
+                           FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+            </StackPanel>
+        </StackPanel>
+    </ScrollViewer>
+</Page>

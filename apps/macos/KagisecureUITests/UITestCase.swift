@@ -109,6 +109,13 @@ class UITestCase: XCTestCase {
         scratch.appendingPathComponent("default.kagivault").path
     }
 
+    /// Where the scripted presence gate writes one line per prompt it answers
+    /// (`-KSUITestPresenceLog`, `UITestSupport`). The app's only outward trace of a prompt that
+    /// was refused, which by design changes nothing on screen.
+    var presenceLogPath: String {
+        scratch.appendingPathComponent("presence-answers.log").path
+    }
+
     /// Launch the app against this scenario's scratch world.
     ///
     /// - Parameters:
@@ -137,6 +144,7 @@ class UITestCase: XCTestCase {
         var arguments = ["-KSUITestDefaultsSuite", defaultsSuite!]
         if let biometrics {
             arguments += ["-KSUITestBiometrics", biometrics]
+            arguments += ["-KSUITestPresenceLog", presenceLogPath]
         }
         if let appearance {
             arguments += ["-KSUITestAppearance", appearance]
@@ -237,6 +245,11 @@ class UITestCase: XCTestCase {
     /// accessibility tree and off the screen, where a click cannot land. XCUITest has no
     /// "scroll this into view" on macOS, so the list is nudged until the row is reachable.
     ///
+    /// "Reachable" means the point the click goes to — the centre of the row's cell — is inside
+    /// `SidebarBand`, not that the label is hittable. A label is hittable as soon as a sliver of it
+    /// shows, and the cell's centre can then be under the vault-name footer or below the window:
+    /// Audit and Trash were clicked there, the footer took the click, and the row never selected.
+    ///
     /// Only the sidebar, and only from here: an earlier version scrolled every scrollable thing it
     /// could find from inside `click`, which moved panes that were not the point and broke
     /// scenarios that had nothing to do with the sidebar.
@@ -246,30 +259,24 @@ class UITestCase: XCTestCase {
         activate()
         waitFor(identifier, file: file, line: line)
 
-        // Scroll, click, check, repeat. Every query is rebuilt inside the loop: a scroll moves the
-        // rows, and an element resolved before one is a stale remote reference that XCUITest
-        // reports as "Failed to resolve remote element" rather than as a wrong click.
+        // Measured once: the list, its footer and the window stay put while the rows scroll
+        // under them. Every read is a round trip to the app, and a helper that re-measured them
+        // on every scroll step made the sidebar scenario take minutes.
+        let band = sidebarBand()
+
+        // Scroll, click, check, repeat. Row queries are rebuilt after every scroll: a scroll
+        // moves the rows, and an element resolved before one is a stale remote reference that
+        // XCUITest reports as "Failed to resolve remote element" rather than as a wrong click.
         //
         // The **cell** is what gets clicked, not the label inside it. SwiftUI puts the identifier
         // on the `Label`, which lowers to a static text inside an `AXCell`; a click on the text is
         // a click on a piece of text, and `List(selection:)` does not reliably take it.
-        for attempt in 0..<4 {
-            if !element(identifier).isHittable {
-                let sidebar = element("ks.sidebar.list")
-                guard sidebar.exists else { break }
-                for delta in [-80.0, -80.0, -80.0, -80.0, 320.0, 80.0, 80.0, 80.0, 80.0] {
-                    if element(identifier).isHittable { break }
-                    sidebar.scroll(byDeltaX: 0, deltaY: CGFloat(delta))
-                }
-            }
-            guard element(identifier).isHittable else { continue }
-
-            let cell = app.cells.containing(.staticText, identifier: identifier).firstMatch
-            if cell.exists, cell.isHittable {
-                cell.click()
-            } else {
-                element(identifier).click()
-            }
+        for _ in 0..<2 {
+            if let band { scrollSidebarRow(identifier, into: band) }
+            let cell = sidebarCell(identifier)
+            let target = cell.exists ? cell : element(identifier)
+            if let band, !band.contains(target.frame.midY) { break }
+            target.click()
 
             // A row that took the click reports itself selected — on its *cell*, not on the
             // static text the identifier sits on. `Selected` is an attribute of the
@@ -280,14 +287,18 @@ class UITestCase: XCTestCase {
                 if sidebarRowIsSelected(identifier) { return }
                 Thread.sleep(forTimeInterval: 0.05)
             }
-            if attempt >= 1 { break }
         }
 
         // The keyboard, which is where a `List(selection:)` is least ambiguous: the arrow keys go
         // through the table's own responder and move the binding, whatever a synthetic click did
         // or did not land on. This is the documented quirk the whole helper exists for — it is
         // rare, but "Set up your agent" hits it reproducibly.
+        //
+        // The arrow keys go to whatever has the keyboard, so the list is given it first, by a
+        // click on a row that is certainly on screen. Without that they went to the detail pane
+        // (or, when the last click hit the footer, to nothing) and the walk selected nothing.
         if !sidebarRowIsSelected(identifier) {
+            if let band { focusSidebar(band) }
             for _ in 0..<40 {
                 if sidebarRowIsSelected(identifier) { return }
                 app.typeKey(XCUIKeyboardKey.downArrow, modifierFlags: [])
@@ -298,11 +309,118 @@ class UITestCase: XCTestCase {
             }
         }
 
+        let reach = band.map { "between y \($0.top) and \($0.bottom)" } ?? "(the list was not found)"
         XCTAssertTrue(
             sidebarRowIsSelected(identifier),
-            "\(identifier) would not take a selection, by click or by keyboard; its frame is "
-                + "\(element(identifier).frame)",
+            "\(identifier) would not take a selection, by click or by keyboard; its cell is at "
+                + "\(sidebarRowFrame(identifier)), and a click lands on a row only \(reach)",
             file: file, line: line)
+    }
+
+    /// The strip of the screen, top to bottom, where a click lands on a sidebar row.
+    struct SidebarBand {
+        let top: CGFloat
+        let bottom: CGFloat
+
+        func contains(_ y: CGFloat) -> Bool { y >= top && y <= bottom }
+    }
+
+    /// The vertical padding around the sidebar footer's contents — `SidebarView.footer`'s
+    /// `.padding(.vertical, 8)`. The footer bar starts that far above the vault name.
+    static let sidebarFooterPadding: CGFloat = 8
+
+    /// Where a click lands on a sidebar row: below the list's top edge (and the window's and the
+    /// toolbar's), and at least 2 pt above both the footer bar — the vault name and listener
+    /// state — and the window's bottom edge.
+    ///
+    /// The window is there because the list's own frame is not necessarily the visible part of
+    /// it: an outline can report the whole height of its rows.
+    func sidebarBand() -> SidebarBand? {
+        let sidebar = element("ks.sidebar.list")
+        guard sidebar.exists else { return nil }
+        let list = sidebar.frame
+        var top = list.minY
+        var bottom = list.maxY
+        let window = app.windows.containing(.any, identifier: "ks.sidebar.list").firstMatch
+        if window.exists {
+            let frame = window.frame
+            top = max(top, frame.minY)
+            bottom = min(bottom, frame.maxY)
+            let toolbar = window.toolbars.firstMatch
+            if toolbar.exists {
+                let bar = toolbar.frame
+                if bar.minX < list.maxX, bar.maxX > list.minX { top = max(top, bar.maxY) }
+            }
+        }
+        for part in ["ks.sidebar.vaultName", "ks.sidebar.listenerState"] {
+            let footer = element(part)
+            if footer.exists {
+                let frame = footer.frame
+                if !frame.isEmpty { bottom = min(bottom, frame.minY - Self.sidebarFooterPadding) }
+            }
+        }
+        return SidebarBand(top: top, bottom: bottom - 2)
+    }
+
+    /// The sidebar cell holding the row with `identifier`. Resolved fresh on every call.
+    func sidebarCell(_ identifier: String) -> XCUIElement {
+        app.cells.containing(.staticText, identifier: identifier).firstMatch
+    }
+
+    /// Where the row with `identifier` is: its cell, or the label when no cell wraps it.
+    func sidebarRowFrame(_ identifier: String) -> CGRect {
+        let cell = sidebarCell(identifier)
+        return cell.exists ? cell.frame : element(identifier).frame
+    }
+
+    /// Scroll the sidebar until the centre of the row with `identifier` is inside `band`.
+    ///
+    /// Nothing happens when it already is. Otherwise each step aims the centre a row's height
+    /// inside the band, sized from what the previous step actually moved — scroll units are not
+    /// promised to be points — and a step that moved the row the wrong way, or not at all, flips
+    /// the direction. At most eight steps: a row that is not in by then is not going to be, and the
+    /// keyboard is the better way to reach it.
+    func scrollSidebarRow(_ identifier: String, into band: SidebarBand) {
+        let sidebar = element("ks.sidebar.list")
+        var frame = sidebarRowFrame(identifier)
+        var sign: CGFloat = 1
+        var unitsPerPoint: CGFloat?
+        var still = 0
+        for _ in 0..<8 {
+            let y = frame.midY
+            if band.contains(y) { return }
+            let rowMustRise = y > band.bottom
+            let margin = min(max(frame.height, 24), (band.bottom - band.top) / 3)
+            let distance = rowMustRise ? y - (band.bottom - margin) : (band.top + margin) - y
+            let units = unitsPerPoint.map { distance * $0 } ?? min(distance, 80)
+            sidebar.scroll(byDeltaX: 0, deltaY: (rowMustRise ? -units : units) * sign)
+
+            let after = sidebarRowFrame(identifier)
+            let moved = after.midY - y
+            frame = after
+            if abs(moved) < 0.5 {
+                // At one end of the list, or pushing toward the wrong end of it. Try the other
+                // way once; nothing either way means the row is as far in as it goes.
+                still += 1
+                if still >= 2 { return }
+                sign = -sign
+                continue
+            }
+            still = 0
+            if (moved < 0) != rowMustRise { sign = -sign }
+            if unitsPerPoint == nil { unitsPerPoint = min(max(units / abs(moved), 0.05), 20) }
+        }
+    }
+
+    /// Give the sidebar the keyboard, by clicking the first row whose centre is inside `band`.
+    func focusSidebar(_ band: SidebarBand) {
+        for cell in element("ks.sidebar.list").cells.allElementsBoundByIndex {
+            guard cell.exists else { continue }
+            if band.contains(cell.frame.midY) {
+                cell.click()
+                return
+            }
+        }
     }
 
     /// Select the item called `title` in the middle pane, and wait for the detail pane to show it.
@@ -411,21 +529,169 @@ class UITestCase: XCTestCase {
 
     /// The text a view is showing.
     ///
-    /// SwiftUI lowers a `Text` to an `AXStaticText` whose **value** is the string; the `label` is
-    /// empty unless the view also carries an `.accessibilityLabel`. Reading `.label` and getting
-    /// `""` is therefore the normal case rather than a bug, and every assertion about what is on
-    /// screen goes through here instead of guessing which of the two a given view populated.
+    /// SwiftUI lowers a `Text` to an `AXStaticText` whose **value** is the string, and its `label`
+    /// (`AXDescription`) is empty. Reading `.label` and getting `""` is therefore the normal case
+    /// rather than a bug, and every assertion about what is on screen goes through here instead of
+    /// guessing which of the two a given view populated. See `text(of:)` for what an
+    /// `.accessibilityLabel` does to that.
     func text(_ identifier: String, file: StaticString = #filePath, line: UInt = #line) -> String {
         text(of: waitFor(identifier, file: file, line: line))
     }
 
+    /// Wait for the element with `identifier` to show `expected` as its value — for a value that
+    /// appears only after something asynchronous, such as a presence-gated reveal (ADR-0038):
+    /// the element exists (masked) before, and changes value when the release comes back.
+    @discardableResult
+    func waitForValue(
+        _ identifier: String, equals expected: String, timeout: TimeInterval = UITestCase.shortTimeout
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let found = element(identifier)
+            if found.exists, (found.value as? String) == expected { return true }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return false
+    }
+
+    /// Wait until `condition` holds.
+    ///
+    /// `waitFor` covers "this identifier appears"; this covers everything else a scenario has to
+    /// wait on — a value settling, a control coming back enabled, a menu opening. Predicate-driven
+    /// rather than a sleep loop, so it returns as soon as the condition is true.
+    @discardableResult
+    func waitUntil(
+        _ description: String, timeout: TimeInterval = UITestCase.shortTimeout,
+        _ condition: @escaping () -> Bool
+    ) -> Bool {
+        if condition() { return true }
+        let expectation = XCTNSPredicateExpectation(
+            predicate: NSPredicate { _, _ in condition() }, object: nil)
+        expectation.expectationDescription = description
+        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
+    }
+
+    // MARK: - Presence prompts
+
+    /// What a masked value says instead of its dots: `ItemReleases.concealedLabel` in the app,
+    /// written out here because a UI test cannot import the app's module (ui-spec.md §13,
+    /// ADR-0038). It is the mask's accessibility **value** — see `text(of:)`.
+    static func concealedAnnouncement(_ label: String, action: String = "Reveal") -> String {
+        let spoken = (label.first.map { String($0).uppercased() } ?? "") + label.dropFirst()
+        return "\(spoken), concealed. \(action) asks for Touch ID or your Mac password."
+    }
+
+    /// Every answer the scripted presence gate has given in this scenario, oldest first:
+    /// `authenticated`, `cancelled` or `unavailable`, one per prompt.
+    func presenceAnswers() -> [String] {
+        guard let log = try? String(contentsOfFile: presenceLogPath, encoding: .utf8) else {
+            return []
+        }
+        return log.split(separator: "\n").map(String.init)
+    }
+
+    /// Wait for the scripted gate to have answered `count` prompts in total.
+    ///
+    /// The way to know a refused release has been *answered* rather than not yet asked: a refusal
+    /// changes nothing on screen, so there is no element to wait on, and a fixed sleep either
+    /// wastes time or passes a check made before the answer arrived.
+    @discardableResult
+    func waitForPresenceAnswers(
+        _ count: Int, timeout: TimeInterval = UITestCase.shortTimeout
+    ) -> Bool {
+        waitUntil("the presence gate has answered \(count) prompt(s)", timeout: timeout) {
+            self.presenceAnswers().count >= count
+        }
+    }
+
+    // MARK: - Scrolling and exact numbers
+
+    /// Scroll the element with `identifier` into view inside whatever `ScrollView` holds it.
+    ///
+    /// For a control below the fold of a sheet's scroll area — the generator's toggles once a long
+    /// candidate has pushed them down. A click on an element
+    /// that is in the tree but clipped lands on whatever is drawn over that point instead, and
+    /// XCUITest on macOS has no "scroll to visible". Called by the scenarios that need it, never
+    /// from `click`: see `clickSidebarRow` for why scrolling from inside `click` was taken out.
+    func scrollIntoView(
+        _ identifier: String, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let target = waitFor(identifier, file: file, line: line)
+        guard !target.isHittable else { return }
+        // The innermost scroll area holding it: the last match, since a query lists ancestors
+        // before their descendants.
+        guard
+            let scroller = app.scrollViews.containing(.any, identifier: identifier)
+                .allElementsBoundByIndex.last
+        else { return }
+        for delta in [-80.0, -80.0, -80.0, -80.0, -80.0, -80.0, 480.0, 80.0, 80.0, 80.0, 80.0] {
+            if element(identifier).isHittable { return }
+            scroller.scroll(byDeltaX: 0, deltaY: CGFloat(delta))
+        }
+        XCTAssertTrue(
+            element(identifier).isHittable,
+            "\(identifier) could not be scrolled into view; its frame is \(element(identifier).frame)",
+            file: file, line: line)
+    }
+
+    /// Type `number` into the `ExactNumberField` whose identifier prefix is `identifier` and commit
+    /// it with Return. What the app took is then `<identifier>Field`'s value — assert on it with
+    /// `waitForValue`.
+    ///
+    /// The field, not the slider beside it. The field is the keyboard's way to the value
+    /// (ui-spec.md §13), and it is exact: what is typed is what is asked for, and what the field
+    /// reads back after the commit is the value the app took — the number itself when it is in
+    /// range, the nearer end when it is not. A slider has no such path: the arrow keys reach an
+    /// `NSSlider` only with Full Keyboard Access on, `adjust(toNormalizedSliderPosition:)` does not
+    /// move a SwiftUI `Slider`, and a drag lands wherever the knob happens to stop.
+    ///
+    /// Return, not Tab: Tab commits by moving focus, and a sheet whose only key view is this field
+    /// (the approval sheet, without Full Keyboard Access) has nowhere to move it to. Return is a
+    /// default button's key equivalent where there is one, though, so this is for sheets without
+    /// one — the standalone generator and the approval sheet, whose Return does nothing on
+    /// purpose (ui-spec.md §11) — and not for the generator opened from a field.
+    func setNumber(
+        _ number: String, in identifier: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let fieldIdentifier = "\(identifier)Field"
+        scrollIntoView(fieldIdentifier, file: file, line: line)
+        type(number, into: fieldIdentifier, file: file, line: line)
+        element(fieldIdentifier).typeKey(XCUIKeyboardKey.return, modifierFlags: [])
+    }
+
+    /// Press the up or down arrow of the `ExactNumberField` whose identifier prefix is
+    /// `identifier`. The stepper is the mouse's way to nudge the value by exactly one step.
+    func nudge(
+        _ identifier: String, up: Bool,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let stepper = waitFor("\(identifier)Stepper", file: file, line: line)
+        let arrow = up ? stepper.incrementArrows.firstMatch : stepper.decrementArrows.firstMatch
+        XCTAssertTrue(
+            arrow.exists,
+            "\(identifier)Stepper has no \(up ? "increment" : "decrement") arrow in the tree",
+            file: file, line: line)
+        arrow.click()
+    }
+
     /// The text an element is showing, from whichever attribute carries it.
     ///
-    /// `label` first: a view that sets `.accessibilityLabel` is saying "this is what I am", and
-    /// that is what an assertion should read. A plain `Text` sets no label, and its string is in
-    /// `value`. The one shape this cannot serve is a view whose label and value are *both*
-    /// meaningful and different — the generator's candidate, say, which is labelled "Generated
-    /// password" and valued with the password — and those call sites read `.value` directly.
+    /// `label` first, then `value`. What SwiftUI puts where on macOS was measured (an
+    /// `NSHostingView` read back through `AXUIElement`), and it is not what the names suggest:
+    ///
+    /// | view                                             | `label`      | `value`        |
+    /// |--------------------------------------------------|--------------|----------------|
+    /// | `Text(s)`                                        | empty        | `s`            |
+    /// | `Text(s).accessibilityLabel(l)`                  | empty        | `l` — not `s`  |
+    /// | `Text(s).accessibilityLabel(l).accessibilityValue(v)` | `l`     | `v`            |
+    ///
+    /// The second row is the one that surprises: the label *replaces* the string as the static
+    /// text's value, which is exactly what VoiceOver reads, and what is drawn is not in the tree at
+    /// all. So a concealed field's mask reads as its announcement, never as its dots. The third
+    /// row is the one this helper cannot serve — label and value both meaningful and different,
+    /// like the generator's candidate or the import sheet's source path — and those call sites
+    /// read `.value` directly.
     func text(of element: XCUIElement) -> String {
         if !element.label.isEmpty { return element.label }
         return element.value as? String ?? ""
@@ -433,14 +699,23 @@ class UITestCase: XCTestCase {
 
     /// What is on screen, for a failure message. Truncated: the whole tree is thousands of lines
     /// and the first fifty identifiers are what tells you whether you are on the wrong screen.
+    ///
+    /// Read from **one** snapshot of the tree, not by enumerating `descendants(matching: .any)`:
+    /// that resolves each element by index against a fresh snapshot, and on a screen that changes
+    /// by itself — the approval sheet's countdown redraws every second — an index that existed a
+    /// moment ago is gone, and XCUITest fails the scenario *inside the failure message* with "No
+    /// matches found for Element at index N" instead of saying what was on screen.
     func onScreenIdentifiers() -> [String] {
+        guard let root = try? app.snapshot() else {
+            return ["(the accessibility tree could not be read)"]
+        }
         var seen: [String] = []
-        for element in app.descendants(matching: .any).allElementsBoundByIndex {
-            let id = element.identifier
-            if id.hasPrefix("ks."), !seen.contains(id) {
-                seen.append(id)
-                if seen.count >= 50 { break }
-            }
+        var stack: [XCUIElementSnapshot] = [root]
+        while let node = stack.popLast(), seen.count < 50 {
+            let id = node.identifier
+            if id.hasPrefix("ks."), !seen.contains(id) { seen.append(id) }
+            // Reversed, so the walk is the same depth-first, document order `descendants` used.
+            stack.append(contentsOf: node.children.reversed())
         }
         return seen
     }

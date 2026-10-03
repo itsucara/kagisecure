@@ -1,0 +1,126 @@
+{
+  "sourceLanguage": "en",
+  "strings": {
+    "Another confirmation is in progress": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "別の確認が進行中です"
+          }
+        }
+      }
+    },
+    "Cancel": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "キャンセル"
+          }
+        }
+      }
+    },
+    "Confirm in Kagisecure…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kagisecure で確認してください…"
+          }
+        }
+      }
+    },
+    "Done": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "完了"
+          }
+        }
+      }
+    },
+    "Fill": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "入力"
+          }
+        }
+      }
+    },
+    "Kagisecure could not provide this login": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kagisecure はこのログインを提供できませんでした"
+          }
+        }
+      }
+    },
+    "Kagisecure is locked or not running. Unlock it, then click Try Again.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kagisecure がロックされているか起動していません。ロックを解除してから「再試行」をクリックしてください。"
+          }
+        }
+      }
+    },
+    "Kagisecure is now an AutoFill provider. Unlock Kagisecure once, confirm with Touch ID, and your logins fill everywhere until the vault locks.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Kagisecure が自動入力のプロバイダになりました。Kagisecure のロックを解除して Touch ID で一度確認すれば、保管庫がロックされるまでどこでもログインが入力されます。"
+          }
+        }
+      }
+    },
+    "No matching logins": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "一致するログインがありません"
+          }
+        }
+      }
+    },
+    "Not confirmed — nothing filled": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "確認されなかったため、何も入力されませんでした"
+          }
+        }
+      }
+    },
+    "Search logins": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ログインを検索"
+          }
+        }
+      }
+    },
+    "Try Again": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "再試行"
+          }
+        }
+      }
+    }
+  },
+  "version": "1.0"
+}

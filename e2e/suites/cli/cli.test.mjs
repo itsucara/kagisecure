@@ -6,10 +6,11 @@
  * depends on another having run: each makes its own vault, so `--suite cli` can be run repeatedly
  * and the scenarios can be reordered without breaking.
  *
- * The KDF is deliberately weakened to `--kdf-m-kib 8 --kdf-t 1` for the scratch vaults. That is
- * not a shortcut around the crypto — the *golden vector* scenario opens a real file written at
- * the released parameters — it is the difference between a suite that runs in seconds and one
- * nobody runs.
+ * The KDF is deliberately weakened to `CHEAP_KDF` (`--kdf-m-kib 64 --kdf-t 1`, the cheapest
+ * `kagisecure-core` will open — see `MIN_M_KIB` in `crates/kagisecure-core/src/crypto/kdf.rs`) for
+ * the scratch vaults. That is not a shortcut around the crypto — the *golden vector* scenario
+ * opens a real file written at the released parameters — it is the difference between a suite that
+ * runs in seconds and one nobody runs.
  */
 
 import test from "node:test";
@@ -18,11 +19,10 @@ import fs from "node:fs";
 import path from "node:path";
 import zlib from "node:zlib";
 
-import { cli, cliOk, scratch, tryExec, canary } from "../../lib/harness.mjs";
+import { cli, cliOk, scratch, tryExec, canary, CHEAP_KDF } from "../../lib/harness.mjs";
 import { recordText } from "../../lib/artifacts.mjs";
 
 const PASSWORD = "correct horse battery staple";
-const CHEAP_KDF = ["--kdf-m-kib", "8", "--kdf-t", "1"];
 
 /** Exit codes the CLI documents in `--help`. */
 const EXIT = {
@@ -221,10 +221,13 @@ test("a tampered body is refused", (t) => {
 test("KDF parameters outside their bounds are refused at vault creation", () => {
   const dir = scratch("cli-kdf-bounds");
 
-  // Argon2's own minimums: m_cost 8 KiB, t_cost 1, p_cost 1. The maximums kagisecure sets are
-  // 1 GiB, 64 and 16 (crates/kagisecure-core/src/crypto/kdf.rs).
+  // kagisecure's own floor is m_kib 64, t 1, p 1 (MIN_M_KIB / MIN_T in
+  // crates/kagisecure-core/src/crypto/kdf.rs — below Argon2's own 8 KiB/1-iteration minimums, but
+  // refused anyway because the v1 golden vector was written at exactly m=64 KiB, t=1, and that
+  // vector is the strongest floor the *open* path can carry without breaking format
+  // compatibility). The maximums kagisecure sets are 1 GiB, 64 and 16.
   const outOfBounds = [
-    { flags: ["--kdf-m-kib", "4"], what: "memory below Argon2's 8 KiB minimum" },
+    { flags: ["--kdf-m-kib", "63"], what: "memory below the 64 KiB floor" },
     { flags: ["--kdf-m-kib", "2097152"], what: "memory above the 1 GiB maximum" },
     { flags: ["--kdf-t", "0"], what: "zero iterations" },
     { flags: ["--kdf-t", "65"], what: "more than 64 iterations" },
@@ -234,11 +237,24 @@ test("KDF parameters outside their bounds are refused at vault creation", () => 
 
   for (const [index, item] of outOfBounds.entries()) {
     const vault = path.join(dir, `bounds-${index}.kagivault`);
-    const result = cli(["vault", "init", "--password-stdin", ...CHEAP_KDF, ...item.flags], {
+    // Merge rather than concatenate: clap refuses a flag given twice, and every case here
+    // overrides exactly one of the three flags `CHEAP_KDF` already sets.
+    const flags = new Map();
+    for (let i = 0; i < CHEAP_KDF.length; i += 2) flags.set(CHEAP_KDF[i], CHEAP_KDF[i + 1]);
+    for (let i = 0; i < item.flags.length; i += 2) flags.set(item.flags[i], item.flags[i + 1]);
+    const result = cli(["vault", "init", "--password-stdin", ...[...flags].flat()], {
       vault,
       stdin: [PASSWORD],
     });
-    assert.notEqual(result.code, EXIT.ok, `${item.what} should be refused`);
+    // `KdfParams::validate` failing at vault creation is the same "the header's Argon2id
+    // parameters are unacceptable" family `exit_code_for` maps to EXIT_UNLOCK_FAILED (3) —
+    // documented in `--help` as "could not unlock: wrong password or recovery code, or the vault
+    // was tampered with" — not a generic error.
+    assert.equal(
+      result.code,
+      EXIT.unlockFailed,
+      `${item.what} should be refused with exit ${EXIT.unlockFailed}, got ${result.code}: ${result.stdout}${result.stderr}`,
+    );
     assert.equal(
       fs.existsSync(vault),
       false,
@@ -256,7 +272,7 @@ test("KDF parameters at the edge of their bounds are accepted and recorded in th
       "init",
       "--password-stdin",
       "--kdf-m-kib",
-      "8",
+      "64",
       "--kdf-t",
       "1",
       "--kdf-p",
@@ -268,7 +284,7 @@ test("KDF parameters at the edge of their bounds are accepted and recorded in th
   );
 
   const opened = cliOk(["vault", "unlock", "--password-stdin"], { vault, stdin: [PASSWORD] });
-  assert.match(opened.stdout, /8/, `the summary should report the parameters: ${opened.stdout}`);
+  assert.match(opened.stdout, /m=64/, `the summary should report the parameters: ${opened.stdout}`);
 
   // The header is plaintext CBOR, so the hint is readable without the password. That is by
   // design — the hint exists to tell a future reader which profile wrote the file.
@@ -585,9 +601,13 @@ test("the committed golden vault still opens at its released KDF parameters", (t
     "crates/kagisecure-core/tests/vectors/v1-argon2id-64k.kagivault",
   );
   assert.ok(fs.existsSync(source), `the golden vector should be committed at ${source}`);
+  const sourceBytesBefore = fs.readFileSync(source);
 
-  // Copied out, because opening does not write today but a future change might, and a test that
-  // mutates a committed fixture is a test that destroys the thing it exists to protect.
+  // Copied out before running anything, because a test that mutates a committed fixture is a test
+  // that destroys the thing it exists to protect. Under ADR-0040 that copy is no longer optional
+  // scaffolding: `item show --reveal` now appends a best-effort audit entry (decision 1 — "own
+  // reveals ... audit them, best-effort, never blocking"), so opening the vault this way *does*
+  // write to it, and only the copy may ever see that write.
   const dir = scratch("cli-golden");
   const vault = path.join(dir, "golden.kagivault");
   fs.copyFileSync(source, vault);
@@ -608,6 +628,14 @@ test("the committed golden vault still opens at its released KDF parameters", (t
     ["username", "token"],
   );
 
+  // Neither read above audits anything (only `--reveal` and `totp` do, per ADR-0040), so the copy
+  // must still be untouched at this point — proving the ordinary read path stays non-mutating.
+  assert.equal(
+    fs.readFileSync(vault).equals(sourceBytesBefore),
+    true,
+    "list and a non-revealing show must not write to the vault",
+  );
+
   const revealed = cliOk(["item", "show", "--password-stdin", "--reveal", "Golden vector"], {
     vault,
     stdin: [goldenPassword],
@@ -625,10 +653,24 @@ test("the committed golden vault still opens at its released KDF parameters", (t
     "the golden vector, opened by today's binary",
   );
 
-  assert.equal(
-    fs.readFileSync(source).equals(fs.readFileSync(vault)),
+  // `--reveal` appends its best-effort audit entry to the *copy* — proof the CLI actually did the
+  // ADR-0040 accounting rather than the assertion above passing by accident — while the committed
+  // fixture itself must never move.
+  assert.notEqual(
+    fs.readFileSync(vault).equals(sourceBytesBefore),
     true,
-    "the committed fixture is byte-identical after the run",
+    "--reveal should append a best-effort audit entry, changing the copy",
+  );
+  const verified = cliOk(["audit", "--password-stdin", "--verify"], {
+    vault,
+    stdin: [goldenPassword],
+  });
+  assert.match(verified.stdout, /intact/i, verified.stdout);
+
+  assert.equal(
+    fs.readFileSync(source).equals(sourceBytesBefore),
+    true,
+    "the committed fixture itself is byte-identical after the run",
   );
 });
 

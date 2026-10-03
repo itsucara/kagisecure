@@ -10,7 +10,7 @@
 //! plaintext across this boundary. M5 adds a fifth kind, and it points in both directions:
 //!
 //! * **out** — [`generate_password`] returns a freshly generated password, and
-//!   [`totp_preview`] / `VaultSession::totp_code` return a one-time code. Both exist because the
+//!   [`totp_preview`] / `TotpRelease::code_at` return a one-time code. Both exist because the
 //!   thing the user asked for *is* the value: a generator that could not show its output, or a
 //!   TOTP field that could not show its code, would not be the feature.
 //! * **in** — [`totp_preview`], [`totp_describe`] and [`totp_uri_from_parts`] take an

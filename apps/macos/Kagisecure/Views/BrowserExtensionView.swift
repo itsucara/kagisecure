@@ -47,15 +47,34 @@ struct BrowserExtensionView: View {
                 .font(.title2.weight(.semibold))
                 .accessibilityIdentifier("ks.browserExtension.title")
             Text(
-                "The extension asks this app which of your items apply to the page you are on, and "
-                + "gets back titles and usernames. A password crosses only when you click to fill "
-                + "it and approve it here — once per website, per unlock. Nothing is stored in the "
-                + "browser."
+                "The extension asks this app which of your items apply to the page you are on, and gets back titles and usernames. A password or a one-time code crosses only when you ask to fill it and confirm here with Touch ID or your login password — every time. The first fill on a website shows you what will be sent; for a few minutes after you allow it for the session, only the confirmation is asked. Nothing is stored in the browser."
             )
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
+            if !hasBiometrics {
+                // ADR-0037: the per-fill check is `.deviceOwnerAuthentication`, which on a Mac
+                // with no Touch ID means the login password every time. Said here, before the
+                // first fill, rather than discovered at it — and with the one way to make it
+                // lighter that does not make it weaker.
+                Label {
+                    Text(
+                        "This Mac has no Touch ID, so every fill asks for your login password. An Apple Watch that unlocks this Mac can confirm fills instead."
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "lock.shield")
+                }
+                .font(.callout)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+                .accessibilityIdentifier("ks.browserExtension.noBiometrics")
+            }
         }
     }
+
+    /// Whether this Mac has Touch ID enrolled, read once per appearance of the screen.
+    private var hasBiometrics: Bool { LocalAuthenticationGate.hasBiometrics() }
 
     @ViewBuilder
     private var listenerState: some View {
@@ -79,13 +98,11 @@ struct BrowserExtensionView: View {
                 )
                 .foregroundStyle(ext.status.running ? AnyShapeStyle(.green) : AnyShapeStyle(.secondary))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(ext.status.running ? "Listening for browsers" : "Not listening")
+                    (ext.status.running ? Text("Listening for browsers") : Text("Not listening"))
                         .font(.callout.weight(.semibold))
-                    Text(
-                        ext.status.running
-                            ? "\(ext.status.endpoint) · \(ext.status.connectedHosts) connected"
-                            : "The extension cannot reach this app."
-                    )
+                    (ext.status.running
+                        ? Text("\(ext.status.endpoint) · \(Int(ext.status.connectedHosts)) connected")
+                        : Text("The extension cannot reach this app."))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -116,8 +133,7 @@ struct BrowserExtensionView: View {
                         .accessibilityIdentifier("ks.browserExtension.copy.hostPath")
                 }
                 Text(
-                    "Your browser launches this. It holds no vault and decides nothing — it "
-                    + "forwards messages to this app, which is where every check happens."
+                    "Your browser launches this. It holds no vault and decides nothing — it forwards messages to this app, which is where every check happens."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -125,9 +141,7 @@ struct BrowserExtensionView: View {
             } else {
                 Label {
                     Text(
-                        "kagisecure-nmhost was not found next to this app, on your PATH, or at "
-                        + "KAGISECURE_NMHOST. Build it with `cargo build -p kagisecure-nmhost` and "
-                        + "point KAGISECURE_NMHOST at it, or install the released app."
+                        "kagisecure-nmhost was not found next to this app, on your PATH, or at KAGISECURE_NMHOST. Build it with `cargo build -p kagisecure-nmhost` and point KAGISECURE_NMHOST at it, or install the released app."
                     )
                     .fixedSize(horizontal: false, vertical: true)
                 } icon: {
@@ -156,10 +170,7 @@ struct BrowserExtensionView: View {
                         .accessibilityIdentifier("ks.browserExtension.copy.extensionId")
                 }
                 Text(
-                    "Check this against the ID your browser shows on its Extensions page. It is "
-                    + "fixed by a key committed in the extension's manifest, so it is the same "
-                    + "whether the extension is loaded unpacked or installed from a store — and "
-                    + "any other extension is refused."
+                    "Check this against the ID your browser shows on its Extensions page. A copy loaded unpacked has this ID, fixed by a key committed in the extension's manifest. The Chrome Web Store gives its listing an ID of its own, which this app accepts too once the listing exists. Any other extension is refused."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -196,12 +207,10 @@ struct BrowserExtensionView: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(manifest.browser)
                         .font(.callout.weight(.semibold))
-                    Text(
-                        manifest.installed
-                            ? "Set up"
-                            : manifest.browserInstalled
-                                ? "Not set up yet" : "Not installed on this Mac"
-                    )
+                    (manifest.installed
+                        ? Text("Set up")
+                        : manifest.browserInstalled
+                            ? Text("Not set up yet") : Text("Not installed on this Mac"))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier(
@@ -255,13 +264,32 @@ struct BrowserExtensionView: View {
             VStack(alignment: .leading, spacing: 4) {
                 step(1, "Open chrome://extensions (or edge://extensions).")
                 step(2, "Turn on Developer mode.")
-                step(3, "Choose “Load unpacked” and pick the extensions/shared folder.")
+                if let folder = bundledExtensionFolder {
+                    step(3, "Choose “Load unpacked”, press ⇧⌘G in the folder picker, paste this folder and choose it:")
+                    HStack {
+                        Text(folder.path)
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                            .lineLimit(2)
+                            .truncationMode(.head)
+                            .accessibilityIdentifier("ks.browserExtension.extensionFolder")
+                        Spacer()
+                        copyButton(folder.path, label: "folder")
+                            .accessibilityIdentifier("ks.browserExtension.copy.extensionFolder")
+                        Button("Show in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([folder])
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityIdentifier("ks.browserExtension.revealExtensionFolder")
+                    }
+                    .padding(.leading, 24)
+                } else {
+                    step(3, "Choose “Load unpacked” and pick the extensions/shared folder.")
+                }
                 step(4, "Check that the ID matches the one above, then reload this app's page.")
             }
             Text(
-                "The keyboard shortcut is ⌘\\ in the browser. There is no autofill on page load, "
-                + "ever: the extension only asks for a value when you click the key icon in a field "
-                + "or press the shortcut."
+                "The keyboard shortcut is ⌘\\ in the browser. There is no autofill on page load, ever: the extension only asks for a value when you click the key icon in a field or press the shortcut."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -269,7 +297,7 @@ struct BrowserExtensionView: View {
         }
     }
 
-    private func step(_ number: Int, _ text: String) -> some View {
+    private func step(_ number: Int, _ text: LocalizedStringKey) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("\(number).")
                 .font(.callout.monospacedDigit())
@@ -298,14 +326,12 @@ struct BrowserExtensionView: View {
                 // `if`, so only ever one of them is on screen, and a test asserts on the text.
                 if setup.safari.appexPath == nil {
                     warning(
-                        "This build does not contain the Safari extension. Build the app with "
-                        + "`make macos` so its app extension is embedded."
+                        "This build does not contain the Safari extension. Build the app with `make macos` so its app extension is embedded."
                     )
                     .accessibilityIdentifier("ks.browserExtension.warning.safari")
                 } else if setup.safari.appGroup == nil {
                     warning(
-                        "This build is not signed with a team identity, so Safari's extension "
-                        + "cannot reach this app. Build it with `make macos SIGN=developer-id`."
+                        "This build is not signed with a team identity, so Safari's extension cannot reach this app. Build it with `make macos SIGN=developer-id`."
                     )
                     .accessibilityIdentifier("ks.browserExtension.warning.safari")
                 } else {
@@ -316,10 +342,8 @@ struct BrowserExtensionView: View {
                         )
                         .foregroundStyle(
                             ext.status.safariRunning ? AnyShapeStyle(.green) : AnyShapeStyle(.tertiary))
-                        Text(
-                            ext.status.safariRunning
-                                ? "Ready for Safari" : "Not listening for Safari"
-                        )
+                        (ext.status.safariRunning
+                            ? Text("Ready for Safari") : Text("Not listening for Safari"))
                         .font(.callout.weight(.semibold))
                         .accessibilityIdentifier("ks.browserExtension.safariStatus")
                     }
@@ -328,8 +352,7 @@ struct BrowserExtensionView: View {
                         step(2, "Tick “Kagisecure”.")
                         step(
                             3,
-                            "Press “Edit Websites…” (or the toolbar icon) and allow it on the "
-                            + "sites you want to fill.")
+                            "Press “Edit Websites…” (or the toolbar icon) and allow it on the sites you want to fill.")
                         step(4, "Click the key icon in a password field, or press ⌘\\.")
                     }
                     DisclosureGroup("How Safari reaches this app") {
@@ -352,9 +375,7 @@ struct BrowserExtensionView: View {
                                     .accessibilityIdentifier("ks.browserExtension.extensionPath")
                             }
                             Text(
-                                "There is no helper binary and no manifest file: the extension is "
-                                + "inside this app's own bundle and talks to it over a socket only "
-                                + "the two of them can see. Nothing is written outside this app."
+                                "There is no helper binary and no manifest file: the extension is inside this app's own bundle and talks to it over a socket only the two of them can see. Nothing is written outside this app."
                             )
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -364,6 +385,20 @@ struct BrowserExtensionView: View {
                     }
                     .font(.caption)
                 }
+
+                // ADR-0036 §12: a parity gap, said where a Safari user will look for it rather than
+                // discovered as FILL_UNAVAILABLE in an agent's transcript.
+                Label {
+                    Text(
+                        "Safari does not support agent fills yet. When an agent asks this app to fill a login, the app has to reach the extension first, and Safari's connection to this app cannot carry that today. The Chromium-family browsers listed above can."
+                    )
+                    .fixedSize(horizontal: false, vertical: true)
+                } icon: {
+                    Image(systemName: "info.circle")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("ks.browserExtension.safari.noAgentFill")
             }
             .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -371,7 +406,7 @@ struct BrowserExtensionView: View {
         }
     }
 
-    private func warning(_ text: String) -> some View {
+    private func warning(_ text: LocalizedStringKey) -> some View {
         Label {
             Text(text).fixedSize(horizontal: false, vertical: true)
         } icon: {
@@ -381,7 +416,7 @@ struct BrowserExtensionView: View {
         .foregroundStyle(.orange)
     }
 
-    private func fact(_ label: String, _ value: String) -> some View {
+    private func fact(_ label: LocalizedStringKey, _ value: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(label)
                 .font(.caption)
@@ -392,6 +427,16 @@ struct BrowserExtensionView: View {
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    /// The extension this app ships, inside the bundle (`Contents/Resources/ChromiumExtension`,
+    /// put there by `cargo xtask embed`). An installed app loads it from here, and an update
+    /// replaces it in place. `nil` for a build without it; step 3 then names the source folder.
+    private var bundledExtensionFolder: URL? {
+        guard let folder = Bundle.main.resourceURL?.appendingPathComponent("ChromiumExtension"),
+            FileManager.default.fileExists(atPath: folder.appendingPathComponent("manifest.json").path)
+        else { return nil }
+        return folder
     }
 
     /// A "Copy" button that turns into a brief "Copied" confirmation with a checkmark.
@@ -410,7 +455,7 @@ struct BrowserExtensionView: View {
             }
         } label: {
             Label(
-                copied == label ? "Copied" : "Copy",
+                copied == label ? String(localized: "Copied") : String(localized: "Copy"),
                 systemImage: copied == label ? "checkmark" : "doc.on.doc")
         }
         .buttonStyle(.borderless)

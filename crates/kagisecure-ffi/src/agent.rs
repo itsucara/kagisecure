@@ -37,10 +37,14 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use kagisecure_agent::approval::{ApprovalKind, ApprovalRequest, ClientVerification, Decision};
+use kagisecure_agent::approval::{
+    AgentFillFacts, ApprovalKind, ApprovalRequest, ClientVerification, Decision,
+};
 use kagisecure_agent::browser_setup;
-use kagisecure_agent::{Agent, AgentConfig, ExtensionAgent, ExtensionConfig};
+use kagisecure_agent::{Agent, AgentConfig, Endpoint, ExtensionAgent, ExtensionConfig};
 use kagisecure_core::proto::LeaseId;
+use kagisecure_extension_ipc::origin::AgentOriginRendering;
+use kagisecure_ipc::protocol::AgentFillField;
 
 use crate::session::VaultSession;
 use crate::{FfiError, FfiResult};
@@ -60,6 +64,15 @@ static EXTENSION: Mutex<Option<ExtensionAgent>> = Mutex::new(None);
 /// than handed from one to the other.
 static QUEUE: std::sync::LazyLock<Arc<kagisecure_agent::ApprovalQueue>> =
     std::sync::LazyLock::new(|| Arc::new(kagisecure_agent::ApprovalQueue::new()));
+
+/// The one agent-fill broker (ADR-0036), shared by both listeners.
+///
+/// Process-global for the reason [`QUEUE`] is, and one more: the app stops and restarts both
+/// listeners on every lock and unlock, and the broker is where the feature switch lives — and
+/// the blocks, sticky denials and budgets that must survive a lock (ADR-0036 §9). So neither listener owns it; each is handed
+/// the same `Arc` when it starts.
+static AGENT_FILL: std::sync::LazyLock<Arc<kagisecure_agent::AgentFillBroker>> =
+    std::sync::LazyLock::new(|| Arc::new(kagisecure_agent::AgentFillBroker::new()));
 
 fn agent() -> std::sync::MutexGuard<'static, Option<Agent>> {
     AGENT.lock().unwrap_or_else(|e| e.into_inner())
@@ -82,6 +95,10 @@ pub enum ApprovalAction {
     RunWithEnv,
     /// A browser extension wants to fill a credential into a page (M6).
     FillCredential,
+    /// An agent asks for a login to be typed into a browser tab (ADR-0036). Always the full
+    /// sheet — never presence-only, never "for this session" — and it mints nothing. The facts
+    /// the sheet shows are in [`ApprovalRequestView::agent_fill`].
+    AgentFill,
 }
 
 impl From<ApprovalKind> for ApprovalAction {
@@ -92,6 +109,7 @@ impl From<ApprovalKind> for ApprovalAction {
             ApprovalKind::WriteEnvFile => Self::WriteEnvFile,
             ApprovalKind::RunWithEnv => Self::RunWithEnv,
             ApprovalKind::FillCredential => Self::FillCredential,
+            ApprovalKind::AgentFill => Self::AgentFill,
         }
     }
 }
@@ -132,6 +150,14 @@ pub struct ApprovalRequestView {
     pub command: Vec<String>,
     /// `Some(false)` is the red "not gitignored" callout; `None` means not in a work tree.
     pub gitignored: Option<bool>,
+    /// Whether the caller asked for an existing file to be replaced (`overwrite: true`).
+    pub overwrite_requested: bool,
+    /// Whether a file is already at [`Self::target_path`]. `None` when this is not a file write.
+    pub target_exists: Option<bool>,
+    /// When a file is already there, whether kagisecure wrote it in this unlock session.
+    /// `Some(false)` is the destructive case: the bytes are the user's own and nothing can bring
+    /// them back (threat-model M-16).
+    pub target_written_by_us: Option<bool>,
     /// The TTL the agent asked for. The user may shorten it, never lengthen it.
     pub requested_ttl_seconds: u64,
     /// The use count the lease would carry.
@@ -147,9 +173,15 @@ pub struct ApprovalRequestView {
     /// The origin the fill would happen at, in ASCII serialization. This is the origin that was
     /// *matched*, so for a cross-origin iframe it is the frame's, not the page's.
     pub origin: Option<String>,
-    /// The top-level page's origin when it differs from [`Self::origin`] — the signal the sheet
+    /// The top-level page's origin when this is not a plain top-frame load — the signal the sheet
     /// turns into "this form is inside a frame on another site".
+    ///
+    /// May be the literal `"null"`, the serialization of an opaque origin. Never render it
+    /// verbatim: when [`Self::top_origin_unknown`] is true the sheet says "an unknown site".
     pub top_origin: Option<String>,
+    /// Whether the embedder of the frame could not be established — the browser did not report
+    /// that this request came from frame 0 (D-7).
+    pub top_origin_unknown: bool,
     /// The item that would be filled.
     pub item_id: Option<String>,
     /// Its title, so the sheet does not show a bare uuid.
@@ -170,6 +202,182 @@ pub struct ApprovalRequestView {
     pub browser_is_app_extension: bool,
     /// The extension's self-reported id. Only ever the pinned one; anything else never got here.
     pub extension_id: Option<String>,
+    /// Ask only for a fresh LocalAuthentication check, **not** the sheet.
+    ///
+    /// Set for a fill whose exact origin, item and fields the human already reviewed at a full
+    /// sheet in this unlock session and allowed for the session. The app runs the check with a
+    /// reason naming the item and the site and answers **Allow once** on success; a cancelled or
+    /// unavailable check is a denial. The check is the one thing that tells a person from an
+    /// automation agent clicking in the page
+    /// ([ADR-0037](../../../docs/decisions/0037-every-fill-needs-a-fresh-presence-proof.md)).
+    ///
+    /// The one exception is the macOS app's presence grace window (ADR-0037's amendment of
+    /// 2026-09-27): if a check for a fill of this item on this exact origin passed less than ten
+    /// minutes ago in this unlock session, the app answers **Allow once** without asking again.
+    /// Rust cannot see either way; the rule and its clock live in the app.
+    ///
+    /// Always `false` for [`ApprovalAction::AgentFill`]; the app treats an agent fill as a full
+    /// sheet even if it ever arrived `true`.
+    pub presence_only: bool,
+
+    // --- ADR-0036: an agent-requested browser fill. `None` for every other action. ---------
+    /// What the agent-fill sheet shows beyond the fields above. `Some` exactly when
+    /// [`Self::action`] is [`ApprovalAction::AgentFill`].
+    ///
+    /// `#[uniffi(default = None)]` so the Swift call sites that build a request by hand — the
+    /// unit tests do, many times — keep compiling and read `nil`.
+    #[uniffi(default = None)]
+    pub agent_fill: Option<AgentFillFactsView>,
+
+    // --- ADR-0035 §14: values from a shared vault. Empty for the personal vault. ------------
+    /// Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
+    /// members` — to be shown as a fact on the sheet. `None` for the personal vault.
+    #[uniffi(default = None)]
+    pub shared_source: Option<String>,
+    /// One line per value about to be released that changed since this Mac last approved
+    /// releasing it, or was never released from this Mac, naming who changed it and when.
+    /// Names, labels and times only. Empty for the personal vault and when nothing changed.
+    #[uniffi(default = [])]
+    pub changed_since_approval: Vec<String>,
+}
+
+/// A field an agent asked to have filled. A **name**; there is no variant that holds a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentFillFieldView {
+    /// The login's username.
+    Username,
+    /// The login's password.
+    Password,
+    /// A one-time code from the item's one-time-password field.
+    OneTimeCode,
+}
+
+impl From<AgentFillField> for AgentFillFieldView {
+    fn from(field: AgentFillField) -> Self {
+        match field {
+            AgentFillField::Username => Self::Username,
+            AgentFillField::Password => Self::Password,
+            AgentFillField::OneTimeCode => Self::OneTimeCode,
+        }
+    }
+}
+
+/// A page origin split for the agent-fill sheet, so a look-alike is obvious (ADR-0036 §5):
+/// [`kagisecure_extension_ipc::origin::AgentOriginRendering`], plus the pieces put back together.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AgentOriginView {
+    /// `scheme://` + `dimmed_prefix` + `emphasized` + `:port` — exactly the ASCII serialization
+    /// the origin rule compared and the audit log records.
+    pub ascii: String,
+    /// `http` or `https`.
+    pub scheme: String,
+    /// The labels before the registrable domain, with their trailing dot, to be dimmed. May be
+    /// empty.
+    pub dimmed_prefix: String,
+    /// The registrable domain (or the whole host when there is none), to be emphasized. ASCII.
+    pub emphasized: String,
+    /// The port, when it is not the scheme's default. Always shown when present.
+    pub port: Option<u16>,
+    /// The host with its `xn--` labels decoded, when there are any: shown *beside* the ASCII
+    /// form, labelled "shown by the browser as", never instead of it.
+    pub unicode_host: Option<String>,
+    /// Whether the decoded host mixes scripts, or has a punycode label that does not decode.
+    pub mixed_script: bool,
+    /// Whether the scheme is `http`: shown in red as "not encrypted".
+    pub not_encrypted: bool,
+}
+
+impl From<AgentOriginRendering> for AgentOriginView {
+    fn from(r: AgentOriginRendering) -> Self {
+        Self {
+            ascii: r.ascii(),
+            scheme: r.scheme,
+            dimmed_prefix: r.dimmed_prefix,
+            emphasized: r.emphasized,
+            port: r.port,
+            unicode_host: r.unicode_host,
+            mixed_script: r.mixed_script,
+            not_encrypted: r.not_encrypted,
+        }
+    }
+}
+
+/// [`kagisecure_agent::AgentFillFacts`]: the agent, the item, the page and the browser, as the
+/// agent-fill sheet states them. Metadata only — names, paths, pids, flags and an origin.
+///
+/// Two identity stories: the **agent** (`agent_name` is self-reported and must be quoted; the
+/// pids and executables are the kernel's) and the **browser** (the same facts the fill sheet
+/// already shows for a fill the human started).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AgentFillFactsView {
+    /// The agent's self-reported name. Render it as a quotation; it is unverified.
+    pub agent_name: String,
+    /// The sidecar's pid, from the kernel.
+    pub sidecar_pid: u32,
+    /// The sidecar's executable.
+    pub sidecar_executable: Option<String>,
+    /// The sidecar's parent pid, from the kernel — what the "started by" signature check runs on.
+    pub parent_pid: Option<u32>,
+    /// The sidecar's parent executable, from the kernel: what "this agent" means for blocking.
+    pub parent_executable: Option<String>,
+    /// The item that would be filled.
+    pub item_id: String,
+    /// Its title.
+    pub item_title: String,
+    /// Which fields would be written. Names. `[oneTimeCode]` alone is a one-time-code request,
+    /// which always has a sheet of its own (ADR-0036 §7.4).
+    pub fields: Vec<AgentFillFieldView>,
+    /// Page one of an identifier-first sign-in (ADR-0036 §7.3): the username is written now and
+    /// the password on the next page, in the same tab, without another sheet. The sheet says
+    /// *"username now, password on the next page"*.
+    #[uniffi(default = false)]
+    pub two_step: bool,
+    /// The page's origin, split for rendering.
+    pub page_origin: AgentOriginView,
+    /// The saved website that covered the page, in ASCII serialization.
+    pub saved_website: String,
+    /// Whether the page's host differs from the saved website's: "this page is a subdomain of it".
+    pub page_host_differs: bool,
+    /// The browser the app established from the native host's ancestry.
+    pub browser: Option<String>,
+    /// That browser's pid.
+    pub browser_pid: Option<u32>,
+    /// That browser's executable path.
+    pub browser_executable: Option<String>,
+    /// Whether the extension-side peer is an app extension we ship (Safari; never in practice).
+    pub browser_is_app_extension: bool,
+    /// The native messaging host's pid — "our helper".
+    pub host_pid: Option<u32>,
+    /// The native messaging host's executable.
+    pub host_executable: Option<String>,
+    /// The extension's self-reported id.
+    pub extension_id: Option<String>,
+}
+
+impl From<AgentFillFacts> for AgentFillFactsView {
+    fn from(f: AgentFillFacts) -> Self {
+        Self {
+            agent_name: f.agent_name,
+            sidecar_pid: f.sidecar_pid,
+            sidecar_executable: f.sidecar_executable,
+            parent_pid: f.parent_pid,
+            parent_executable: f.parent_executable,
+            item_id: f.item_id,
+            item_title: f.item_title,
+            fields: f.fields.into_iter().map(Into::into).collect(),
+            two_step: f.two_step,
+            page_origin: f.page_origin.into(),
+            saved_website: f.saved_website,
+            page_host_differs: f.page_host_differs,
+            browser: f.browser,
+            browser_pid: f.browser_pid,
+            browser_executable: f.browser_executable,
+            browser_is_app_extension: f.browser_is_app_extension,
+            host_pid: f.host_pid,
+            host_executable: f.host_executable,
+            extension_id: f.extension_id,
+        }
+    }
 }
 
 impl From<ApprovalRequest> for ApprovalRequestView {
@@ -190,6 +398,9 @@ impl From<ApprovalRequest> for ApprovalRequestView {
             variables: r.variables,
             command: r.command,
             gitignored: r.gitignored,
+            overwrite_requested: r.overwrite_requested,
+            target_exists: r.target_exists,
+            target_written_by_us: r.target_written_by_us,
             requested_ttl_seconds: r.requested_ttl_seconds,
             requested_uses: r.requested_uses,
             max_ttl_seconds: r.max_ttl_seconds,
@@ -197,6 +408,7 @@ impl From<ApprovalRequest> for ApprovalRequestView {
             expires_at: r.expires_at,
             origin: r.origin,
             top_origin: r.top_origin,
+            top_origin_unknown: r.top_origin_unknown,
             item_id: r.item_id,
             item_title: r.item_title,
             fill_fields: r.fill_fields,
@@ -205,11 +417,15 @@ impl From<ApprovalRequest> for ApprovalRequestView {
             browser_executable: r.browser_executable,
             browser_is_app_extension: r.browser_is_app_extension,
             extension_id: r.extension_id,
+            presence_only: r.presence_only,
+            agent_fill: r.agent_fill.map(Into::into),
+            shared_source: r.shared_source,
+            changed_since_approval: r.changed_since_approval,
         }
     }
 }
 
-/// The three buttons on the sheet (ui-spec.md §10.3). There is no "always allow".
+/// The buttons on the sheet (ui-spec.md §10.3). There is no "always allow".
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum ApprovalDecision {
     /// Mint a single-use lease; the next identical request re-prompts.
@@ -223,6 +439,14 @@ pub enum ApprovalDecision {
     },
     /// Refuse. Returns `USER_DENIED`.
     Deny,
+    /// Refuse, and refuse every agent fill from the same agent for the next thirty minutes
+    /// without a sheet (ADR-0036 §9.3). Returns `USER_DENIED`. Offered only on the agent-fill
+    /// sheet; for any other request it is exactly [`Self::Deny`]. A denial, so — like
+    /// [`Self::Deny`] — it needs no biometric.
+    ///
+    /// UniFFI only: the C ABI's `KgsApprovalDecisionTag` has no counterpart, because Windows never
+    /// offers agent fills.
+    DenyAndBlock,
 }
 
 impl From<ApprovalDecision> for Decision {
@@ -233,6 +457,147 @@ impl From<ApprovalDecision> for Decision {
                 Self::AllowSession { ttl_seconds, uses }
             }
             ApprovalDecision::Deny => Self::Deny,
+            ApprovalDecision::DenyAndBlock => Self::DenyAndBlock,
+        }
+    }
+}
+
+/// Why an agent is blocked from asking for fills (ADR-0036 §9.3, §9.4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentFillBlockReasonView {
+    /// The human pressed **Deny and block this agent**; lifts by itself after thirty minutes.
+    DeniedAndBlocked,
+    /// The agent's second origin mismatch in one unlock session; lifts only when unblocked.
+    OriginMismatch,
+}
+
+impl From<kagisecure_agent::AgentFillBlockReason> for AgentFillBlockReasonView {
+    fn from(reason: kagisecure_agent::AgentFillBlockReason) -> Self {
+        match reason {
+            kagisecure_agent::AgentFillBlockReason::DeniedAndBlocked => Self::DeniedAndBlocked,
+            kagisecure_agent::AgentFillBlockReason::OriginMismatch => Self::OriginMismatch,
+        }
+    }
+}
+
+/// One blocked agent, for the blocks list in Agent access (ADR-0036 §9.3). Metadata only.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AgentFillBlockView {
+    /// What the block is keyed on — the agent's kernel-resolved parent executable — and what
+    /// [`agent_fill_unblock`] takes. Every client under the same program shares it.
+    pub key: String,
+    /// The self-reported name of the agent whose request set the block. Render it as a
+    /// quotation; it is unverified.
+    pub agent_name: String,
+    /// Why.
+    pub reason: AgentFillBlockReasonView,
+    /// Unix seconds it lifts at, for a live countdown; `None` for a block that lasts until the
+    /// human unblocks it.
+    pub until: Option<u64>,
+}
+
+impl From<kagisecure_agent::AgentFillBlock> for AgentFillBlockView {
+    fn from(block: kagisecure_agent::AgentFillBlock) -> Self {
+        Self {
+            key: block.key,
+            agent_name: block.agent_name,
+            reason: block.reason.into(),
+            // Rounded up, so a countdown never reaches zero while the block still holds.
+            until: block.remaining.map(|left| {
+                let secs = left.as_secs() + u64::from(left.subsec_nanos() > 0);
+                kagisecure_core::unix_now().saturating_add(secs)
+            }),
+        }
+    }
+}
+
+/// Something about agent fills the human should hear although no sheet was raised
+/// (ADR-0036 §9.1, §9.4). Metadata only: names, a key, an origin, counts.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AgentFillNoticeView {
+    /// An agent asked to fill an item into a tab whose origin the item is not saved for. Nothing
+    /// was filled.
+    OriginMismatch {
+        /// The agent as the audit log names it: self-reported name quoted, kernel facts bare.
+        agent: String,
+        /// The item's title.
+        item_title: String,
+        /// The origin the browser reported, rendered so a look-alike is obvious.
+        origin: AgentOriginView,
+    },
+    /// An agent asked for more sheets than its budget and is refused for the next
+    /// `window_minutes`. One notice per cool-down, however many requests it refuses.
+    RateLimited {
+        /// The agent as the audit log names it.
+        agent: String,
+        /// The key its budget is kept under (its parent executable).
+        key: String,
+        /// How many times it asked inside the window, the refused request included.
+        requests: u32,
+        /// The window, and the cool-down, in minutes.
+        window_minutes: u32,
+    },
+    /// An agent was blocked without the human pressing anything — its second origin mismatch in
+    /// this unlock session — until the human unblocks it.
+    Blocked {
+        /// The agent as the audit log names it.
+        agent: String,
+        /// The key it is blocked under; [`agent_fill_unblock`] takes it.
+        key: String,
+        /// Why.
+        reason: AgentFillBlockReasonView,
+    },
+    /// The tripwire (ADR-0036 §8.3) fired after an agent fill: the password input stopped being
+    /// a password input within seconds — the site's "show password" control — and the extension
+    /// cleared it. The fill did happen; what the agent could read, it may have read.
+    Unmasked {
+        /// The agent as the audit log names it.
+        agent: String,
+        /// The item's title.
+        item_title: String,
+        /// The origin the password was written at, rendered as the sheet rendered it.
+        origin: AgentOriginView,
+    },
+}
+
+impl From<kagisecure_agent::AgentFillNotice> for AgentFillNoticeView {
+    fn from(notice: kagisecure_agent::AgentFillNotice) -> Self {
+        use kagisecure_agent::AgentFillNotice as N;
+        match notice {
+            N::OriginMismatch {
+                agent,
+                item_title,
+                origin,
+            } => Self::OriginMismatch {
+                agent,
+                item_title,
+                origin: origin.into(),
+            },
+            N::RateLimited {
+                agent,
+                key,
+                requests,
+                window_minutes,
+            } => Self::RateLimited {
+                agent,
+                key,
+                requests,
+                window_minutes,
+            },
+            N::Blocked { agent, key, reason } => Self::Blocked {
+                agent,
+                key,
+                reason: reason.into(),
+            },
+            N::Unmasked {
+                agent,
+                item_title,
+                origin,
+            } => Self::Unmasked {
+                agent,
+                item_title,
+                origin: origin.into(),
+            },
         }
     }
 }
@@ -305,6 +670,23 @@ pub struct AuditRowView {
     pub detail: Option<String>,
 }
 
+/// Whether the audit log is fully written to disk, for the Audit viewer and Settings.
+///
+/// Separate from [`AuditRowView`]'s chain-verification concern: the chain check
+/// (`VaultSession::audit_intact`) asks "is what's on disk internally consistent?", while this
+/// asks "does disk even have everything that has been appended in memory?" — the failure mode a
+/// save that keeps erroring (a hostile `chflags uchg` on the vault directory, a full disk)
+/// produces, and the whole reason a denial is appended before it is ever allowed to be lost.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AuditDurabilityView {
+    /// How many appended audit entries have not yet survived a successful save. Zero means the
+    /// log on disk is fully caught up.
+    pub unsaved_entries: u32,
+    /// The most recent save failure, if any — a short, value-free message safe to show as-is.
+    /// `None` means either no save has failed, or a later save has since succeeded.
+    pub last_error: Option<String>,
+}
+
 /// The listener's state, for the menu bar and the Agent access pane.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct AgentStatusView {
@@ -346,15 +728,43 @@ pub struct McpSetupView {
 // Exported functions
 // -------------------------------------------------------------------------------------------
 
+/// Read an endpoint the host named, or say why this platform cannot listen on it.
+///
+/// One place for the three overrides the app can pass, so that a string crossing the FFI means
+/// exactly what the same string means on `kagisecure daemon --socket`: a path on Unix, a named
+/// pipe name on Windows. The refusal is an [`FfiError::Invalid`] because that is what the app
+/// shows to a human, and the sentence it carries names both the value and what to pass instead.
+fn parse_endpoint(value: Option<&str>) -> FfiResult<Option<Endpoint>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    Endpoint::parse(std::ffi::OsStr::new(value))
+        .map(Some)
+        .map_err(|e| FfiError::invalid(e.to_string()))
+}
+
 /// Bind the IPC socket and start serving agents from `session`'s vault.
 ///
 /// `socket_path` overrides the per-user default (architecture.md §4.2); pass `None` in the app.
 /// Returns the endpoint it bound, for the "Set up your agent" screen.
 ///
+/// # What the string means
+///
+/// The same thing `--socket` and `KAGISECURE_SOCKET` mean, because it goes through the same
+/// `Endpoint::parse`: a **socket path** on Unix, and a **named pipe name** on Windows, which has
+/// no filesystem sockets at all. A path supplied on Windows is refused with a message saying
+/// what to pass instead, rather than accepted and then failing at `bind` with an opaque
+/// `Unsupported: "not a named pipe path"`. It is not silently turned into a pipe name: two
+/// directories holding the same file name would collapse onto one pipe.
+///
+/// The parameter keeps its name so that the generated bindings — and the Swift the app is built
+/// against — keep theirs.
+///
 /// # Errors
 ///
 /// [`FfiError::Invalid`] with a message written for a human when another kagisecure already holds
-/// the socket, or when this process has already started an agent.
+/// the socket, when `socket_path` is not usable on this platform, or when this process has
+/// already started an agent.
 #[uniffi::export]
 pub fn agent_start(session: Arc<VaultSession>, socket_path: Option<String>) -> FfiResult<String> {
     let mut slot = agent();
@@ -365,14 +775,27 @@ pub fn agent_start(session: Arc<VaultSession>, socket_path: Option<String>) -> F
         )));
     }
     let config = AgentConfig {
-        socket_path: socket_path.map(std::path::PathBuf::from),
+        endpoint: parse_endpoint(socket_path.as_deref())?,
         queue: Some(Arc::clone(&QUEUE)),
+        agent_fill: Some(Arc::clone(&AGENT_FILL)),
     };
     let started =
         Agent::start(session.handle(), &config).map_err(|e| FfiError::invalid(e.to_string()))?;
     let endpoint = started.endpoint();
     *slot = Some(started);
     Ok(endpoint)
+}
+
+/// Hand the running agent a machine vault to serve beside the personal one, or take it away with
+/// `None` (ADR-0042 §2). `false` when no agent is running.
+pub(crate) fn attach_machine_vault(machine: Option<Arc<kagisecure_agent::VaultHandle>>) -> bool {
+    match agent().as_ref() {
+        Some(a) => {
+            a.attach_machine_vault(machine);
+            true
+        }
+        None => false,
+    }
 }
 
 /// Stop serving, deny every approval still waiting, and drop every lease.
@@ -448,6 +871,57 @@ pub fn agent_resolve(
     QUEUE.resolve(&request_id, &decision.into(), verification.into())
 }
 
+/// Which signer a peer's Authenticode signature must name (ADR-0032).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum PeerRequirementKind {
+    /// One of our own helpers — the MCP sidecar, or the native messaging host: signed with the same
+    /// key as this build of Kagisecure. Never met by an unsigned build.
+    OwnHelper,
+    /// A browser: signed by the publisher the executable's file name maps to (`chrome.exe` →
+    /// Google LLC, `msedge.exe` → Microsoft Corporation, `brave.exe` → Brave Software, Inc.).
+    Browser,
+}
+
+/// Check the process behind `pid` with Authenticode, for the Windows approval sheet.
+///
+/// The Windows counterpart of the macOS app's Swift `PeerCodeSignature` (ADR-0015): the app calls
+/// this with a request's `client_pid` and `client_executable` (`OwnHelper`) or its `browser_pid`
+/// and `browser_executable` (`Browser`), shows the verdict, and hands it back unchanged to
+/// [`agent_resolve`] so the lease and the audit entry record it.
+///
+/// `executable` must be the path from the request: a process that is no longer running that file
+/// is not verified. The check is **structurally weaker than the macOS one** — it verifies a file,
+/// not the running process — and ADR-0032 says exactly how; the verdict is a warning on the sheet,
+/// never a gate.
+///
+/// It hashes the whole executable, so it takes as long as reading the file does: call it from the
+/// same background task that polls [`agent_next_request`], not from the UI thread. It never touches
+/// the network (no revocation check).
+///
+/// On every other platform this returns `verified: false` with "not available on this platform";
+/// the macOS app keeps its own Swift check.
+#[uniffi::export]
+#[must_use]
+pub fn verify_peer_code_signature(
+    pid: u32,
+    executable: String,
+    requirement: PeerRequirementKind,
+) -> ClientVerificationView {
+    use kagisecure_ipc::authenticode::{Requirement, verify_browser, verify_peer};
+
+    let executable = std::path::Path::new(&executable);
+    let verdict = match requirement {
+        PeerRequirementKind::OwnHelper => {
+            verify_peer(pid, executable, &Requirement::SameSignerAsThisProcess)
+        }
+        PeerRequirementKind::Browser => verify_browser(pid, executable),
+    };
+    ClientVerificationView {
+        verified: verdict.verified,
+        evidence: verdict.evidence,
+    }
+}
+
 /// Live leases, for the Leases table.
 #[uniffi::export]
 #[must_use]
@@ -491,7 +965,10 @@ pub fn agent_revoke_all_leases() {
     }
 }
 
-/// Whether something asked the vault to lock over IPC (`kagisecure lock`), clearing the flag.
+/// Whether something asked the vault to lock over IPC (`kagisecure lock`): `true` once per request.
+///
+/// Only the report is consumed; the agent keeps refusing every request from the moment the lock
+/// was acknowledged until the app takes the vault (see `Agent::take_lock_request`).
 ///
 /// The app polls this alongside `agent_next_request` and performs the lock itself, because the app
 /// owns the `VaultSession` and therefore the vault's lifetime.
@@ -566,6 +1043,9 @@ pub struct FillLeaseView {
     pub item_id: String,
     /// That item's title.
     pub item_title: String,
+    /// **What** the lease covers: `username`, `password`, `one-time password`. A lease covers
+    /// only the fields the sheet named, so the table must show them (D-3).
+    pub fields: Vec<String>,
     /// The browser it was minted for, as this process rendered it.
     pub client_identity: String,
     /// Unix seconds it dies at, for the live countdown.
@@ -585,6 +1065,22 @@ pub struct BrowserManifestView {
     pub browser_installed: bool,
     /// Whether that exact file is already in place.
     pub installed: bool,
+    /// Windows only: the registry subkey (relative to `HKEY_CURRENT_USER`) the install button
+    /// will also set, mirroring [`kagisecure_agent::browser_setup::BrowserManifest::registry_key`]
+    /// — see that field's own doc comment for the shape and for how a Windows browser finds this
+    /// manifest at all, since it never scans a directory for one the way macOS does. `None` on
+    /// macOS, which has nothing to register, and `None` here too until a build actually runs this
+    /// screen on Windows.
+    ///
+    /// `#[uniffi(default = None)]` on purpose: this field was added after `BrowserManifestView`
+    /// first shipped, and without a default an existing Swift call site that builds one of these
+    /// by hand (`apps/macos/KagisecureTests/FillApprovalTests.swift` does, twice, as of this
+    /// writing) would stop compiling over a field that means nothing on macOS. With the default,
+    /// it keeps compiling and reads `nil`. Not independently verified against a Swift build from
+    /// this session — there is no Xcode on the machine this was written on — so re-check this the
+    /// first time a Windows-porting session runs `cargo xtask bindgen` and builds the Swift side.
+    #[uniffi(default = None)]
+    pub registry_key: Option<String>,
 }
 
 /// The Safari half of the setup screen — facts, and no button that writes a file (M6b).
@@ -623,7 +1119,11 @@ pub struct ExtensionSetupView {
 /// # Errors
 ///
 /// [`FfiError::Invalid`], with a message written for a human, when another kagisecure holds the
-/// socket or this process has already started a listener.
+/// socket, when either override is not usable on this platform, or when this process has already
+/// started a listener.
+///
+/// Both strings mean what [`agent_start`]'s `socket_path` means: a path on Unix, a named pipe
+/// name on Windows.
 #[uniffi::export]
 pub fn extension_start(
     session: Arc<VaultSession>,
@@ -639,9 +1139,10 @@ pub fn extension_start(
         )));
     }
     let config = ExtensionConfig {
-        socket_path: socket_path.map(std::path::PathBuf::from),
-        safari_socket_path: safari_socket_path.map(std::path::PathBuf::from),
+        endpoint: parse_endpoint(socket_path.as_deref())?,
+        safari_endpoint: parse_endpoint(safari_socket_path.as_deref())?,
         team_id,
+        agent_fill: Some(Arc::clone(&AGENT_FILL)),
         ..ExtensionConfig::new(Arc::clone(&QUEUE))
     };
     let started = ExtensionAgent::start(session.handle(), config)
@@ -702,6 +1203,7 @@ pub fn extension_fill_leases() -> Vec<FillLeaseView> {
             origin: l.origin,
             item_id: l.item_id,
             item_title: l.item_title,
+            fields: l.fields,
             client_identity: l.client_identity,
             expires_at: l.expires_at,
         })
@@ -722,6 +1224,56 @@ pub fn extension_revoke_all_fill_leases() {
     if let Some(e) = extension().as_ref() {
         e.revoke_all_fill_leases();
     }
+}
+
+/// Turn agent-requested browser fills on or off (ADR-0036 §2, implementation decision 12).
+///
+/// The app stores the switch in its own defaults and pushes it here at launch and whenever it
+/// changes; Rust keeps it in memory only, and it starts **off**, so a process that never calls
+/// this never serves an agent fill. Off, every `request_fill` answers `FILL_UNAVAILABLE` before
+/// its item is looked up. The switch is a convenience, not a security boundary — the per-fill
+/// sheet and its biometric are — and turning it on is the app's to gate behind a presence check.
+///
+/// UniFFI only: the C ABI never offers agent fills (implementation decision 8), and on a Windows
+/// build this call changes nothing — the broker answers "off" there whatever it is told.
+#[uniffi::export]
+pub fn agent_fill_set_enabled(enabled: bool) {
+    AGENT_FILL.set_enabled(enabled);
+}
+
+/// Every agent-fill notice queued since the last call, oldest first (ADR-0036 §9.1, §9.4,
+/// implementation decision 11). The app drains it on its 1-second tick and shows each one in
+/// Agent access, on the menu-bar badge and — if the user authorized it — as a system notification.
+///
+/// UniFFI only, like every `agent_fill_*` call.
+#[uniffi::export]
+#[must_use]
+pub fn agent_fill_take_notices() -> Vec<AgentFillNoticeView> {
+    AGENT_FILL
+        .take_notices()
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
+/// Every agent blocked from asking for fills right now, for the blocks list in Agent access
+/// (ADR-0036 §9.3). Blocks live in the process, not the vault: they survive a lock.
+///
+/// UniFFI only, like every `agent_fill_*` call.
+#[uniffi::export]
+#[must_use]
+pub fn agent_fill_blocks() -> Vec<AgentFillBlockView> {
+    AGENT_FILL.blocks().into_iter().map(Into::into).collect()
+}
+
+/// Lift the block on `key` (an [`AgentFillBlockView::key`]): the Unblock button. Returns whether
+/// there was one. A denial the human gave in the last ten minutes still stands for the identical
+/// request.
+///
+/// UniFFI only, like every `agent_fill_*` call.
+#[uniffi::export]
+pub fn agent_fill_unblock(key: String) -> bool {
+    AGENT_FILL.unblock(&key)
 }
 
 /// Where the native host is, what the pinned extension id is, and what each browser needs written.
@@ -757,6 +1309,7 @@ pub fn extension_setup(
                 body: m.body,
                 browser_installed: m.browser_installed,
                 installed: m.installed,
+                registry_key: m.registry_key,
             })
             .collect(),
         safari: SafariSetupView {
@@ -784,6 +1337,7 @@ pub fn extension_install_manifest(manifest: BrowserManifestView) -> FfiResult<()
         body: manifest.body,
         browser_installed: manifest.browser_installed,
         installed: manifest.installed,
+        registry_key: manifest.registry_key,
     })
     .map_err(|message| FfiError::Io { message })
 }
@@ -802,12 +1356,13 @@ pub fn extension_uninstall_manifest(manifest: BrowserManifestView) -> FfiResult<
         body: manifest.body,
         browser_installed: manifest.browser_installed,
         installed: manifest.installed,
+        registry_key: manifest.registry_key,
     })
     .map_err(|message| FfiError::Io { message })
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -860,7 +1415,19 @@ mod tests {
             "a screen with no browsers on it would be a dead end"
         );
         for manifest in &setup.manifests {
-            assert!(manifest.path.ends_with("com.kagisecure.nmhost.json"));
+            // On Windows each browser gets its own file (`com.kagisecure.nmhost.<browser>.json`)
+            // rather than sharing one — see `browser_setup`'s module doc comment on why one
+            // shared file per registry pointer is the wrong shape there.
+            if cfg!(windows) {
+                assert!(
+                    manifest.path.contains("com.kagisecure.nmhost")
+                        && manifest.path.ends_with(".json"),
+                    "{}",
+                    manifest.path
+                );
+            } else {
+                assert!(manifest.path.ends_with("com.kagisecure.nmhost.json"));
+            }
             assert!(
                 manifest.body.contains(&setup.extension_id),
                 "every manifest must pin the same id the app checks"
@@ -913,6 +1480,7 @@ mod tests {
             body: "{}\n".to_owned(),
             browser_installed: true,
             installed: false,
+            registry_key: None,
         };
         extension_install_manifest(manifest.clone()).expect("install");
         assert_eq!(
@@ -990,6 +1558,45 @@ mod tests {
             }
         );
         assert_eq!(Decision::from(ApprovalDecision::Deny), Decision::Deny);
+        assert_eq!(
+            Decision::from(ApprovalDecision::DenyAndBlock),
+            Decision::DenyAndBlock
+        );
+    }
+
+    #[test]
+    fn an_agent_fill_block_crosses_with_its_deadline_in_unix_seconds() {
+        let timed = AgentFillBlockView::from(kagisecure_agent::AgentFillBlock {
+            key: "/usr/local/bin/node".to_owned(),
+            agent_name: "example-agent".to_owned(),
+            reason: kagisecure_agent::AgentFillBlockReason::DeniedAndBlocked,
+            remaining: Some(Duration::from_millis(1_799_500)),
+        });
+        let now = kagisecure_core::unix_now();
+        let until = timed.until.expect("a timed block");
+        assert!(
+            (now + 1800..=now + 1801).contains(&until),
+            "{until} vs {now}"
+        );
+        assert_eq!(timed.reason, AgentFillBlockReasonView::DeniedAndBlocked);
+
+        let open = AgentFillBlockView::from(kagisecure_agent::AgentFillBlock {
+            key: "/usr/local/bin/node".to_owned(),
+            agent_name: "example-agent".to_owned(),
+            reason: kagisecure_agent::AgentFillBlockReason::OriginMismatch,
+            remaining: None,
+        });
+        assert_eq!(open.until, None, "until somebody unblocks it");
+    }
+
+    #[test]
+    fn unblocking_an_unknown_agent_is_a_quiet_no() {
+        assert!(!agent_fill_unblock("/no/such/agent".to_owned()));
+        assert!(
+            agent_fill_blocks()
+                .iter()
+                .all(|b| b.key != "/no/such/agent")
+        );
     }
 
     #[test]
@@ -1002,5 +1609,217 @@ mod tests {
         assert_eq!(view.variables, vec!["TOKEN".to_owned()]);
         assert!(view.mints_lease);
         assert_eq!(view.action, ApprovalAction::WriteEnvFile);
+        assert!(!view.presence_only, "an env request is always a full sheet");
+    }
+
+    #[test]
+    fn a_presence_only_fill_reaches_the_app_marked_as_one() {
+        // The app decides "sheet or presence prompt" from this one flag, so it must survive the
+        // crossing exactly — in both directions, since a lost `false` would hide a sheet.
+        for presence_only in [true, false] {
+            let view = ApprovalRequestView::from(ApprovalRequest {
+                kind: ApprovalKind::FillCredential,
+                origin: Some("https://example.com".to_owned()),
+                item_title: Some("Example".to_owned()),
+                fill_fields: vec!["password".to_owned()],
+                presence_only,
+                ..ApprovalRequest::default()
+            });
+            assert_eq!(view.presence_only, presence_only);
+            assert_eq!(view.action, ApprovalAction::FillCredential);
+        }
+    }
+
+    /// The facts of an agent fill at `origin`, covered by `https://example.com`.
+    pub(crate) fn agent_fill_facts(origin: &str) -> AgentFillFacts {
+        let origin = kagisecure_extension_ipc::origin::Origin::parse(origin).expect("an origin");
+        AgentFillFacts {
+            agent_name: "example-agent".to_owned(),
+            sidecar_pid: 51_234,
+            sidecar_executable: Some("/usr/local/bin/kagisecure-mcp".to_owned()),
+            parent_pid: Some(51_200),
+            parent_executable: Some("/path/to/client".to_owned()),
+            item_id: "item-1".to_owned(),
+            item_title: "Example (work)".to_owned(),
+            fields: vec![AgentFillField::Username, AgentFillField::Password],
+            two_step: true,
+            page_origin: AgentOriginRendering::of(&origin),
+            saved_website: "https://example.com".to_owned(),
+            page_host_differs: true,
+            browser: Some("Google Chrome".to_owned()),
+            browser_pid: Some(400),
+            browser_executable: Some("/Applications/Google Chrome.app".to_owned()),
+            browser_is_app_extension: false,
+            host_pid: Some(401),
+            host_executable: Some("/Applications/Kagisecure.app/kagisecure-nmhost".to_owned()),
+            extension_id: Some("abcdefghijklmnopabcdefghijklmnop".to_owned()),
+        }
+    }
+
+    #[test]
+    fn an_agent_fill_request_crosses_with_every_fact_intact() {
+        let facts = agent_fill_facts("https://login.xn--exmple-cua.com:8443");
+        let view = ApprovalRequestView::from(ApprovalRequest::for_agent_fill(facts.clone()));
+        assert_eq!(view.action, ApprovalAction::AgentFill);
+        assert!(!view.mints_lease, "an agent fill mints nothing");
+        assert!(
+            !view.presence_only,
+            "an agent fill is always the full sheet"
+        );
+        assert_eq!(view.client_name, "example-agent");
+        assert_eq!(view.client_pid, Some(51_234));
+        assert!(view.client_pid_from_kernel);
+        assert_eq!(view.item_id.as_deref(), Some("item-1"));
+
+        let crossed = view.agent_fill.expect("the facts must reach the sheet");
+        // Every member, compared with the source it came from.
+        let AgentFillFactsView {
+            agent_name,
+            sidecar_pid,
+            sidecar_executable,
+            parent_pid,
+            parent_executable,
+            item_id,
+            item_title,
+            fields,
+            two_step,
+            page_origin,
+            saved_website,
+            page_host_differs,
+            browser,
+            browser_pid,
+            browser_executable,
+            browser_is_app_extension,
+            host_pid,
+            host_executable,
+            extension_id,
+        } = crossed;
+        assert_eq!(agent_name, facts.agent_name);
+        assert_eq!(sidecar_pid, facts.sidecar_pid);
+        assert_eq!(sidecar_executable, facts.sidecar_executable);
+        assert_eq!(parent_pid, facts.parent_pid);
+        assert_eq!(parent_executable, facts.parent_executable);
+        assert_eq!(item_id, facts.item_id);
+        assert_eq!(item_title, facts.item_title);
+        assert_eq!(
+            fields,
+            [AgentFillFieldView::Username, AgentFillFieldView::Password]
+        );
+        assert_eq!(two_step, facts.two_step);
+        assert!(two_step);
+        assert_eq!(saved_website, facts.saved_website);
+        assert_eq!(page_host_differs, facts.page_host_differs);
+        assert_eq!(browser, facts.browser);
+        assert_eq!(browser_pid, facts.browser_pid);
+        assert_eq!(browser_executable, facts.browser_executable);
+        assert_eq!(browser_is_app_extension, facts.browser_is_app_extension);
+        assert_eq!(host_pid, facts.host_pid);
+        assert_eq!(host_executable, facts.host_executable);
+        assert_eq!(extension_id, facts.extension_id);
+
+        let AgentOriginView {
+            ascii,
+            scheme,
+            dimmed_prefix,
+            emphasized,
+            port,
+            unicode_host,
+            mixed_script,
+            not_encrypted,
+        } = page_origin;
+        let rendering = &facts.page_origin;
+        assert_eq!(ascii, "https://login.xn--exmple-cua.com:8443");
+        assert_eq!(ascii, rendering.ascii());
+        assert_eq!(view.origin.as_deref(), Some(ascii.as_str()));
+        assert_eq!(scheme, "https");
+        assert_eq!(dimmed_prefix, "login.");
+        assert_eq!(emphasized, "xn--exmple-cua.com");
+        assert_eq!(port, Some(8443));
+        assert_eq!(unicode_host, rendering.unicode_host);
+        assert!(
+            unicode_host.is_some(),
+            "a punycode label gets a Unicode rendering"
+        );
+        assert_eq!(mixed_script, rendering.mixed_script);
+        assert!(!not_encrypted);
+    }
+
+    #[test]
+    fn an_unmasked_notice_crosses_with_the_agent_the_item_and_the_origin() {
+        let origin = kagisecure_extension_ipc::origin::Origin::parse("https://login.example.com")
+            .expect("an origin");
+        let view = AgentFillNoticeView::from(kagisecure_agent::AgentFillNotice::Unmasked {
+            agent: "mcp \"example-agent\"".to_owned(),
+            item_title: "Example (work)".to_owned(),
+            origin: AgentOriginRendering::of(&origin),
+        });
+        let AgentFillNoticeView::Unmasked {
+            agent,
+            item_title,
+            origin,
+        } = view
+        else {
+            panic!("an unmasked notice crosses as itself");
+        };
+        assert_eq!(agent, "mcp \"example-agent\"");
+        assert_eq!(item_title, "Example (work)");
+        assert_eq!(origin.ascii, "https://login.example.com");
+        assert_eq!(origin.emphasized, "example.com");
+    }
+
+    #[test]
+    fn every_agent_fill_field_crosses_as_itself() {
+        for (field, view) in [
+            (AgentFillField::Username, AgentFillFieldView::Username),
+            (AgentFillField::Password, AgentFillFieldView::Password),
+            (AgentFillField::OneTimeCode, AgentFillFieldView::OneTimeCode),
+        ] {
+            assert_eq!(AgentFillFieldView::from(field), view);
+        }
+    }
+
+    #[test]
+    fn a_request_that_is_not_an_agent_fill_carries_no_agent_fill_facts() {
+        let view = ApprovalRequestView::from(ApprovalRequest {
+            kind: ApprovalKind::FillCredential,
+            origin: Some("https://example.com".to_owned()),
+            ..ApprovalRequest::default()
+        });
+        assert_eq!(view.agent_fill, None);
+    }
+
+    /// The FFI adds nothing to `kagisecure_ipc::authenticode` but the enum; its own tests cover
+    /// real signatures. This pins the two things the adapter decides: which requirement each kind
+    /// maps to, and that neither can come back verified from an unsigned test build.
+    #[test]
+    fn the_peer_signature_check_never_verifies_an_unsigned_build() {
+        let pid = std::process::id();
+        let exe = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+
+        let own = verify_peer_code_signature(pid, exe.clone(), PeerRequirementKind::OwnHelper);
+        assert!(!own.verified, "{own:?}");
+        let browser = verify_peer_code_signature(pid, exe, PeerRequirementKind::Browser);
+        assert!(!browser.verified, "{browser:?}");
+
+        if cfg!(windows) {
+            assert!(
+                own.evidence
+                    .starts_with("Authenticode: this build of Kagisecure is unsigned"),
+                "{own:?}"
+            );
+            assert!(
+                browser
+                    .evidence
+                    .ends_with("is not a browser with a known publisher"),
+                "{browser:?}"
+            );
+        } else {
+            for v in [own, browser] {
+                assert_eq!(v.evidence, "Authenticode: not available on this platform");
+            }
+        }
     }
 }

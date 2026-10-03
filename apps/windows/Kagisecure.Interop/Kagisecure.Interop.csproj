@@ -1,0 +1,36 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    The C# side of kagisecure-ffi's `capi` C ABI (ADR-0003's fallback).
+
+    The P/Invoke declarations in Native/NativeMethods.g.cs are generated from
+    crates/kagisecure-ffi/src/capi/ by `cargo xtask bindgen-cs` (csbindgen) and checked in; the
+    native library is not. The same command builds kagisecure_ffi.dll and stages it in
+    target/windows/<Configuration>/, and this project copies it next to whatever references it.
+  -->
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <RootNamespace>Kagisecure.Interop</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <!-- Where `cargo xtask bindgen-cs` stages the DLL. Overridable, e.g. for a packaging build. -->
+    <KagisecureNativeDir Condition="'$(KagisecureNativeDir)' == ''">$(MSBuildThisFileDirectory)..\..\..\target\windows\$(Configuration)\</KagisecureNativeDir>
+    <KagisecureNativeDll>$(KagisecureNativeDir)kagisecure_ffi.dll</KagisecureNativeDll>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="$(KagisecureNativeDll)" Link="kagisecure_ffi.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
+  </ItemGroup>
+
+  <Target Name="KagisecureRequireNativeLibrary" BeforeTargets="BeforeBuild" Condition="!Exists('$(KagisecureNativeDll)')">
+    <Error Text="kagisecure_ffi.dll is not at $(KagisecureNativeDll). Run `cargo xtask bindgen-cs` from the repository root first (add --release for a Release build)." />
+  </Target>
+
+</Project>

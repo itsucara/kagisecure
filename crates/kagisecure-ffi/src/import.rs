@@ -40,6 +40,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use kagisecure_core::Vault;
+use kagisecure_core::vault::Tx;
 use kagisecure_import::dedupe::{DuplicatePolicy, ItemAction};
 use kagisecure_import::error::ImportError;
 use kagisecure_import::ir::{DropKind, DropNote, ImportPlan, SourceKind, TargetVault};
@@ -434,9 +435,12 @@ pub struct ShredOutcomeView {
 /// they are written into the vault, or dropped when the sheet closes.
 #[derive(uniffi::Object)]
 pub struct ImportPlanHandle {
-    /// `None` once the plan has been committed. [`commit`] takes the plan by value, so a handle
-    /// can be spent exactly once and a double-press of Import cannot import twice.
+    /// `None` once the plan has been committed, and while a commit of it is running
+    /// ([`ImportPlanHandle::begin_commit`]), so a double-press of Import cannot import twice. A
+    /// commit that does not reach the disk puts it back.
     plan: Mutex<Option<ImportPlan>>,
+    /// A commit has the plan checked out right now.
+    committing: std::sync::atomic::AtomicBool,
     /// Kept beside the plan so the sheet can still show what it was reading after the commit has
     /// consumed it. The full path, because this is the string the shred prompt needs.
     source_path: String,
@@ -447,6 +451,7 @@ impl ImportPlanHandle {
         Arc::new(Self {
             source_path: plan.source_path.display().to_string(),
             plan: Mutex::new(Some(plan)),
+            committing: std::sync::atomic::AtomicBool::new(false),
         })
     }
 
@@ -477,24 +482,78 @@ impl ImportPlanHandle {
         ))
     }
 
-    /// Apply this plan to `vault`, consuming it.
+    /// Check the plan out for a commit, applying `target_vault` if given — the "may this handle
+    /// be committed at all" half of [`ImportPlanHandle::apply`], split out because it touches only
+    /// this handle's own mutex and never the vault, so it can run *before*
+    /// [`VaultSession::import_commit`] takes the file lock rather than inside the transaction's
+    /// closure (module doc: the lock is never held across anything that is not itself vault
+    /// I/O).
     ///
-    /// The caller saves. Nothing here touches the disk, so a save that fails leaves the file as
-    /// it was — the same discipline `kagisecure_import::commit` documents.
-    pub(crate) fn commit_into(
-        &self,
-        vault: &mut Vault,
-        policy: DuplicatePolicyView,
-        target_vault: Option<String>,
-    ) -> FfiResult<ImportOutcomeView> {
-        let mut plan = self.guard().take().ok_or_else(Self::spent)?;
+    /// The plan leaves the handle for as long as the commit runs — so a second press of Import
+    /// meanwhile is refused rather than importing twice — and comes back, with its original
+    /// targets, when the returned [`CheckedOut`] is dropped without [`CheckedOut::spend`]: a
+    /// commit whose write did not happen (busy, diverged, a failed save) spends nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Invalid`] if this plan has already been committed or is being committed now,
+    /// or if `target_vault` is blank.
+    pub(crate) fn begin_commit(&self, target_vault: Option<String>) -> FfiResult<CheckedOut<'_>> {
+        let mut guard = self.guard();
+        if self.committing() {
+            return Err(FfiError::invalid("this import is already being applied"));
+        }
+        let plan = guard.as_mut().ok_or_else(Self::spent)?;
+        let original_targets = plan.items.iter().map(|i| i.target_vault.clone()).collect();
         if let Some(name) = target_vault {
             if name.trim().is_empty() {
                 return Err(FfiError::invalid("a target vault name cannot be blank"));
             }
             plan.retarget_all(&TargetVault::Named(name));
         }
-        let outcome = commit(vault, plan, policy.to_core())?;
+        let plan = guard.take().expect("checked above");
+        // Marked before the handle's mutex is let go, so nothing can see it empty and not
+        // committing — which would read as spent.
+        self.set_committing(true);
+        drop(guard);
+        Ok(CheckedOut {
+            handle: self,
+            plan: Some(plan),
+            original_targets,
+        })
+    }
+
+    fn committing(&self) -> bool {
+        self.committing.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn set_committing(&self, on: bool) {
+        self.committing
+            .store(on, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Apply a checked-out plan (see [`ImportPlanHandle::begin_commit`]) inside `tx`.
+    ///
+    /// Returns a `kagisecure_core::Error` rather than an `FfiError` on purpose: this runs inside
+    /// [`VaultSession::import_commit`]'s transaction closure, so an error here must be a real
+    /// core error for [`kagisecure_core::vault::Vault::transact`] to roll back by — otherwise a
+    /// `commit` that fails after adding some of its items would leave those orphaned adds in
+    /// memory to be written by some unrelated later save. [`commit`]'s only two fallible steps
+    /// (`Vault::default_vault_id`, `Tx::find_item_mut`) both already carry a
+    /// `kagisecure_core::Error` inside `ImportError::Vault`, which is unwrapped straight through;
+    /// anything else — not reachable today, see `commit`'s own doc comment — still becomes a real
+    /// core error rather than being swallowed, so the rollback guarantee holds even if `commit`
+    /// grows a new failure mode later.
+    pub(crate) fn apply(
+        tx: &mut Tx<'_>,
+        plan: &ImportPlan,
+        policy: DuplicatePolicyView,
+    ) -> kagisecure_core::Result<ImportOutcomeView> {
+        let outcome = match commit(tx, plan, policy.to_core()) {
+            Ok(outcome) => outcome,
+            Err(ImportError::Vault(core_err)) => return Err(core_err),
+            Err(other) => return Err(kagisecure_core::Error::BodyDecode(other.to_string())),
+        };
         Ok(ImportOutcomeView {
             created: count(outcome.created),
             updated: count(outcome.updated),
@@ -505,6 +564,40 @@ impl ImportPlanHandle {
             headline: outcome.headline(),
             report: ImportReportView::from_core(&outcome.report, true),
         })
+    }
+}
+
+/// A plan checked out of its handle for one commit ([`ImportPlanHandle::begin_commit`]).
+///
+/// Dropped without [`CheckedOut::spend`] — the commit's write did not happen — it puts the plan
+/// back into the handle with the targets it had before, so the handle is as it was.
+pub(crate) struct CheckedOut<'h> {
+    handle: &'h ImportPlanHandle,
+    plan: Option<ImportPlan>,
+    original_targets: Vec<TargetVault>,
+}
+
+impl CheckedOut<'_> {
+    /// The plan, to commit by reference.
+    pub(crate) fn plan(&self) -> &ImportPlan {
+        self.plan.as_ref().expect("present until spent or dropped")
+    }
+
+    /// The commit reached the disk: the plan is spent, and dropped here.
+    pub(crate) fn spend(mut self) {
+        self.plan = None;
+    }
+}
+
+impl Drop for CheckedOut<'_> {
+    fn drop(&mut self) {
+        if let Some(mut plan) = self.plan.take() {
+            for (item, target) in plan.items.iter_mut().zip(self.original_targets.drain(..)) {
+                item.target_vault = target;
+            }
+            *self.handle.guard() = Some(plan);
+        }
+        self.handle.set_committing(false);
     }
 }
 
@@ -531,10 +624,11 @@ impl ImportPlanHandle {
         self.source_path.clone()
     }
 
-    /// Whether this plan has been committed and can no longer be used.
+    /// Whether this plan has been committed and can no longer be used. `false` while a commit is
+    /// still running: it may yet fail and give the plan back.
     #[must_use]
     pub fn is_spent(&self) -> bool {
-        self.guard().is_none()
+        self.guard().is_none() && !self.committing()
     }
 }
 
@@ -643,7 +737,7 @@ mod tests {
             path,
             "pw".to_owned(),
             "Personal".to_owned(),
-            Some(8),
+            Some(64),
             Some(1),
         )
         .expect("create");
@@ -800,6 +894,91 @@ mod tests {
             session.import_commit(handle, DuplicatePolicyView::Skip, None),
             Err(FfiError::Invalid { .. })
         ));
+    }
+
+    /// A commit whose write does not happen spends nothing: after a busy lock, and after a save
+    /// that fails once the plan was already applied in memory, the handle still holds the whole
+    /// plan — its original targets included — and the next Import writes it.
+    #[test]
+    fn a_commit_that_is_not_written_leaves_the_plan_whole() {
+        let (dir, session) = session();
+        let handle =
+            ImportPlanHandle::new(plan(&dir.path().join("export.1pux").display().to_string()));
+        let vault_path = dir.path().join("v.kagivault");
+
+        // 1. Another writer holds the lock past the app's wait: refused before anything ran.
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let holder = {
+            let vault_path = vault_path.clone();
+            std::thread::spawn(move || {
+                let mut other = kagisecure_core::Vault::open_with_password(&vault_path, b"pw")
+                    .expect("another writer");
+                other
+                    .transact(|_| {
+                        ready_tx.send(()).unwrap();
+                        std::thread::sleep(crate::session::APP_LOCK_TIMEOUT * 2);
+                        Ok(())
+                    })
+                    .expect("held");
+            })
+        };
+        ready_rx.recv().unwrap();
+        let busy = session.import_commit(
+            Arc::clone(&handle),
+            DuplicatePolicyView::Skip,
+            Some("Elsewhere".to_owned()),
+        );
+        assert!(matches!(busy, Err(FfiError::Busy { .. })), "{busy:?}");
+        holder.join().unwrap();
+        assert!(!handle.is_spent(), "a busy commit spends nothing");
+        assert_eq!(handle.report().expect("still readable").totals.items, 2);
+
+        // 2. The save itself fails, after `commit` already built the items inside the
+        //    transaction: the vault file is marked immutable (`chflags uchg`), so it still reads —
+        //    the transaction starts, and the plan is applied in memory — but the final rename over
+        //    it is refused, as a full disk's would be.
+        #[cfg(target_os = "macos")]
+        {
+            let chflags = |flag: &str| {
+                let status = std::process::Command::new("chflags")
+                    .arg(flag)
+                    .arg(&vault_path)
+                    .status()
+                    .expect("chflags");
+                assert!(status.success());
+            };
+            chflags("uchg");
+            let failed = session.import_commit(
+                Arc::clone(&handle),
+                DuplicatePolicyView::Skip,
+                Some("Elsewhere".to_owned()),
+            );
+            chflags("nouchg");
+            assert!(
+                matches!(&failed, Err(FfiError::Io { message }) if message.contains("not permitted")),
+                "the rename, not the read, failed: {failed:?}"
+            );
+            assert!(!handle.is_spent(), "a failed save spends nothing");
+            assert_eq!(
+                session.sidebar_counts().all,
+                0,
+                "and nothing was kept in memory"
+            );
+        }
+
+        // 3. Now it goes through — to the default vault, because the failed attempts' target
+        //    was put back with the plan.
+        let outcome = session
+            .import_commit(Arc::clone(&handle), DuplicatePolicyView::Skip, None)
+            .expect("written");
+        assert_eq!(outcome.created, 2);
+        assert!(
+            outcome.vaults_created.is_empty(),
+            "{:?}",
+            outcome.vaults_created
+        );
+        assert!(handle.is_spent());
+        assert_eq!(session.sidebar_counts().all, 2);
     }
 
     #[test]

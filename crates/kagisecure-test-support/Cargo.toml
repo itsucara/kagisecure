@@ -1,0 +1,16 @@
+[package]
+name = "kagisecure-test-support"
+description = "Test-only helper for locating another workspace package's binary, wherever cargo put it."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+publish = false
+
+# Deliberately dependency-free: this crate is added as a `[dev-dependencies]` entry to packages
+# that otherwise keep a narrow dependency graph on purpose (`kagisecure-mcp`'s tests assert with
+# `cargo tree -e features` that `kagisecure-core`'s `secret-material` feature never reaches it), so
+# it must never itself pull in anything that would confuse that check.
+[dependencies]

@@ -1,0 +1,6 @@
+# Generated bindings are written with LF by their generators (`cargo xtask bindgen --swift-only`,
+# `cargo xtask bindgen-cs`). Checked out with CRLF under core.autocrlf on Windows, every
+# regeneration showed them as modified with no content change. Pinning them to LF keeps a
+# regeneration that changes nothing looking like nothing changed.
+apps/macos/KagisecureFFI/Sources/KagisecureFFI/kagisecure_ffi.swift text eol=lf
+apps/windows/Kagisecure.Interop/Native/NativeMethods.g.cs text eol=lf

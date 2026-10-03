@@ -3,6 +3,9 @@
 - **Status:** Accepted
 - **Date:** 2026-09-09
 - **Deciders:** project owner
+- **Refined by:** [ADR-0033](0033-windows-hello-key-derivation.md) — the Windows derivation this
+  ADR leaves open (which `KeyCredential` operation, how it is combined with the DPAPI secret, and
+  what the slot's bytes are)
 
 ## Context
 
@@ -126,3 +129,27 @@ hardware-held key.
   setups** where no native app exists. If used, it is opt-in per vault and labelled as a weaker
   approval channel in the UI and in the audit log. It is not the primary path and must not become
   one by convenience creep.
+
+## Addendum 2026-09-27 — screen lock and sleep only apply where there is a screen
+
+Common rule 4 ("Leases are memory-only and die on ... vault lock, screen lock, sleep, app exit, or
+explicit revoke") describes the native app: macOS's `AutoLockCoordinator` and the Windows app's
+`AutoLockService` watch `NSWorkspace`/session-lock notifications and call the vault's lock, which
+in turn runs the lock hooks that drop every lease (`crates/kagisecure-agent/src/vault.rs`,
+`add_vault_lock_hook`).
+
+`kagisecure daemon` (`crates/kagisecure-cli/src/commands/daemon.rs`), the headless fallback this
+ADR's Neutral section already flags as a weaker channel, has no equivalent: it is a terminal
+`y`/`N` prompt with no OS session to watch, so it never observes a screen lock or a sleep event.
+A lease it minted dies only by expiry, use exhaustion, an explicit lock, or process exit — not by
+the machine locking or sleeping. See [mcp-server.md](../mcp-server.md) §5 for the precise,
+per-host statement of which triggers apply where.
+
+## Addendum 2026-09-27 — the machine vault is the one exception to rules 4 and 6
+
+[ADR-0042](0042-unattended-agent-access.md), accepted for macOS, makes one exception to rules 4
+and 6, for a separate **machine vault** only: its standing grants persist in its body and are an
+"always allow" bounded by exact scope, limits, expiry and suspension (ADR-0042 §5), and its armed
+key survives screen lock, sleep and — by the owner's choice — restarts, kept in the Keychain until
+a person disarms it (ADR-0042 implementation decision 1). Leases, and every rule here for the
+personal vault and shared vaults, are unchanged.

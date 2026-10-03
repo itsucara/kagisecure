@@ -3,7 +3,7 @@
 //! `name,url,username,password[,note|notes]` — the note column is optional, both spellings are
 //! accepted, and the pre-2021 export leaves it out entirely (plan §3).
 
-use kagisecure_core::model::{Category, FieldKind};
+use kagisecure_core::model::{Category, FieldKind, SecretText};
 
 use super::dialect::{cell, cell_opt, fallback_title, find, is_blank, require};
 use crate::error::Result;
@@ -75,7 +75,7 @@ pub(crate) fn map_row(record: &::csv::StringRecord, columns: &Columns) -> Option
         ));
     }
     if !note.is_empty() {
-        item.notes = Some(note.to_owned());
+        item.notes = Some(SecretText::new(note.to_owned()));
     }
 
     Some(item)

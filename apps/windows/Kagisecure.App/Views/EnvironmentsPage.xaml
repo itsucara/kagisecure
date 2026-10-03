@@ -1,0 +1,132 @@
+<Page
+    x:Class="Kagisecure.App.Views.EnvironmentsPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:Kagisecure.App.ViewModels"
+    xmlns:interop="using:Kagisecure.Interop"
+    xmlns:converters="using:Kagisecure.App.Converters">
+
+    <Page.Resources>
+        <converters:StringToBoolConverter x:Key="StringToBoolConverter" />
+        <converters:ObjectToVisibilityConverter x:Key="ObjectToVisibilityConverter" />
+        <converters:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibilityConverter" />
+    </Page.Resources>
+
+    <Grid RowDefinitions="Auto,Auto,*">
+
+        <!-- Listener banner + the vault-level gate (threat-model M-9) -->
+        <Grid Grid.Row="0" Padding="16,10" ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="10"
+              BorderThickness="0,0,0,1" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+            <FontIcon Grid.Column="0" Glyph="&#xE704;" FontSize="16" VerticalAlignment="Center"
+                      Opacity="{x:Bind ListenerOpacity(ViewModel.ListenerRunning), Mode=OneWay}" />
+            <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                <TextBlock Text="{x:Bind ViewModel.ListenerTitle, Mode=OneWay}" FontWeight="SemiBold"
+                           AutomationProperties.AutomationId="ks.agentAccess.listenerState" />
+                <TextBlock Text="{x:Bind ViewModel.ListenerDetail, Mode=OneWay}" FontSize="12" Opacity="0.7" TextWrapping="Wrap"
+                           IsTextSelectionEnabled="True" AutomationProperties.AutomationId="ks.agentAccess.endpoint" />
+            </StackPanel>
+            <TextBlock Grid.Column="2" Text="{x:Bind ViewModel.ActiveLeasesText, Mode=OneWay}" FontSize="12" Opacity="0.7" VerticalAlignment="Center" />
+            <ToggleSwitch Grid.Column="3" Header="Share this vault" IsOn="{x:Bind ViewModel.VaultShared, Mode=TwoWay}"
+                          ToolTipService.ToolTip="Agents cannot see anything in a vault that is not shared"
+                          AutomationProperties.AutomationId="ks.agentAccess.shareVault" />
+        </Grid>
+
+        <InfoBar Grid.Row="1" IsOpen="{x:Bind ViewModel.ErrorMessage, Mode=OneWay, Converter={StaticResource StringToBoolConverter}}"
+                 Severity="Error" Message="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}" IsClosable="False" Margin="16,8,16,0" />
+
+        <Grid Grid.Row="2" ColumnDefinitions="280,*">
+
+            <!-- The list -->
+            <Grid Grid.Column="0" RowDefinitions="*,Auto" BorderThickness="0,0,1,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+                <ListView Grid.Row="0" ItemsSource="{x:Bind ViewModel.Environments}" SelectedItem="{x:Bind ViewModel.Selected, Mode=TwoWay}"
+                          SelectionMode="Single" AutomationProperties.AutomationId="ks.agentAccess.list">
+                    <ListView.ItemTemplate>
+                        <DataTemplate x:DataType="interop:VaultEnvironment">
+                            <StackPanel Padding="4,6" Spacing="2">
+                                <TextBlock Text="{x:Bind Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                                <TextBlock Text="{x:Bind vm:EnvironmentsFormat.RowDetail(VariableNames.Count, PendingCount, AgentVisible)}" FontSize="12" Opacity="0.7" />
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListView.ItemTemplate>
+                </ListView>
+                <StackPanel Grid.Row="1" Padding="8" Spacing="6">
+                    <TextBox PlaceholderText="Name, e.g. acme-api / staging" Text="{x:Bind ViewModel.NewEnvironmentName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                             AutomationProperties.AutomationId="ks.newEnvironment.name" />
+                    <Button Content="New environment" HorizontalAlignment="Stretch" Command="{x:Bind ViewModel.CreateCommand}"
+                            AutomationProperties.AutomationId="ks.agentAccess.newEnvironment" />
+                    <TextBlock Text="{x:Bind NewEnvironmentNote}" FontSize="11" Opacity="0.6" TextWrapping="Wrap" />
+                </StackPanel>
+            </Grid>
+
+            <!-- Empty state -->
+            <StackPanel Grid.Column="1" Padding="24" Spacing="8" Visibility="{x:Bind ViewModel.HasSelection, Mode=OneWay, Converter={StaticResource InverseBoolToVisibilityConverter}}"
+                        AutomationProperties.AutomationId="ks.agentAccess.empty">
+                <TextBlock Text="{x:Bind EmptyTitle(ViewModel.IsEmpty), Mode=OneWay}" Style="{StaticResource SubtitleTextBlockStyle}" Opacity="0.7" />
+                <TextBlock Text="{x:Bind EmptyMessage}" TextWrapping="Wrap" Opacity="0.7" />
+            </StackPanel>
+
+            <!-- The editor -->
+            <ScrollViewer Grid.Column="1" Visibility="{x:Bind ViewModel.HasSelection, Mode=OneWay}">
+                <StackPanel Padding="20" Spacing="16">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="{x:Bind ViewModel.Selected.Name, Mode=OneWay}" Style="{StaticResource SubtitleTextBlockStyle}"
+                                       AutomationProperties.AutomationId="ks.environment.name" />
+                            <TextBlock Text="{x:Bind ViewModel.Selected.Description, Mode=OneWay}" Opacity="0.7" TextWrapping="Wrap"
+                                       Visibility="{x:Bind ViewModel.Selected.Description, Mode=OneWay, Converter={StaticResource ObjectToVisibilityConverter}}" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="Delete environment" Click="OnDeleteClicked" VerticalAlignment="Top" />
+                    </Grid>
+
+                    <StackPanel Spacing="4">
+                        <ToggleSwitch Header="Share with agents" IsOn="{x:Bind ViewModel.SelectedShared, Mode=TwoWay}"
+                                      AutomationProperties.AutomationId="ks.environment.share" />
+                        <TextBlock Text="{x:Bind ViewModel.SelectedShareNote, Mode=OneWay}" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Variables" FontWeight="SemiBold" />
+                        <ItemsControl ItemsSource="{x:Bind ViewModel.Variables}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:EnvironmentVariableRowViewModel">
+                                    <StackPanel Padding="10" Spacing="6" Margin="0,3" CornerRadius="6"
+                                                Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                                        <Grid ColumnDefinitions="*,Auto,Auto" ColumnSpacing="8">
+                                            <TextBlock Grid.Column="0" Text="{x:Bind Name}" FontFamily="Consolas" VerticalAlignment="Center" />
+                                            <Border Grid.Column="1" CornerRadius="8" Padding="6,2" Background="{ThemeResource SubtleFillColorSecondaryBrush}">
+                                                <TextBlock Text="{x:Bind BindingText}" FontSize="11" />
+                                            </Border>
+                                            <Button Grid.Column="2" Content="Remove" Command="{x:Bind RemoveCommand}" FontSize="12" />
+                                        </Grid>
+                                        <StackPanel Spacing="6" Visibility="{x:Bind IsPending}">
+                                            <TextBlock Text="{x:Bind HintLine}" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                                            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8">
+                                                <PasswordBox Grid.Column="0" PlaceholderText="{x:Bind PendingPlaceholder}"
+                                                             Password="{x:Bind PendingValue, Mode=TwoWay}" />
+                                                <Button Grid.Column="1" Content="Save" Command="{x:Bind SaveCommand}" />
+                                            </Grid>
+                                            <TextBlock Text="Typed here, in kagisecure. The agent that asked for it never sees it." FontSize="11" Opacity="0.6" />
+                                        </StackPanel>
+                                    </StackPanel>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </StackPanel>
+
+                    <StackPanel Spacing="8">
+                        <TextBlock Text="Add a variable" FontWeight="SemiBold" />
+                        <Grid ColumnDefinitions="180,*,Auto" ColumnSpacing="8">
+                            <TextBox Grid.Column="0" PlaceholderText="NAME" Text="{x:Bind ViewModel.NewVariableName, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                     AutomationProperties.AutomationId="ks.environment.newVariableName" />
+                            <PasswordBox Grid.Column="1" PlaceholderText="Value" Password="{x:Bind ViewModel.NewVariableValue, Mode=TwoWay}"
+                                         AutomationProperties.AutomationId="ks.environment.newVariableValue" />
+                            <Button Grid.Column="2" Content="Add" Command="{x:Bind ViewModel.AddVariableCommand}"
+                                    AutomationProperties.AutomationId="ks.environment.addVariable" />
+                        </Grid>
+                        <TextBlock Text="Values stay in the vault. Nothing here is ever returned to an agent." FontSize="12" Opacity="0.7" />
+                    </StackPanel>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+    </Grid>
+</Page>

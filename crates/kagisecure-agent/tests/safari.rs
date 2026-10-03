@@ -16,7 +16,6 @@
 //!   `KagisecureTests/SafariExtensionTransportTests.swift` and by the manual pass in
 //!   `docs/browser-extension.md` §8.
 
-use std::path::PathBuf;
 use std::sync::Arc;
 
 use kagisecure_agent::approval::ApprovalQueue;
@@ -39,8 +38,8 @@ struct Fixture {
     _dir: tempfile::TempDir,
     handle: Arc<VaultHandle>,
     agent: ExtensionAgent,
-    nm_socket: PathBuf,
-    safari_socket: PathBuf,
+    nm_endpoint: Endpoint,
+    safari_endpoint: Endpoint,
     item_id: String,
 }
 
@@ -49,7 +48,12 @@ fn fixture(allow_unlaunched_host: bool) -> Fixture {
     let vault_path = dir.path().join("test.kagivault");
 
     let mut options = CreateOptions::new().expect("options");
-    options.kdf = kagisecure_core::crypto::kdf::KdfParams::new(8, 1, 1).expect("kdf");
+    options.kdf = kagisecure_core::crypto::kdf::KdfParams::new(
+        kagisecure_core::crypto::kdf::MIN_M_KIB,
+        kagisecure_core::crypto::kdf::MIN_T,
+        1,
+    )
+    .expect("kdf");
     options.vault_name = "Personal".to_owned();
     let (mut vault, _code) = Vault::create(&vault_path, b"pw", &options).expect("create");
     let vault_id = vault.default_vault_id().expect("default vault");
@@ -62,17 +66,21 @@ fn fixture(allow_unlaunched_host: bool) -> Fixture {
         Secret::from_string(MARKER.to_owned()),
     ));
     let item_id = item.id.to_string();
-    vault.add_item(item);
-    vault.save().expect("save");
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .expect("save");
 
-    let nm_socket = dir.path().join("extension.sock");
-    let safari_socket = dir.path().join("safari.sock");
+    let nm_endpoint = Endpoint::for_instance(dir.path(), "extension.sock");
+    let safari_endpoint = Endpoint::for_instance(dir.path(), "safari.sock");
     let handle = VaultHandle::new(vault);
     let agent = ExtensionAgent::start(
         Arc::clone(&handle),
         ExtensionConfig {
-            socket_path: Some(nm_socket.clone()),
-            safari_socket_path: Some(safari_socket.clone()),
+            endpoint: Some(nm_endpoint.clone()),
+            safari_endpoint: Some(safari_endpoint.clone()),
             auto_approve: true,
             allow_unlaunched_host,
             ..ExtensionConfig::new(Arc::new(ApprovalQueue::new()))
@@ -84,8 +92,8 @@ fn fixture(allow_unlaunched_host: bool) -> Fixture {
         _dir: dir,
         handle,
         agent,
-        nm_socket,
-        safari_socket,
+        nm_endpoint,
+        safari_endpoint,
         item_id,
     }
 }
@@ -97,9 +105,9 @@ struct AppExtension {
 }
 
 impl AppExtension {
-    fn connect(socket: &std::path::Path) -> Self {
+    fn connect(endpoint: &Endpoint) -> Self {
         Self {
-            client: Client::connect(&Endpoint::Path(socket.to_path_buf())).expect("connect"),
+            client: Client::connect(endpoint).expect("connect"),
             next_id: 0,
         }
     }
@@ -116,6 +124,7 @@ impl AppExtension {
             browser: "safari".to_owned(),
             extension_version: "0.1.0".to_owned(),
             protocol_version: kagisecure_extension_ipc::PROTOCOL_VERSION,
+            capabilities: vec![],
         })
     }
 }
@@ -123,15 +132,16 @@ impl AppExtension {
 #[test]
 fn the_safari_socket_is_a_different_socket_from_the_native_messaging_one() {
     let fixture = fixture(true);
-    assert_ne!(fixture.nm_socket, fixture.safari_socket);
-    assert!(fixture.safari_socket.exists(), "the Safari socket is bound");
+    assert_ne!(fixture.nm_endpoint, fixture.safari_endpoint);
+    // A filesystem socket exists as a file; a named pipe does not. What both platforms can say
+    // is that the listener reports itself as running on that endpoint.
+    if let Some(path) = fixture.safari_endpoint.path() {
+        assert!(path.exists(), "the Safari socket is bound");
+    }
     let status = fixture.agent.status();
     assert!(status.running);
     assert!(status.safari_running);
-    assert_eq!(
-        status.safari_endpoint,
-        fixture.safari_socket.display().to_string()
-    );
+    assert_eq!(status.safari_endpoint, fixture.safari_endpoint.to_string());
     assert!(fixture.agent.safari_unavailable().is_none());
 }
 
@@ -140,7 +150,7 @@ fn a_peer_that_is_not_this_apps_app_extension_is_refused_on_the_safari_socket() 
     // The gate with the test affordance switched **off**. This test binary is not an `.appex`, so
     // this is the production path, exercised by a peer that genuinely is not the extension.
     let fixture = fixture(false);
-    let mut peer = AppExtension::connect(&fixture.safari_socket);
+    let mut peer = AppExtension::connect(&fixture.safari_endpoint);
     match peer.hello_as(SAFARI_EXTENSION_BUNDLE_ID) {
         Response::Error { code, message } => {
             assert_eq!(code, ErrorCode::UntrustedHost);
@@ -165,7 +175,7 @@ fn a_peer_that_is_not_this_apps_app_extension_is_refused_on_the_safari_socket() 
 #[test]
 fn the_chromium_extension_id_does_not_pass_on_the_safari_socket() {
     let fixture = fixture(true);
-    let mut peer = AppExtension::connect(&fixture.safari_socket);
+    let mut peer = AppExtension::connect(&fixture.safari_endpoint);
     match peer.hello_as(PINNED_EXTENSION_IDS[0]) {
         Response::Error { code, .. } => assert_eq!(code, ErrorCode::UnknownExtension),
         other => panic!("the Chromium id was accepted on the Safari socket: {other:?}"),
@@ -175,7 +185,7 @@ fn the_chromium_extension_id_does_not_pass_on_the_safari_socket() {
 #[test]
 fn the_safari_bundle_id_does_not_pass_on_the_native_messaging_socket() {
     let fixture = fixture(true);
-    let mut peer = AppExtension::connect(&fixture.nm_socket);
+    let mut peer = AppExtension::connect(&fixture.nm_endpoint);
     match peer.hello_as(SAFARI_EXTENSION_BUNDLE_ID) {
         Response::Error { code, .. } => assert_eq!(code, ErrorCode::UnknownExtension),
         other => panic!("the Safari id was accepted on the native messaging socket: {other:?}"),
@@ -185,7 +195,7 @@ fn the_safari_bundle_id_does_not_pass_on_the_native_messaging_socket() {
 #[test]
 fn a_fill_through_the_safari_socket_carries_the_value_once_and_records_the_origin() {
     let fixture = fixture(true);
-    let mut peer = AppExtension::connect(&fixture.safari_socket);
+    let mut peer = AppExtension::connect(&fixture.safari_endpoint);
     assert!(matches!(
         peer.hello_as(SAFARI_EXTENSION_BUNDLE_ID),
         Response::Welcome { .. }
@@ -253,7 +263,7 @@ fn a_fill_through_the_safari_socket_carries_the_value_once_and_records_the_origi
 #[test]
 fn a_fill_at_the_wrong_origin_is_refused_on_the_safari_socket_too() {
     let fixture = fixture(true);
-    let mut peer = AppExtension::connect(&fixture.safari_socket);
+    let mut peer = AppExtension::connect(&fixture.safari_endpoint);
     peer.hello_as(SAFARI_EXTENSION_BUNDLE_ID);
     match peer.call(&Request::Fill {
         page: PageContext::top("https://phishing.example"),
@@ -273,14 +283,19 @@ fn a_build_with_no_team_serves_chromium_and_says_why_it_does_not_serve_safari() 
     let dir = tempfile::tempdir().expect("tempdir");
     let vault_path = dir.path().join("test.kagivault");
     let mut options = CreateOptions::new().expect("options");
-    options.kdf = kagisecure_core::crypto::kdf::KdfParams::new(8, 1, 1).expect("kdf");
+    options.kdf = kagisecure_core::crypto::kdf::KdfParams::new(
+        kagisecure_core::crypto::kdf::MIN_M_KIB,
+        kagisecure_core::crypto::kdf::MIN_T,
+        1,
+    )
+    .expect("kdf");
     let (vault, _code) = Vault::create(&vault_path, b"pw", &options).expect("create");
     let handle = VaultHandle::new(vault);
     let agent = ExtensionAgent::start(
         Arc::clone(&handle),
         ExtensionConfig {
-            socket_path: Some(dir.path().join("extension.sock")),
-            safari_socket_path: None,
+            endpoint: Some(Endpoint::for_instance(dir.path(), "extension.sock")),
+            safari_endpoint: None,
             team_id: None,
             ..ExtensionConfig::new(Arc::new(ApprovalQueue::new()))
         },

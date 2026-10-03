@@ -14,7 +14,12 @@ default = ["secret-material"]
 # It exists so a crate that must never hold plaintext can say so positively in its manifest
 # (ADR-0002 §3).
 proto = []
-secret-material = ["dep:argon2", "dep:chacha20poly1305", "dep:hkdf", "dep:zeroize", "dep:hmac", "dep:sha1"]
+secret-material = ["dep:argon2", "dep:chacha20poly1305", "dep:hkdf", "dep:zeroize", "dep:hmac", "dep:sha1", "dep:kagisecure-childproc"]
+# Exposes `Error::all_variants_for_test`, one placeholder instance of every `Error` variant, so a
+# downstream crate can test that it maps every variant of this `#[non_exhaustive]` enum on
+# purpose (see `kagisecure-cli`'s `exit_code_for` and its test). Never enabled by a release build:
+# only `kagisecure-cli`'s `[dev-dependencies]` turns it on.
+test-support = []
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -34,6 +39,26 @@ sha1 = { version = "0.11", optional = true }
 # without the `secret-material` feature. SHA-256 is not key material.
 sha2 = "0.11"
 zeroize = { version = "1.9", optional = true, features = ["derive"] }
+# Killing a `run_with_env` child (and, so far as the OS allows, anything it spawned) from the
+# thread that locks the vault rather than the one waiting on it. Isolated in its own crate because
+# this crate `#![forbid(unsafe_code)]` and the kill has no safe wrapper — see that crate's own doc
+# comment.
+kagisecure-childproc = { workspace = true, optional = true }
+
+# `windows_acl` only: the owner-only security descriptor that stands in for `0600`/`0700` on
+# Windows (threat-model M-13). `std` has no security-descriptor API. Not gated on
+# `secret-material`, because `kagisecure-ipc` (which may not hold plaintext) attaches the same
+# descriptor to its named pipes. The same `windows-sys` 0.61 already in the lock file through
+# `interprocess`, `mio`, `tempfile` and `kagisecure-ipc`; features are not part of the lock file,
+# so these add no package to the graph and nothing new for `cargo deny` to weigh.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Threading",
+] }
 
 [dev-dependencies]
 serde_json = "1"

@@ -21,7 +21,9 @@ final class H_QuickAccessTests: UITestCase {
 
     func testQuickAccessSearchesAndCopiesWithoutTheMainWindow() throws {
         try Harness.seedVault(at: vaultPath)
-        launch()
+        // ⏎ and ⌥⏎ are presence-gated releases (ADR-0038); the scripted gate says yes. ⌘⏎
+        // copies a public value and asks nothing.
+        launch(biometrics: "allow")
         unlock()
 
         step("the panel comes up, and says what its three shortcuts do") {
@@ -46,7 +48,7 @@ final class H_QuickAccessTests: UITestCase {
             XCTAssertNotNil(
                 row,
                 "\"git\" should find the GitHub fixture; the panel listed "
-                    + "\(itemListTitles().joined(separator: ", "))")
+                    + "\(panelTitles().joined(separator: ", "))")
             capture("quick-access-search", "Quick Access, filtered to one match")
         }
 
@@ -60,9 +62,10 @@ final class H_QuickAccessTests: UITestCase {
 
             clearSearch()
             waitFor("ks.quickAccess.list")
-            XCTAssertGreaterThan(
-                itemListTitles().count, 1,
-                "clearing the query must bring the whole vault back (ui-spec §7 lists every item)")
+            XCTAssertTrue(
+                waitUntil("the panel lists more than one item") { self.panelTitles().count > 1 },
+                "clearing the query must bring the whole vault back (ui-spec §7 lists every item); "
+                    + "the panel listed \(panelTitles().joined(separator: ", "))")
         }
 
         step("↑ and ↓ move the selection without taking focus off the field") {
@@ -248,11 +251,21 @@ final class H_QuickAccessTests: UITestCase {
     // MARK: - Reading the panel
 
     /// Wait for a row with exactly this title, and hand it back if it arrives.
+    ///
+    /// Matched on `value` as well as `label`: a row title is a plain `Text`, whose string is its
+    /// accessibility value and whose label is empty (`UITestCase.text(of:)`), so a predicate on
+    /// `label` alone matched nothing at all — which read as "the search did not filter".
     @discardableResult
     private func waitForRowTitled(_ title: String) -> XCUIElement? {
         let row = elements("ks.quickAccess.rowTitle")
-            .matching(NSPredicate(format: "label == %@", title)).firstMatch
+            .matching(NSPredicate(format: "value == %@ OR label == %@", title, title)).firstMatch
         return row.waitForExistence(timeout: Self.shortTimeout) ? row : nil
+    }
+
+    /// Every title the panel is listing — the panel's rows, not the main window's
+    /// (`itemListTitles()`), which sits behind it unchanged whatever the panel is searching for.
+    private func panelTitles() -> [String] {
+        elements("ks.quickAccess.rowTitle").allElementsBoundByIndex.map { text(of: $0) }
     }
 
     /// Empty the search field.

@@ -38,9 +38,12 @@ final class M_ImportTests: UITestCase {
         step("⇧⌘I opens the import sheet on the file that was chosen") {
             app.typeKey("i", modifierFlags: [.command, .shift])
             waitFor("ks.import.sheet")
+            // The path is the element's *value*; its label is "Source file", which is what
+            // `text(_:)` would read first (`UITestCase.text(of:)`).
+            let sourcePath = waitFor("ks.import.sourcePath").value as? String ?? ""
             XCTAssertTrue(
-                text("ks.import.sourcePath").contains("apple-passwords.csv"),
-                "the sheet must name the file it is reading")
+                sourcePath.contains("apple-passwords.csv"),
+                "the sheet must name the file it is reading; it named \(sourcePath)")
             capture("import-preview", "The import preview, before anything is written")
         }
 

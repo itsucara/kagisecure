@@ -98,3 +98,17 @@ This is not a policy enforced by review or by a redaction filter. It is enforced
 
 - Users who want a conventional password manager where an agent can read values will use a
   different tool. That is a positioning choice, not a gap.
+
+## Addendum 2026-09-27 — ten tools now
+
+`request_fill` ([ADR-0036](0036-agent-requested-browser-fill.md)) is a tenth tool, added after this
+ADR was written; the "read nine tool schemas" line above is left as written rather than edited,
+since it was accurate at the time. The audit today reads ten schemas, not nine.
+
+`request_fill` keeps the decision above intact: it returns a status, and the IPC response has no
+field a value fits in — no tool return value carries a secret. What it adds is a new way to *use* a
+secret without returning it, alongside `write_env_file` and `run_with_env`: it types the value into
+a page the agent is driving rather than into a file or a spawned process's environment. ADR-0036
+§8.2 states the resulting boundary precisely: an agent that can run script in the page it drives can
+still read the value there, the same class of caveat this ADR already accepts for `write_env_file`
+in the Negative consequences above ("injected artifacts are outside the boundary").

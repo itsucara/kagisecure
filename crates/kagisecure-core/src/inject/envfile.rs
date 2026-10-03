@@ -2,14 +2,19 @@
 //!
 //! Rules this module enforces rather than documents:
 //!
-//! 1. The file is created mode `0600` **before** any byte is written to it, so there is no window
-//!    in which a world-readable file holds a secret. The temporary file is created with
-//!    `create_new` (`O_EXCL`) and renamed into place, so a crash leaves the old file or the new
+//! 1. The file is created mode `0600` — on Windows, with an owner-only DACL; see [`fn@write`] —
+//!    **before** any byte is written to it, so there is no window in which a file other users
+//!    can read holds a secret. The temporary file is created with `create_new` (`O_EXCL`;
+//!    `CREATE_NEW` on Windows) and renamed into place, so a crash leaves the old file or the new
 //!    one, never half of either.
 //! 2. The contents live in a [`Zeroizing`] buffer for their whole life in this process.
 //! 3. An existing file is never clobbered unless the caller passes `overwrite`.
 //! 4. [`shred`] overwrites the bytes before unlinking. That is best effort on a journalling or
 //!    copy-on-write filesystem, and says so.
+//! 5. [`shred`] acts only on the file that was written. [`write()`] reports the written file's
+//!    identity ([`FileIdentity`]); the shredder opens the path without following a final symlink
+//!    and touches nothing unless the handle it holds is that same regular file. The path is not
+//!    the file: it can be repointed after the write, and a revoke needs no approval.
 
 use std::path::{Path, PathBuf};
 
@@ -17,6 +22,8 @@ use zeroize::Zeroizing;
 
 use super::EnvInjection;
 use crate::error::{Error, Result};
+use crate::lease::FileIdentity;
+use crate::proto::VarName;
 
 /// The default file name.
 pub const DEFAULT_FILENAME: &str = ".env";
@@ -33,13 +40,37 @@ pub struct WrittenFile {
     /// Whether the file is covered by a `.gitignore` in the work tree, or `None` when the target
     /// is not inside one. Best effort; see [`gitignore_status`].
     pub gitignored: Option<bool>,
+    /// Which file was written: read off the handle the bytes went through, before the rename
+    /// put it at `path`. The only file [`shred`] will later touch for this write.
+    pub identity: FileIdentity,
+}
+
+/// What [`shred`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shredded {
+    /// The file was the one written: its bytes were overwritten and it was unlinked.
+    Removed,
+    /// Nothing is at the path any more.
+    Missing,
+    /// Something is at the path, but it is not the file that was written — a symlink, a
+    /// directory, a different file renamed over it — so it was left exactly as it is.
+    NotTheWrittenFile,
 }
 
 /// Reject a file name that is not a plain file name.
 ///
 /// Matches the `^\.?[A-Za-z0-9._-]+$` pattern in mcp-server.md §2.7, which excludes `/`, `..` and
-/// anything that would make the name a path.
-fn validate_filename(name: &str) -> Result<()> {
+/// anything that would make the name a path. A name that passes therefore joins onto any
+/// directory to give a path inside it, with no `..` component in it to render.
+///
+/// Public because [`write()`] is not the only thing that needs the answer: a caller that shows a
+/// human the target path before writing has to know the name is a name *first*, or the sheet can
+/// describe a file the write would never produce (see the agent's `write_env_file`).
+///
+/// # Errors
+///
+/// [`Error::InvalidEnvFileName`] for anything that is not a plain file name.
+pub fn validate_filename(name: &str) -> Result<()> {
     let ok = !name.is_empty()
         && name != "."
         && name != ".."
@@ -58,11 +89,14 @@ fn validate_filename(name: &str) -> Result<()> {
 
 /// Render one `NAME=value` line, quoting when the value needs it.
 ///
-/// The quoting rules are the ones `.env` readers actually agree on: a value containing a newline,
-/// a quote, a backslash, whitespace, or a shell metacharacter is wrapped in double quotes with
-/// `\`, `"`, newline, carriage return and tab escaped. Everything else is written bare.
-fn push_line(out: &mut Zeroizing<Vec<u8>>, name: &str, value: &[u8]) {
-    out.extend_from_slice(name.as_bytes());
+/// The name is a [`VarName`], so it is an identifier by construction and is written bare: there is
+/// no quoting rule for a key, and none is needed for one that cannot contain `=`, a quote or a
+/// line break. The quoting rules for the value are the ones `.env` readers actually agree on: a
+/// value containing a newline, a quote, a backslash, whitespace, or a shell metacharacter is
+/// wrapped in double quotes with `\`, `"`, newline, carriage return and tab escaped. Everything
+/// else is written bare.
+fn push_line(out: &mut Zeroizing<Vec<u8>>, name: &VarName, value: &[u8]) {
+    out.extend_from_slice(name.as_str().as_bytes());
     out.push(b'=');
 
     let needs_quotes = value.is_empty()
@@ -108,7 +142,20 @@ pub fn render(injections: &[EnvInjection]) -> Zeroizing<Vec<u8>> {
 ///
 /// `directory` must already be canonicalized by the caller — this function does not resolve
 /// symlinks, because the *approval prompt* has to have been shown for the same path that gets
-/// written, and resolving it twice invites a TOCTOU disagreement.
+/// written, and resolving it twice invites a TOCTOU disagreement. Guarding the window between
+/// the prompt and the write is therefore the caller's job, and it is the caller that knows what
+/// was approved: the agent re-resolves the approved directory immediately before calling this
+/// and refuses if it no longer resolves to itself (A-05).
+///
+/// On Windows the `0600` is an owner-only DACL instead (`crate::windows_acl`): owner = the
+/// user, protected from inheritance, one entry for the user's SID. It is part of the
+/// `CreateFileW` that creates the temporary file, so — as on Unix — no byte is ever written to a
+/// file with any other ACL, and the rename carries it over whatever `.env` was there before.
+/// This matters more here than for the vault: the directory is a project working directory the
+/// *user* chose, whose inherited ACL this program neither controls nor checks, and on Windows it
+/// is no boundary anyway (a directory's DACL does not stop a user who knows a file's path). The
+/// directory itself is not touched. Not tested: a second local account being refused — the
+/// tests read the descriptor back and assert its shape.
 ///
 /// # Errors
 ///
@@ -143,7 +190,9 @@ pub fn write(
     tmp_name.push_str(".tmp");
     let tmp = directory.join(tmp_name);
 
+    #[cfg(not(windows))]
     let mut opts = std::fs::OpenOptions::new();
+    #[cfg(not(windows))]
     opts.write(true).create_new(true);
     #[cfg(unix)]
     {
@@ -151,18 +200,28 @@ pub fn write(
         opts.mode(0o600);
     }
 
-    let result = (|| -> Result<()> {
+    let result = (|| -> Result<FileIdentity> {
+        #[cfg(not(windows))]
         let mut file = opts.open(&tmp)?;
+        // `create_new` semantics, with the owner-only descriptor part of the create call.
+        #[cfg(windows)]
+        let mut file = crate::windows_acl::create_new_file(&tmp)?;
         file.write_all(&body)?;
         file.sync_all()?;
+        // From the handle the bytes went through, not from a later lookup of `path`: a rename
+        // keeps the file's identity, and nothing can come between this handle and the file.
+        let identity = identity_of(&file)?;
         drop(file);
         std::fs::rename(&tmp, &path)?;
-        Ok(())
+        Ok(identity)
     })();
-    if result.is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        result?;
-    }
+    let identity = match result {
+        Ok(identity) => identity,
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+    };
 
     #[cfg(unix)]
     {
@@ -174,44 +233,89 @@ pub fn write(
 
     Ok(WrittenFile {
         bytes: body.len(),
-        variables: injections.iter().map(|i| i.name.clone()).collect(),
+        variables: injections.iter().map(|i| i.name.to_string()).collect(),
         gitignored: gitignore_status(&path),
+        identity,
         path,
     })
 }
 
-/// Overwrite a file's bytes and delete it.
+fn identity_of(file: &std::fs::File) -> Result<FileIdentity> {
+    let (device, index) = kagisecure_childproc::file::identity(file)?;
+    Ok(FileIdentity::new(device, index))
+}
+
+/// The identity of the regular file at `path` now, without following a symlink in its final
+/// component; `None` when there is nothing there, it is not a regular file, or it cannot be
+/// opened.
+///
+/// For asking "is the file at this path still the one kagisecure wrote?": compare this against
+/// the ledger's recorded identity.
+#[must_use]
+pub fn current_identity(path: &Path) -> Option<FileIdentity> {
+    let file = kagisecure_childproc::file::open_no_follow(path, false).ok()?;
+    if !file.metadata().ok()?.is_file() {
+        return None;
+    }
+    identity_of(&file).ok()
+}
+
+/// Overwrite the bytes of the file kagisecure wrote at `path` and delete it — if, and only if,
+/// the file at `path` is still that file.
+///
+/// `expected` is the identity [`write()`] reported. The path is opened **without following** a
+/// symlink in its final component (`O_NOFOLLOW`, or `FILE_FLAG_OPEN_REPARSE_POINT` on Windows),
+/// and the handle — not the path — is checked for being a regular file with that identity before
+/// a single byte is written through it. Anything else at the path (a symlink to the user's SSH
+/// key, a directory, a different file renamed over it) is left untouched and reported as
+/// [`Shredded::NotTheWrittenFile`], for the caller to record.
+///
+/// The unlink that follows the overwrite is by path, so it is preceded by one more identity check
+/// of what the path names; a swap in the instant between that check and the unlink can make it
+/// remove a directory entry for a different file (never overwrite one — the bytes went through
+/// the verified handle). Closing that last window needs `unlinkat` relative to a held directory
+/// handle, which `std` does not offer; on a single-user machine the party able to race it is the
+/// user's own uid.
 ///
 /// Best effort, and documented as such: on a journalling, copy-on-write or flash-translated
-/// filesystem the old blocks may survive. Returns whether the file was there to remove.
+/// filesystem the old blocks may survive.
 ///
 /// # Errors
 ///
-/// Any I/O failure other than the file already being gone.
-pub fn shred(path: &Path) -> Result<bool> {
+/// An I/O failure while overwriting or unlinking the verified file.
+pub fn shred(path: &Path, expected: FileIdentity) -> Result<Shredded> {
     use std::io::Write;
 
-    let Ok(meta) = std::fs::metadata(path) else {
-        return Ok(false);
+    let mut file = match kagisecure_childproc::file::open_no_follow(path, true) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Shredded::Missing),
+        // A symlink (`ELOOP`), a file this user may not write, anything else that will not open
+        // as a plain writable file: none of these is the 0600 file kagisecure wrote.
+        Err(_) => return Ok(Shredded::NotTheWrittenFile),
     };
-    if !meta.is_file() {
-        return Err(Error::InvalidPath(path.to_path_buf()));
+    let meta = file.metadata()?;
+    if !meta.is_file() || identity_of(&file)? != expected {
+        return Ok(Shredded::NotTheWrittenFile);
     }
+
     let len = usize::try_from(meta.len()).unwrap_or(usize::MAX);
-    if let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(path) {
-        let zeros = vec![0u8; len.min(1 << 20)];
-        let mut left = len;
-        while left > 0 {
-            let n = left.min(zeros.len());
-            if file.write_all(&zeros[..n]).is_err() {
-                break;
-            }
-            left -= n;
+    let zeros = vec![0u8; len.min(1 << 20)];
+    let mut left = len;
+    while left > 0 {
+        let n = left.min(zeros.len());
+        if file.write_all(&zeros[..n]).is_err() {
+            break;
         }
-        let _ = file.sync_all();
+        left -= n;
+    }
+    let _ = file.sync_all();
+    drop(file);
+
+    if current_identity(path) != Some(expected) {
+        return Ok(Shredded::NotTheWrittenFile);
     }
     std::fs::remove_file(path)?;
-    Ok(true)
+    Ok(Shredded::Removed)
 }
 
 /// Whether `path` is inside a git work tree and, if so, whether a `.gitignore` covers it.
@@ -266,7 +370,7 @@ mod tests {
 
     fn injection(name: &str, value: &str) -> EnvInjection {
         EnvInjection {
-            name: name.to_owned(),
+            name: VarName::new(name).expect("a test name is a valid name"),
             value: Secret::from_string(value.to_owned()),
         }
     }
@@ -300,6 +404,38 @@ mod tests {
             .permissions()
             .mode();
         assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+    }
+
+    /// The Windows counterpart: one entry, for this user, in a protected DACL — both for a fresh
+    /// `.env` and for one written over a pre-existing file that carried the directory's
+    /// inherited ACL, which the rename must replace rather than keep.
+    #[cfg(windows)]
+    #[test]
+    fn the_file_is_owner_only_on_windows_too() {
+        use crate::windows_acl::{self, ObjectKind};
+        let me = windows_acl::current_user_sid().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+
+        let written = write(dir.path(), ".env", &[injection("A", "x")], false).unwrap();
+        let security = windows_acl::path_security(&written.path).unwrap();
+        assert!(
+            windows_acl::is_owner_only(&security, &me, ObjectKind::File, true),
+            "{security:?}"
+        );
+
+        std::fs::write(dir.path().join(".env.old"), b"KEEP=me\n").unwrap();
+        std::fs::rename(dir.path().join(".env.old"), &written.path).unwrap();
+        assert!(
+            !windows_acl::path_security(&written.path)
+                .unwrap()
+                .dacl_protected
+        );
+        write(dir.path(), ".env", &[injection("A", "y")], true).unwrap();
+        let security = windows_acl::path_security(&written.path).unwrap();
+        assert!(
+            windows_acl::is_owner_only(&security, &me, ObjectKind::File, true),
+            "an overwritten .env: {security:?}"
+        );
     }
 
     #[test]
@@ -370,9 +506,64 @@ mod tests {
     fn shredding_removes_the_file_and_reports_whether_it_was_there() {
         let dir = tempfile::tempdir().unwrap();
         let written = write(dir.path(), ".env", &[injection("A", "x")], false).unwrap();
-        assert!(shred(&written.path).unwrap());
+        assert_eq!(
+            shred(&written.path, written.identity).unwrap(),
+            Shredded::Removed
+        );
         assert!(!written.path.exists());
-        assert!(!shred(&written.path).unwrap());
+        assert_eq!(
+            shred(&written.path, written.identity).unwrap(),
+            Shredded::Missing
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shredding_never_follows_a_symlink_planted_after_the_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let written = write(dir.path(), ".env", &[injection("A", "x")], false).unwrap();
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"precious").unwrap();
+        std::fs::remove_file(&written.path).unwrap();
+        std::os::unix::fs::symlink(&victim, &written.path).unwrap();
+
+        assert_eq!(
+            shred(&written.path, written.identity).unwrap(),
+            Shredded::NotTheWrittenFile
+        );
+        assert_eq!(std::fs::read(&victim).unwrap(), b"precious");
+        assert!(
+            written.path.symlink_metadata().is_ok(),
+            "the link is left too"
+        );
+    }
+
+    #[test]
+    fn shredding_leaves_a_different_file_renamed_over_the_written_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let written = write(dir.path(), ".env", &[injection("A", "x")], false).unwrap();
+        let other = dir.path().join("other");
+        std::fs::write(&other, b"the user's own").unwrap();
+        std::fs::rename(&other, &written.path).unwrap();
+
+        assert_eq!(
+            shred(&written.path, written.identity).unwrap(),
+            Shredded::NotTheWrittenFile
+        );
+        assert_eq!(std::fs::read(&written.path).unwrap(), b"the user's own");
+    }
+
+    #[test]
+    fn a_directory_at_the_path_is_left_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let written = write(dir.path(), ".env", &[injection("A", "x")], false).unwrap();
+        std::fs::remove_file(&written.path).unwrap();
+        std::fs::create_dir(&written.path).unwrap();
+        assert_eq!(
+            shred(&written.path, written.identity).unwrap(),
+            Shredded::NotTheWrittenFile
+        );
+        assert!(written.path.is_dir());
     }
 
     #[test]

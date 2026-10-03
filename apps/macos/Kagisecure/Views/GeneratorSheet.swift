@@ -152,24 +152,29 @@ struct GeneratorSheet: View {
 
     private var characterControls: some View {
         VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Text("Length")
-                Spacer()
-                Text("\(model.recipe.length)")
-                    .monospacedDigit()
-                    .foregroundStyle(.secondary)
-                    .accessibilityIdentifier("ks.generator.lengthValue")
+            Text("Length")
+            // The slider for sweeping, the field and stepper beside it for an exact number — and
+            // for the keyboard, which cannot reach a slider without Full Keyboard Access
+            // (`ExactNumberField`, ui-spec.md §8 and §13). All three are the one recipe length.
+            HStack(spacing: 10) {
+                Slider(
+                    value: Binding(
+                        get: { Double(model.recipe.length) },
+                        set: { model.recipe.length = UInt32($0.rounded()) }),
+                    in: Double(model.limits.minLength)...Double(model.limits.maxLength),
+                    step: 1
+                )
+                .accessibilityLabel("Length")
+                .accessibilityValue("\(Int(model.recipe.length)) characters")
+                .accessibilityIdentifier("ks.generator.length")
+                ExactNumberField(
+                    label: String(localized: "Length in characters"),
+                    value: Binding(
+                        get: { Int(model.recipe.length) },
+                        set: { model.recipe.length = UInt32($0) }),
+                    range: Int(model.limits.minLength)...Int(model.limits.maxLength),
+                    identifier: "ks.generator.length")
             }
-            Slider(
-                value: Binding(
-                    get: { Double(model.recipe.length) },
-                    set: { model.recipe.length = UInt32($0.rounded()) }),
-                in: Double(model.limits.minLength)...Double(model.limits.maxLength),
-                step: 1
-            )
-            .accessibilityLabel("Length")
-            .accessibilityValue("\(model.recipe.length) characters")
-            .accessibilityIdentifier("ks.generator.length")
 
             Toggle("Lower-case letters  a–z", isOn: binding(\.lowercase))
                 .accessibilityIdentifier("ks.generator.toggle.lowercase")
@@ -191,22 +196,19 @@ struct GeneratorSheet: View {
 
     private var wordControls: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Stepper(
-                value: Binding(
-                    get: { model.recipe.words },
-                    set: { model.recipe.words = $0 }),
-                in: model.limits.minWords...model.limits.maxWords
-            ) {
-                HStack {
-                    Text("Words")
-                    Spacer()
-                    Text("\(model.recipe.words)")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
-                        .accessibilityIdentifier("ks.generator.wordsValue")
-                }
+            // No slider here: seven values do not need one. The field and stepper are the whole
+            // control, and the field is what the keyboard reaches (ui-spec.md §13).
+            HStack {
+                Text("Words")
+                Spacer()
+                ExactNumberField(
+                    label: String(localized: "Number of words"),
+                    value: Binding(
+                        get: { Int(model.recipe.words) },
+                        set: { model.recipe.words = .init($0) }),
+                    range: Int(model.limits.minWords)...Int(model.limits.maxWords),
+                    identifier: "ks.generator.words")
             }
-            .accessibilityIdentifier("ks.generator.words")
 
             Picker("Separator", selection: Binding(
                 get: { model.recipe.separator },
@@ -224,8 +226,7 @@ struct GeneratorSheet: View {
                 .accessibilityIdentifier("ks.generator.toggle.includeDigit")
 
             Text(
-                "Words are drawn from the EFF long list — \(model.limits.wordlistSize) words, "
-                    + "so each one is worth 12.9 bits."
+                "Words are drawn from the EFF long list — \(Int(model.limits.wordlistSize)) words, so each one is worth 12.9 bits."
             )
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -247,7 +248,7 @@ struct GeneratorSheet: View {
                 PasteboardService.copy(model.candidate, label: "Generated password")
                 copied = true
             } label: {
-                Label(copied ? "Copied" : "Copy", systemImage: copied ? "checkmark" : "doc.on.doc")
+                Label(copied ? String(localized: "Copied") : String(localized: "Copy"), systemImage: copied ? "checkmark" : "doc.on.doc")
             }
             .disabled(model.candidate.isEmpty)
             .help(PasteboardService.clearDescription(seconds: PasteboardService.clearSeconds))

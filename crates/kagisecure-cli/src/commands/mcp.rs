@@ -208,9 +208,18 @@ mod tests {
     #[test]
     fn the_claude_code_snippet_is_the_command_from_the_docs() {
         let s = snippet_for(McpClient::ClaudeCode, Path::new("/opt/bin/kagisecure-mcp"));
-        assert!(s.body.contains(
-            "claude mcp add --transport stdio kagisecure -s local -- /opt/bin/kagisecure-mcp"
-        ));
+        // Quoted per the shell the build targets (`setup::quote_for_shell`, which this snippet is
+        // rendered through): bare on POSIX, since this path has none of a POSIX shell's special
+        // characters, and single-quoted on Windows, since PowerShell quoting is unconditional.
+        // See the identical note on `setup::tests::the_claude_code_snippet_is_the_command_from_the_docs`.
+        let path = if cfg!(windows) {
+            "'/opt/bin/kagisecure-mcp'"
+        } else {
+            "/opt/bin/kagisecure-mcp"
+        };
+        assert!(s.body.contains(&format!(
+            "claude mcp add --transport stdio kagisecure -s local -- {path}"
+        )));
         assert!(s.body.contains("claude mcp remove kagisecure -s local"));
     }
 

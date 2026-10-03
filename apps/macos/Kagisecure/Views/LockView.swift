@@ -9,7 +9,6 @@ struct LockView: View {
     @State private var password = ""
     @State private var recoveryCode = ""
     @State private var showRecovery = false
-    @FocusState private var passwordFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -20,7 +19,6 @@ struct LockView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(.background)
         .onAppear {
-            passwordFocused = true
             if model.hasPlatformSlot, model.platformAvailability.isAvailable {
                 model.unlockWithTouchID()
             }
@@ -52,10 +50,12 @@ struct LockView: View {
             }
 
             VStack(spacing: 10) {
-                SecureField("Master password", text: $password)
-                    .textFieldStyle(.roundedBorder)
-                    .focused($passwordFocused)
-                    .onSubmit(unlock)
+                StableSecureField(
+                    String(localized: "Master password"),
+                    text: $password,
+                    autofocus: true,
+                    onSubmit: unlock
+                )
                     .accessibilityLabel("Master password")
                     .accessibilityIdentifier("ks.lock.password")
 
@@ -108,7 +108,7 @@ struct LockView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Use recovery code instead")
-                .accessibilityValue(showRecovery ? "expanded" : "collapsed")
+                .accessibilityValue(showRecovery ? Text("expanded") : Text("collapsed"))
                 .accessibilityIdentifier("ks.lock.recoveryDisclosure")
 
                 if showRecovery {
@@ -160,7 +160,7 @@ struct CreateVaultView: View {
     @Environment(AppModel.self) private var model
     @State private var password = ""
     @State private var confirmation = ""
-    @State private var vaultName = "Personal"
+    @State private var vaultName = String(localized: "Personal")
 
     private var mismatch: Bool { !confirmation.isEmpty && confirmation != password }
     private var canCreate: Bool { password.count >= 8 && password == confirmation }
@@ -175,8 +175,7 @@ struct CreateVaultView: View {
                 .font(.title.weight(.semibold))
                 .accessibilityIdentifier("ks.createVault.title")
             Text(
-                "Your master password protects everything. kagisecure cannot reset it — that is "
-                    + "what the one-time recovery code you are about to see is for."
+                "Your master password protects everything. kagisecure cannot reset it — that is what the one-time recovery code you are about to see is for."
             )
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -187,12 +186,13 @@ struct CreateVaultView: View {
                 TextField("Vault name", text: $vaultName)
                     .textFieldStyle(.roundedBorder)
                     .accessibilityIdentifier("ks.createVault.vaultName")
-                SecureField("Master password", text: $password)
-                    .textFieldStyle(.roundedBorder)
+                StableSecureField(String(localized: "Master password"), text: $password)
                     .accessibilityIdentifier("ks.createVault.password")
-                SecureField("Confirm master password", text: $confirmation)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(create)
+                StableSecureField(
+                    String(localized: "Confirm master password"),
+                    text: $confirmation,
+                    onSubmit: create
+                )
                     .accessibilityIdentifier("ks.createVault.confirmation")
                 if mismatch {
                     Text("The two passwords do not match.")

@@ -2,19 +2,22 @@
 resolver = "3"
 members = [
     "crates/kagisecure-core",
+    "crates/kagisecure-childproc",
     "crates/kagisecure-ipc",
     "crates/kagisecure-extension-ipc",
     "crates/kagisecure-agent",
     "crates/kagisecure-nmhost",
     "crates/kagisecure-mcp",
     "crates/kagisecure-import",
+    "crates/kagisecure-shared",
     "crates/kagisecure-cli",
     "crates/kagisecure-ffi",
+    "crates/kagisecure-test-support",
     "xtask",
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT OR Apache-2.0"
@@ -27,10 +30,13 @@ authors = ["kagisecure contributors"]
 # `features = ["secret-material"]` explicitly. Cargo does not let a member turn a workspace
 # dependency's default features back off, so the safe setting has to be the default one.
 kagisecure-core = { path = "crates/kagisecure-core", version = "0.1.0", default-features = false }
+kagisecure-childproc = { path = "crates/kagisecure-childproc", version = "0.1.0" }
 kagisecure-import = { path = "crates/kagisecure-import", version = "0.1.0" }
+kagisecure-shared = { path = "crates/kagisecure-shared", version = "0.1.0" }
 kagisecure-ipc = { path = "crates/kagisecure-ipc", version = "0.1.0" }
 kagisecure-agent = { path = "crates/kagisecure-agent", version = "0.1.0" }
 kagisecure-extension-ipc = { path = "crates/kagisecure-extension-ipc", version = "0.1.0" }
+kagisecure-test-support = { path = "crates/kagisecure-test-support", version = "0.1.0" }
 
 [profile.release]
 panic = "abort"

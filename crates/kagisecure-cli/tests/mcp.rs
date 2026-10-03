@@ -39,7 +39,7 @@ const TOTP_URI: &str = "otpauth://totp/Canary:ada@example.com\
 struct Fixture {
     _dir: tempfile::TempDir,
     vault: PathBuf,
-    socket: PathBuf,
+    endpoint: kagisecure_ipc::Endpoint,
     project: PathBuf,
     daemon: Child,
 }
@@ -55,23 +55,11 @@ fn kagisecure() -> PathBuf {
     cargo_bin("kagisecure")
 }
 
-/// The sidecar binary, built on demand.
-///
-/// `cargo test --workspace` has already built it; `cargo test -p kagisecure-cli` has not, and a
-/// test that silently skipped in that case would be worse than a slow one.
+/// The sidecar binary, built on demand — see `kagisecure_test_support::binary`, the shared helper
+/// `kagisecure-agent` and `kagisecure-mcp`'s own tests also use, so `cargo test -p kagisecure-cli`
+/// alone does not silently skip.
 fn sidecar() -> PathBuf {
-    let path = cargo_bin("kagisecure-mcp");
-    if path.is_file() {
-        return path;
-    }
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(cargo)
-        .args(["build", "-p", "kagisecure-mcp"])
-        .status()
-        .expect("could not run cargo to build the sidecar");
-    assert!(status.success(), "building kagisecure-mcp failed");
-    assert!(path.is_file(), "kagisecure-mcp still missing at {path:?}");
-    path
+    kagisecure_test_support::binary("kagisecure-mcp", kagisecure_agent::bundle::SIDECAR)
 }
 
 /// Run one `kagisecure` subcommand against the fixture vault, feeding it `stdin_lines`.
@@ -108,11 +96,13 @@ fn cli(vault: &Path, stdin_lines: &[&str], args: &[&str]) -> String {
 fn fixture(extra_daemon_args: &[&str]) -> Fixture {
     let dir = tempfile::tempdir().expect("tempdir");
     let vault = dir.path().join("test.kagivault");
-    let socket = dir.path().join("d.sock");
+    let endpoint = kagisecure_ipc::Endpoint::for_instance(dir.path(), "d.sock");
     let project = dir.path().join("project");
     std::fs::create_dir_all(&project).expect("project dir");
 
     // Deliberately cheap KDF parameters: this vault exists for 200 ms and protects nothing.
+    // 64 KiB is the lowest cost `KdfParams::validate` accepts (`MIN_M_KIB`), so it is as
+    // cheap as a vault this suite can open.
     cli(
         &vault,
         &[PASSWORD],
@@ -120,7 +110,7 @@ fn fixture(extra_daemon_args: &[&str]) -> Fixture {
             "vault",
             "init",
             "--kdf-m-kib",
-            "8",
+            "64",
             "--kdf-t",
             "1",
             "--name",
@@ -210,7 +200,7 @@ fn fixture(extra_daemon_args: &[&str]) -> Fixture {
         .arg("--password-stdin")
         .arg("daemon")
         .arg("--socket")
-        .arg(&socket)
+        .arg(endpoint.as_override())
         .args(extra_daemon_args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -223,11 +213,22 @@ fn fixture(extra_daemon_args: &[&str]) -> Fixture {
         writeln!(stdin, "{PASSWORD}").expect("writing the master password");
     }
 
+    // Readiness is "something answers there", not "a file appeared": a filesystem socket exists
+    // as a file and a named pipe does not, and even on Unix the file exists a moment before the
+    // daemon is accepting. The probe is one `Hello` round trip, which writes no audit entry.
     let deadline = Instant::now() + Duration::from_secs(20);
-    while !socket.exists() {
+    loop {
+        if kagisecure_ipc::client::Client::connect(
+            &endpoint,
+            kagisecure_ipc::client::self_info("kagisecure-mcp-test", "0.0.0"),
+        )
+        .is_ok()
+        {
+            break;
+        }
         assert!(
             Instant::now() < deadline,
-            "the daemon never created its socket"
+            "the daemon never started serving on {endpoint}"
         );
         std::thread::sleep(Duration::from_millis(25));
     }
@@ -235,7 +236,7 @@ fn fixture(extra_daemon_args: &[&str]) -> Fixture {
     Fixture {
         _dir: dir,
         vault,
-        socket,
+        endpoint,
         project,
         daemon,
     }
@@ -257,9 +258,9 @@ struct RawSidecar {
 }
 
 impl RawSidecar {
-    fn start(socket: &Path) -> Self {
+    fn start(endpoint: &kagisecure_ipc::Endpoint) -> Self {
         let mut child = Command::new(sidecar())
-            .env("KAGISECURE_SOCKET", socket)
+            .env("KAGISECURE_SOCKET", endpoint.as_override())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -380,6 +381,27 @@ fn is_error(reply: &serde_json::Value) -> bool {
     reply["result"]["isError"].as_bool().unwrap_or(false)
 }
 
+/// A tiny cross-platform "print an environment variable" command, as the `command`/`args` pair
+/// `run_with_env`'s JSON-RPC arguments expect. The same approach `kagisecure-core`'s
+/// `tests/inject.rs` takes for its own `printenv` helper.
+fn printenv_cmd(var: &str) -> (&'static str, Vec<String>) {
+    if cfg!(windows) {
+        ("cmd", vec!["/C".to_owned(), format!("echo %{var}%")])
+    } else {
+        ("/usr/bin/printenv", vec![var.to_owned()])
+    }
+}
+
+/// A tiny cross-platform "echo one argument back to stdout" command, as the `command`/`args`
+/// pair `run_with_env`'s JSON-RPC arguments expect.
+fn echo_cmd(text: &str) -> (&'static str, Vec<String>) {
+    if cfg!(windows) {
+        ("cmd", vec!["/C".to_owned(), format!("echo {text}")])
+    } else {
+        ("/bin/echo", vec![text.to_owned()])
+    }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------------------------
@@ -387,7 +409,7 @@ fn is_error(reply: &serde_json::Value) -> bool {
 #[test]
 fn every_tool_works_end_to_end_and_the_marker_never_reaches_stdout() {
     let fixture = fixture(&["--auto-approve"]);
-    let mut mcp = RawSidecar::start(&fixture.socket);
+    let mut mcp = RawSidecar::start(&fixture.endpoint);
 
     assert_eq!(
         mcp.tool_names(),
@@ -398,6 +420,7 @@ fn every_tool_works_end_to_end_and_the_marker_never_reaches_stdout() {
             "list_environments",
             "list_items",
             "list_vaults",
+            "request_fill",
             "revoke_env_file",
             "run_with_env",
             "write_env_file",
@@ -494,12 +517,13 @@ fn every_tool_works_end_to_end_and_the_marker_never_reaches_stdout() {
         assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
     }
 
+    let (printenv, printenv_args) = printenv_cmd("TOKEN");
     let ran = mcp.call(
         "run_with_env",
         serde_json::json!({
             "environment_id": env_id,
-            "command": "/usr/bin/printenv",
-            "args": ["TOKEN"],
+            "command": printenv,
+            "args": printenv_args,
             "cwd": project,
         }),
     );
@@ -512,12 +536,13 @@ fn every_tool_works_end_to_end_and_the_marker_never_reaches_stdout() {
     assert_eq!(stdout.trim(), "[kagisecure:redacted:TOKEN]");
     assert_eq!(structured(&ran)["scrubbed"], 1);
 
+    let (printenv, printenv_args) = printenv_cmd("TOKEN");
     let quiet = mcp.call(
         "run_with_env",
         serde_json::json!({
             "environment_id": env_id,
-            "command": "/usr/bin/printenv",
-            "args": ["TOKEN"],
+            "command": printenv,
+            "args": printenv_args,
             "cwd": project,
             "output": "none",
         }),
@@ -566,10 +591,90 @@ fn every_tool_works_end_to_end_and_the_marker_never_reaches_stdout() {
     );
 }
 
+/// `request_fill` against `kagisecure daemon`, which has no browser extension to ask: every call
+/// is `FILL_UNAVAILABLE`, whichever item it names and whatever the vault holds, and the marker —
+/// the value of the very item named — is in no byte the sidecar writes.
+#[test]
+fn request_fill_on_the_headless_daemon_is_fill_unavailable_and_the_marker_never_reaches_stdout() {
+    let fixture = fixture(&["--auto-approve"]);
+    let mut mcp = RawSidecar::start(&fixture.endpoint);
+
+    let items = mcp.call("list_items", serde_json::json!({}));
+    let item_id = structured(&items)["items"][0]["id"]
+        .as_str()
+        .expect("an item")
+        .to_owned();
+
+    // The item holding the marker, an id that names nothing, and each accepted field set: one
+    // answer for all of them, byte for byte, because the gate comes before the item is looked up.
+    let mut answers = Vec::new();
+    for (id, fields) in [
+        (item_id.as_str(), None),
+        (item_id.as_str(), Some(serde_json::json!(["password"]))),
+        (item_id.as_str(), Some(serde_json::json!(["username"]))),
+        (item_id.as_str(), Some(serde_json::json!(["one_time_code"]))),
+        (
+            "00000000-0000-4000-8000-000000000000",
+            Some(serde_json::json!(["username", "password"])),
+        ),
+    ] {
+        let mut arguments = serde_json::json!({ "item_id": id, "origin": "https://acme.example" });
+        if let Some(fields) = fields {
+            arguments["fields"] = fields;
+        }
+        let reply = mcp.call("request_fill", arguments);
+        assert!(is_error(&reply), "{reply}");
+        assert_eq!(structured(&reply)["code"], "FILL_UNAVAILABLE", "{reply}");
+        answers.push(structured(&reply).clone());
+    }
+    assert!(
+        answers.windows(2).all(|pair| pair[0] == pair[1]),
+        "FILL_UNAVAILABLE must not vary with the item or the fields: {answers:?}"
+    );
+
+    // The schema's combination rule is enforced before anything is asked.
+    let combined = mcp.call(
+        "request_fill",
+        serde_json::json!({
+            "item_id": item_id,
+            "origin": "https://acme.example",
+            "fields": ["password", "one_time_code"],
+        }),
+    );
+    assert!(is_error(&combined), "{combined}");
+    assert_eq!(
+        structured(&combined)["code"],
+        "INVALID_ARGUMENT",
+        "{combined}"
+    );
+
+    let (out, err) = mcp.finish();
+    let marker = MARKER.as_bytes();
+    assert!(
+        !out.windows(marker.len()).any(|w| w == marker),
+        "the marker appeared in the sidecar's stdout"
+    );
+    assert!(
+        !err.windows(marker.len()).any(|w| w == marker),
+        "the marker appeared in the sidecar's stderr"
+    );
+    assert!(!out.is_empty(), "the driver should have captured traffic");
+
+    let log = cli(
+        &fixture.vault,
+        &[PASSWORD],
+        &["audit", "--json", "--limit", "500"],
+    );
+    assert!(
+        !log.contains(MARKER),
+        "the marker appeared in the audit log"
+    );
+}
+
 #[test]
 fn run_with_env_does_not_invoke_a_shell() {
     let fixture = fixture(&["--auto-approve"]);
-    let mut mcp = RawSidecar::start(&fixture.socket);
+    let mut mcp = RawSidecar::start(&fixture.endpoint);
 
     let env_id = structured(&mcp.call("list_environments", serde_json::json!({})))["environments"]
         [0]["id"]
@@ -580,13 +685,14 @@ fn run_with_env_does_not_invoke_a_shell() {
     let pwned = fixture.project.join("pwned");
     let project = fixture.project.display().to_string();
     let injection = format!("; touch {}", pwned.display());
+    let (echo, echo_args) = echo_cmd(&injection);
 
     let ran = mcp.call(
         "run_with_env",
         serde_json::json!({
             "environment_id": env_id,
-            "command": "/bin/echo",
-            "args": [injection],
+            "command": echo,
+            "args": echo_args,
             "cwd": project,
         }),
     );
@@ -606,7 +712,7 @@ fn run_with_env_does_not_invoke_a_shell() {
 #[test]
 fn a_second_identical_request_reuses_the_lease_and_a_broader_one_does_not() {
     let fixture = fixture(&["--auto-approve"]);
-    let mut mcp = RawSidecar::start(&fixture.socket);
+    let mut mcp = RawSidecar::start(&fixture.endpoint);
 
     let env_id = structured(&mcp.call("list_environments", serde_json::json!({})))["environments"]
         [0]["id"]
@@ -652,7 +758,7 @@ fn a_second_identical_request_reuses_the_lease_and_a_broader_one_does_not() {
 #[test]
 fn a_refused_approval_returns_user_denied_and_writes_nothing() {
     let fixture = fixture(&["--non-interactive"]);
-    let mut mcp = RawSidecar::start(&fixture.socket);
+    let mut mcp = RawSidecar::start(&fixture.endpoint);
 
     let env_id = structured(&mcp.call("list_environments", serde_json::json!({})))["environments"]
         [0]["id"]
@@ -697,7 +803,7 @@ fn a_read_only_call_leaves_an_audit_entry_on_disk() {
     // back out. If their audit entry is not persisted at the point it is appended, it lives in
     // the daemon's memory only and dies with it — an agent that merely browses leaves no trace.
     let fixture = fixture(&["--non-interactive"]);
-    let mut mcp = RawSidecar::start(&fixture.socket);
+    let mut mcp = RawSidecar::start(&fixture.endpoint);
 
     let reply = mcp.call("list_environments", serde_json::json!({}));
     assert!(!is_error(&reply), "{reply}");
@@ -719,8 +825,8 @@ fn a_read_only_call_leaves_an_audit_entry_on_disk() {
 #[test]
 fn with_no_daemon_the_tools_fail_promptly_with_app_not_running() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let socket = dir.path().join("nobody-home.sock");
-    let mut mcp = RawSidecar::start(&socket);
+    let endpoint = kagisecure_ipc::Endpoint::for_instance(dir.path(), "nobody-home.sock");
+    let mut mcp = RawSidecar::start(&endpoint);
 
     let started = Instant::now();
     let reply = mcp.call("list_vaults", serde_json::json!({}));
@@ -745,7 +851,7 @@ fn with_no_daemon_the_tools_fail_promptly_with_app_not_running() {
 #[test]
 fn an_environment_the_user_has_not_shared_is_invisible_to_agents() {
     let fixture = fixture(&["--auto-approve"]);
-    let mut mcp = RawSidecar::start(&fixture.socket);
+    let mut mcp = RawSidecar::start(&fixture.endpoint);
     let envs = mcp.call("list_environments", serde_json::json!({}));
     let names: Vec<String> = structured(&envs)["environments"]
         .as_array()
@@ -775,7 +881,7 @@ async fn every_tool_through_the_rmcp_client_api() {
     use rmcp::transport::{ConfigureCommandExt, TokioChildProcess};
 
     let fixture = fixture(&["--auto-approve"]);
-    let socket = fixture.socket.clone();
+    let socket = fixture.endpoint.as_override();
     let project = fixture.project.display().to_string();
 
     let transport =
@@ -802,7 +908,7 @@ async fn every_tool_through_the_rmcp_client_api() {
         .map(|t| t.name.to_string())
         .collect();
     names.sort();
-    assert_eq!(names.len(), 9, "{names:?}");
+    assert_eq!(names.len(), 10, "{names:?}");
 
     // Everything the client is handed, concatenated, so one assertion covers the lot.
     let mut seen = String::new();
@@ -875,13 +981,14 @@ async fn every_tool_through_the_rmcp_client_api() {
         .expect("a lease")
         .to_owned();
 
+    let (printenv, printenv_args) = printenv_cmd("TOKEN");
     seen.push_str(
         &call(
             "run_with_env",
             serde_json::json!({
                 "environment_id": env_id,
-                "command": "/usr/bin/printenv",
-                "args": ["TOKEN"],
+                "command": printenv,
+                "args": printenv_args,
                 "cwd": project,
             }),
         )
@@ -893,6 +1000,17 @@ async fn every_tool_through_the_rmcp_client_api() {
         &call("revoke_env_file", serde_json::json!({ "lease_id": lease }))
             .await
             .to_string(),
+    );
+
+    let fill = call(
+        "request_fill",
+        serde_json::json!({ "item_id": item_id, "origin": "https://acme.example" }),
+    )
+    .await;
+    seen.push_str(&fill.to_string());
+    assert_eq!(
+        fill["structuredContent"]["code"], "FILL_UNAVAILABLE",
+        "{fill}"
     );
 
     assert!(
@@ -924,7 +1042,7 @@ fn a_totp_code_never_reaches_the_model() {
 
     let started = kagisecure_core::unix_now();
     let fixture = fixture(&["--auto-approve"]);
-    let mut mcp = RawSidecar::start(&fixture.socket);
+    let mut mcp = RawSidecar::start(&fixture.endpoint);
 
     // The TOTP item is visible, and the sidecar says so — the *existence* of the field is
     // metadata the user opted into (mcp-server.md §2.4), which is what makes the rest of this
@@ -974,12 +1092,13 @@ fn a_totp_code_never_reaches_the_model() {
         .as_str()
         .expect("a lease")
         .to_owned();
+    let (printenv, printenv_args) = printenv_cmd("TOKEN");
     let _ = mcp.call(
         "run_with_env",
         serde_json::json!({
             "environment_id": env_id,
-            "command": "/usr/bin/printenv",
-            "args": ["TOKEN"],
+            "command": printenv,
+            "args": printenv_args,
             "cwd": project,
         }),
     );
@@ -995,6 +1114,14 @@ fn a_totp_code_never_reaches_the_model() {
         }),
     );
     let _ = mcp.call("revoke_env_file", serde_json::json!({ "lease_id": lease }));
+    let _ = mcp.call(
+        "request_fill",
+        serde_json::json!({
+            "item_id": github["id"],
+            "origin": "https://github.com",
+            "fields": ["one_time_code"],
+        }),
+    );
 
     let (out, err) = mcp.finish();
     let finished = kagisecure_core::unix_now();
@@ -1063,7 +1190,7 @@ fn a_totp_code_never_reaches_the_model() {
 #[test]
 fn no_tool_schema_offers_a_one_time_password() {
     let fixture = fixture(&["--auto-approve"]);
-    let mut mcp = RawSidecar::start(&fixture.socket);
+    let mut mcp = RawSidecar::start(&fixture.endpoint);
     let schemas = mcp.tool_schemas();
     let (out, err) = mcp.finish();
     let _ = (out, err);

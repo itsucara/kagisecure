@@ -15,6 +15,9 @@ cask "kagisecure" do
     strategy :github_latest
   end
 
+  # The app updates itself with Sparkle (ADR-0044), so `brew upgrade` leaves it alone unless
+  # `--greedy` is passed.
+  auto_updates true
   depends_on macos: :sequoia
 
   app "Kagisecure.app"

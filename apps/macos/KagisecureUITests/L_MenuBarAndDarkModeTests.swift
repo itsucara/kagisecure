@@ -23,37 +23,30 @@ final class L_MenuBarAndDarkModeTests: UITestCase {
         try Harness.seedVault(at: vaultPath)
         launch()
 
-        try step("the status item is there before anything is unlocked") {
+        try step("the status item is there before anything is unlocked, and says it is locked") {
             let icon = try XCTUnwrap(
                 statusItem(), "the status item was not reachable — see `statusItem()`")
-            // The *state* is asserted from the menu, not from the icon. `MenuBarExtra`'s label is
-            // an `Image`, and the `.accessibilityLabel` the app puts on it does not survive into
-            // the `NSStatusItem` AppKit builds — the element is in the tree with its identifier and
-            // an empty label. Recorded rather than asserted, because the icon carrying its state in
-            // words is a VoiceOver improvement worth having and not a promise this suite can hold
-            // SwiftUI to today.
-            record(
-                "menu-bar-icon-label",
-                "identifier: \(icon.identifier)\nlabel: \(icon.label)\n"
-                    + "value: \(String(describing: icon.value))",
-                "What the status item exposes to the accessibility tree")
+            // The icon's `.accessibilityLabel` is the status item's *title* (`AXTitle`), not its
+            // `label` (`AXDescription`, empty) — measured; see "Reading the status item" below.
+            // It is what VoiceOver says for the icon, so the lock state is asserted on it.
+            XCTAssertEqual(
+                icon.title, "Kagisecure, vault locked",
+                "the icon says the lock state in words, not only as a padlock symbol")
             capture("menu-bar-locked", "The menu-bar item while the vault is locked")
         }
 
-        try step("and it offers the way in, not the way round") {
-            let icon = try XCTUnwrap(statusItem())
-            icon.click()
-            XCTAssertTrue(
-                text("ks.menuBar.lockState") == "Vault locked",
-                "the menu should say the same thing the icon does")
-            XCTAssertTrue(
-                element("ks.menuBar.openMainWindow").exists,
+        try step("and its menu offers the way in, not the way round") {
+            XCTAssertNotNil(
+                statusMenuItem("Vault locked"),
+                "the menu says the lock state; it lists \(statusMenuTitles())")
+            XCTAssertNotNil(
+                statusMenuItem("Open Kagisecure"),
                 "the only action a locked vault offers is opening the window that unlocks it")
-            XCTAssertFalse(
-                element("ks.menuBar.lockNow").exists,
-                "there is nothing to lock")
+            XCTAssertNil(statusMenuItem("Lock Vault Now"), "there is nothing to lock")
+
+            try openStatusMenu()
             capture("menu-bar-locked-menu", "The menu-bar menu while locked")
-            app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+            closeStatusMenu()
         }
 
         try step("unlocking flips it, and the menu grows the things a key makes possible") {
@@ -62,19 +55,33 @@ final class L_MenuBarAndDarkModeTests: UITestCase {
             waitFor("ks.sidebar.all")
 
             let icon = try XCTUnwrap(statusItem())
-            icon.click()
-            XCTAssertEqual(text("ks.menuBar.lockState"), "Vault unlocked")
-            XCTAssertTrue(element("ks.menuBar.quickAccess").exists)
-            XCTAssertTrue(text("ks.menuBar.agentState").contains("Serving agents"))
-            XCTAssertFalse(
-                element("ks.menuBar.revokeAll").isEnabled,
-                "Revoke All is disabled while nothing is granted")
+            XCTAssertTrue(
+                waitUntil("the icon says unlocked") { icon.title == "Kagisecure, vault unlocked" },
+                "the icon follows the lock state; it says \(icon.title)")
+            XCTAssertNotNil(
+                statusMenuItem("Vault unlocked"),
+                "the menu says the lock state; it lists \(statusMenuTitles())")
+            XCTAssertNotNil(statusMenuItem("Quick Access"))
+            XCTAssertTrue(
+                waitUntil("the menu says the listener is up") {
+                    self.statusMenuItem(containing: "Serving agents") != nil
+                },
+                "the menu says the listener is up; it lists \(statusMenuTitles())")
+            let revokeAll = try XCTUnwrap(statusMenuItem("Revoke All Leases"))
+            XCTAssertFalse(revokeAll.isEnabled, "Revoke All is disabled while nothing is granted")
+
+            try openStatusMenu()
             capture("menu-bar-unlocked-menu", "The menu-bar menu while unlocked")
         }
 
-        step("Lock Vault Now does") {
-            click("ks.menuBar.lockNow")
+        try step("Lock Vault Now does") {
+            // The menu is still open from the previous step, so the item has a frame to click.
+            try XCTUnwrap(statusMenuItem("Lock Vault Now")).click()
             waitFor("ks.lock.title")
+            let icon = try XCTUnwrap(statusItem())
+            XCTAssertTrue(
+                waitUntil("the icon says locked") { icon.title == "Kagisecure, vault locked" },
+                "the icon follows the lock state; it says \(icon.title)")
             capture("menu-bar-after-lock", "Locked from the menu bar")
         }
     }
@@ -95,39 +102,47 @@ final class L_MenuBarAndDarkModeTests: UITestCase {
                     "create_environment", ["name": "asked for by an agent"], timeout: 120))
         }
 
-        try step("a waiting approval is counted in the menu-bar menu") {
+        try step("a waiting approval is counted on the icon and in the menu") {
             waitFor("ks.approval.sentence", timeout: Self.timeout)
-            // The icon's symbol changes too (ui-spec.md §6.3), but the status item exposes no
-            // label to assert that on — see the note in the previous scenario. The menu is where
-            // the count is in words, and it is the same `pendingApprovals` the symbol is chosen
-            // from, so this holds the app to the same fact through the surface that can be read.
             let icon = try XCTUnwrap(statusItem())
-            icon.click()
-            let waiting = waitFor("ks.menuBar.pendingApprovals", timeout: Self.shortTimeout)
+            // The icon's symbol changes too (ui-spec.md §6.3); its title is that state in words,
+            // chosen from the same `pendingApprovals` the symbol is.
             XCTAssertTrue(
-                text(of: waiting).contains("waiting"),
-                "the menu should offer the way to the sheet: \(text(of: waiting))")
+                waitUntil("the icon counts the approval") {
+                    icon.title == "Kagisecure, vault unlocked, 1 approval(s) waiting"
+                },
+                "the icon says an approval is waiting; it says \(icon.title)")
+            XCTAssertNotNil(
+                statusMenuItem(containing: "1 approval(s) waiting"),
+                "the menu should offer the way to the sheet; it lists \(statusMenuTitles())")
+
+            try openStatusMenu()
             capture("menu-bar-pending", "The menu-bar menu with an approval waiting")
-            app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+            closeStatusMenu()
         }
 
-        step("answering it clears the badge") {
+        try step("answering it clears the badge") {
             click("ks.approval.deny")
             waitForDisappearance("ks.approval.sentence")
             _ = pending.wait()
 
-            let icon = statusItem()
-            icon?.click()
-            let deadline = Date().addingTimeInterval(Self.shortTimeout)
-            while Date() < deadline {
-                if !element("ks.menuBar.pendingApprovals").exists {
-                    capture("menu-bar-after-answer", "The count, gone")
-                    app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
-                    return
-                }
-                Thread.sleep(forTimeInterval: 0.1)
-            }
-            XCTFail("the waiting-approval entry outlived the request it was about")
+            // The count follows the agent's status poll, so it can take a moment to catch up.
+            // The menu's entries follow the app's state whether it is open or not (measured), so
+            // this waits on them directly rather than reopening the menu to look.
+            let icon = try XCTUnwrap(statusItem())
+            XCTAssertTrue(
+                waitUntil("the icon stops counting") { icon.title == "Kagisecure, vault unlocked" },
+                "the badge outlived the request it was about; the icon says \(icon.title)")
+            XCTAssertTrue(
+                waitUntil("the menu entry goes") {
+                    self.statusMenuItem(containing: "approval(s) waiting") == nil
+                },
+                "the waiting-approval entry outlived the request it was about; the menu lists "
+                    + "\(statusMenuTitles())")
+
+            try openStatusMenu()
+            capture("menu-bar-after-answer", "The count, gone")
+            closeStatusMenu()
         }
     }
 
@@ -165,6 +180,9 @@ final class L_MenuBarAndDarkModeTests: UITestCase {
             row?.click()
             if element("ks.item.fieldReveal.password").waitForExistence(timeout: Self.shortTimeout) {
                 click("ks.item.fieldReveal.password")
+                // A presence-gated release (ADR-0038): the value arrives after the scripted
+                // prompt answers.
+                waitForValue("ks.item.fieldValue.password", equals: "g1thub-p4ssw0rd")
             }
             capture("dark-item-detail", "An item's detail in dark mode, one field revealed")
         }
@@ -196,23 +214,95 @@ final class L_MenuBarAndDarkModeTests: UITestCase {
 
     /// The app's status item, if XCUITest can see it.
     ///
-    /// A `MenuBarExtra` is an `NSStatusItem` in the system menu bar. It belongs to this application,
-    /// so it is somewhere in this application's element tree — but *where* has moved between macOS
-    /// releases (an extra `menuBars` element, a `statusItems` collection, or a plain
-    /// `menuBarItem`). Rather than pick one and be wrong on the next release, this looks for the
-    /// identifier the app sets, in each of the places it has been known to live.
+    /// A `MenuBarExtra` is an `NSStatusItem`. It belongs to this application, so it is in this
+    /// application's element tree — a `statusItem` in the second of its `menuBars`
+    /// (`AXExtrasMenuBar`). Found by the identifier the app sets, the one `ks.menuBar.*`
+    /// identifier that survives into the tree.
     private func statusItem() -> XCUIElement? {
         let byIdentifier = element("ks.menuBar.icon")
         if byIdentifier.exists { return byIdentifier }
-
-        for bar in app.menuBars.allElementsBoundByIndex {
-            let candidate = bar.descendants(matching: .any)
-                .matching(identifier: "ks.menuBar.icon").firstMatch
-            if candidate.exists { return candidate }
-        }
         let statusItems = app.descendants(matching: .statusItem)
         if statusItems.count > 0 { return statusItems.firstMatch }
         return nil
+    }
+
+    // MARK: Reading the status item
+    //
+    // What a menu-style `MenuBarExtra` puts in the accessibility tree — measured on macOS 27 with a
+    // probe app read back through `AXUIElement` (docs/e2e-harness.md §7.2):
+    //
+    // - The status item's `AXTitle` is the icon's `.accessibilityLabel`, and follows it live. Its
+    //   `AXDescription`, which XCUITest calls `label`, is empty. So `icon.title` is the lock state.
+    // - Its menu is an `AXMenu` child of the status item **whether it is open or not**, with one
+    //   `AXMenuItem` per entry: the entry's title and enabled state, and no
+    //   `.accessibilityIdentifier` (a button's comes out as `menuAction:`). The entries follow the
+    //   app's state while the menu is closed, too. So what the menu says is read from the status
+    //   item's own subtree, by title — which also keeps it apart from the main menu bar, where
+    //   "Lock Vault Now" and "Quick Access" are commands as well.
+    // - Closed, the menu and its entries have a zero-size frame; open, a real one. That, not
+    //   `isHittable`, is how a scenario knows the menu is open.
+    // - The status item's frame is where the app was told the item is, which is not necessarily
+    //   where it can be clicked. A menu-bar manager that collapses status items (BetterTouchTool's,
+    //   on the Mac this was measured on) leaves a collapsed item reporting a frame under its own
+    //   chevron, and the first click there expands the hidden items instead of opening this menu;
+    //   after it, the frame is the real one. That is why `openStatusMenu` may click twice.
+
+    /// The titles of every entry in the status item's menu, for failure messages.
+    private func statusMenuTitles() -> [String] {
+        statusItem()?.menuItems.allElementsBoundByIndex.map(\.title) ?? []
+    }
+
+    /// The status item's menu entry titled exactly `title`, or `nil`.
+    private func statusMenuItem(_ title: String) -> XCUIElement? {
+        guard let icon = statusItem() else { return nil }
+        let match = icon.menuItems.matching(NSPredicate(format: "title == %@", title)).firstMatch
+        return match.exists ? match : nil
+    }
+
+    /// The status item's menu entry whose title contains `fragment` — for the entries that carry
+    /// a count.
+    private func statusMenuItem(containing fragment: String) -> XCUIElement? {
+        guard let icon = statusItem() else { return nil }
+        let match = icon.menuItems.matching(NSPredicate(format: "title CONTAINS %@", fragment))
+            .firstMatch
+        return match.exists ? match : nil
+    }
+
+    /// Whether the status item's menu is open: on screen, with a frame.
+    private func statusMenuIsOpen() -> Bool {
+        guard let menu = statusItem()?.menus.firstMatch, menu.exists else { return false }
+        return menu.frame.width > 0 && menu.frame.height > 0
+    }
+
+    /// Click the status item until its menu is open.
+    ///
+    /// More than once only when a click did not open it — the collapsed-status-item case above,
+    /// where the click revealed the item instead. Each try re-reads the item, so the next click
+    /// goes where the item now is.
+    private func openStatusMenu(file: StaticString = #filePath, line: UInt = #line) throws {
+        var frames: [CGRect] = []
+        for _ in 0..<3 {
+            let icon = try XCTUnwrap(
+                statusItem(), "the status item was not reachable — see `statusItem()`",
+                file: file, line: line)
+            frames.append(icon.frame)
+            activate()
+            icon.click()
+            if waitUntil("the status menu is open", timeout: 3, { self.statusMenuIsOpen() }) {
+                return
+            }
+        }
+        XCTFail(
+            "the status item's menu did not open after three clicks, at \(frames). An item a "
+                + "menu-bar manager keeps hidden cannot be clicked; allow it in that manager.",
+            file: file, line: line)
+    }
+
+    /// Close the status item's menu, and wait until it has.
+    private func closeStatusMenu() {
+        guard statusMenuIsOpen() else { return }
+        app.typeKey(XCUIKeyboardKey.escape, modifierFlags: [])
+        waitUntil("the status menu has closed") { !self.statusMenuIsOpen() }
     }
 
     private func unlock() {

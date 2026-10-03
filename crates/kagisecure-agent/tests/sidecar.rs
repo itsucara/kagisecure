@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use kagisecure_agent::approval::{ApprovalRequest, ClientVerification, Decision};
 use kagisecure_agent::{Agent, AgentConfig, VaultHandle};
-use kagisecure_core::model::{EnvVar, Environment, Field, Item, Secret, VarSource};
+use kagisecure_core::model::{Environment, Field, Item, Secret, VarSource};
 use kagisecure_core::proto::Category;
 use kagisecure_core::vault::{CreateOptions, Vault};
 
@@ -30,7 +30,7 @@ struct Fixture {
     dir: tempfile::TempDir,
     handle: Arc<VaultHandle>,
     agent: Agent,
-    socket: PathBuf,
+    endpoint: kagisecure_ipc::Endpoint,
     project: PathBuf,
     env_id: String,
 }
@@ -43,12 +43,16 @@ fn fixture() -> Fixture {
 
     // Deliberately cheap KDF parameters: this vault exists for a second and protects nothing.
     let mut options = CreateOptions::new().expect("options");
-    options.kdf = kagisecure_core::crypto::kdf::KdfParams::new(8, 1, 1).expect("kdf");
+    options.kdf = kagisecure_core::crypto::kdf::KdfParams::new(
+        kagisecure_core::crypto::kdf::MIN_M_KIB,
+        kagisecure_core::crypto::kdf::MIN_T,
+        1,
+    )
+    .expect("kdf");
     options.vault_name = "Personal".to_owned();
     let (mut vault, _code) = Vault::create(&vault_path, b"pw", &options).expect("create");
 
     let vault_id = vault.default_vault_id().expect("default vault");
-    vault.set_vault_agent_visible(vault_id, true);
 
     let mut item = Item::new(vault_id, Category::ApiCredential, "Acme staging");
     let mut field = Field::concealed("token", Secret::from_string(MARKER.to_owned()));
@@ -57,28 +61,35 @@ fn fixture() -> Fixture {
     let item_id = item.id;
     item.fields.push(field);
     item.agent_visible = true;
-    vault.add_item(item);
 
     let mut env = Environment::new(vault_id, "acme / staging");
     env.agent_visible = true;
-    env.set_var(EnvVar {
-        name: "TOKEN".to_owned(),
-        source: VarSource::ItemField {
+    env.set_var(
+        kagisecure_core::proto::VarName::new("TOKEN".to_owned()).expect("a valid name"),
+        VarSource::ItemField {
             item: item_id,
             field: field_id,
         },
-    });
+    );
     let env_id = env.id.to_string();
-    vault.add_environment(env);
-    vault.save().expect("save");
 
-    let socket = dir.path().join("agent.sock");
+    vault
+        .transact(|tx| {
+            tx.set_vault_agent_visible(vault_id, true);
+            tx.add_item(item);
+            tx.add_environment(env);
+            Ok(())
+        })
+        .expect("save");
+
+    let endpoint = kagisecure_ipc::Endpoint::for_instance(dir.path(), "agent.sock");
     let handle = VaultHandle::new(vault);
     let agent = Agent::start(
         Arc::clone(&handle),
         &AgentConfig {
-            socket_path: Some(socket.clone()),
+            endpoint: Some(endpoint.clone()),
             queue: None,
+            agent_fill: None,
         },
     )
     .expect("the agent should bind a fresh socket");
@@ -87,33 +98,16 @@ fn fixture() -> Fixture {
         dir,
         handle,
         agent,
-        socket,
+        endpoint,
         project,
         env_id,
     }
 }
 
-/// The sidecar binary, built on demand.
-///
-/// `cargo test --workspace` has already built it; `cargo test -p kagisecure-agent` has not, and a
-/// test that silently skipped in that case would be worse than a slow one.
+/// The sidecar binary, built on demand — see `kagisecure_test_support::binary` for why this goes
+/// through a shared helper rather than a hardcoded `target/debug`.
 fn sidecar() -> PathBuf {
-    let mut dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    dir.pop();
-    dir.pop();
-    let candidate = dir.join("target").join("debug").join("kagisecure-mcp");
-    if candidate.is_file() {
-        return candidate;
-    }
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(cargo)
-        .current_dir(&dir)
-        .args(["build", "-p", "kagisecure-mcp"])
-        .status()
-        .expect("could not run cargo to build the sidecar");
-    assert!(status.success(), "building kagisecure-mcp failed");
-    assert!(candidate.is_file(), "kagisecure-mcp still missing");
-    candidate
+    kagisecure_test_support::binary("kagisecure-mcp", kagisecure_agent::bundle::SIDECAR)
 }
 
 /// A minimal JSON-RPC driver over the sidecar's stdio, keeping every byte of stdout.
@@ -125,10 +119,10 @@ struct RawSidecar {
 }
 
 impl RawSidecar {
-    fn start(socket: &Path, cwd: &Path) -> Self {
+    fn start(endpoint: &kagisecure_ipc::Endpoint, cwd: &Path) -> Self {
         let mut child = Command::new(sidecar())
             .current_dir(cwd)
-            .env("KAGISECURE_SOCKET", socket)
+            .env("KAGISECURE_SOCKET", endpoint.as_override())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -249,7 +243,7 @@ fn structured(reply: &serde_json::Value) -> &serde_json::Value {
 #[test]
 fn the_app_hosted_agent_serves_a_real_sidecar_end_to_end() {
     let fx = fixture();
-    let mut mcp = RawSidecar::start(&fx.socket, &fx.project);
+    let mut mcp = RawSidecar::start(&fx.endpoint, &fx.project);
 
     let (written, seen) = with_ui(
         &fx.agent,
@@ -294,11 +288,13 @@ fn the_app_hosted_agent_serves_a_real_sidecar_end_to_end() {
     let request = &seen[0];
     assert_eq!(request.variables, vec!["TOKEN".to_owned()]);
     assert_eq!(request.environment_name.as_deref(), Some("acme / staging"));
+    // Compared by path component, not by a `/`-joined string literal, so this holds regardless
+    // of the platform's separator.
     assert!(
         request
             .target_path
             .as_deref()
-            .is_some_and(|p| p.ends_with("/.env"))
+            .is_some_and(|p| Path::new(p).ends_with(".env"))
     );
     let rendered = format!("{request:?}");
     assert!(
@@ -347,7 +343,7 @@ fn the_app_hosted_agent_serves_a_real_sidecar_end_to_end() {
 #[test]
 fn a_denied_request_returns_user_denied_and_writes_nothing() {
     let fx = fixture();
-    let mut mcp = RawSidecar::start(&fx.socket, &fx.project);
+    let mut mcp = RawSidecar::start(&fx.endpoint, &fx.project);
 
     let (reply, seen) = with_ui(&fx.agent, Decision::Deny, || {
         mcp.tool(
@@ -375,7 +371,7 @@ fn a_denied_request_returns_user_denied_and_writes_nothing() {
 #[test]
 fn allow_once_does_not_cover_the_next_identical_request() {
     let fx = fixture();
-    let mut mcp = RawSidecar::start(&fx.socket, &fx.project);
+    let mut mcp = RawSidecar::start(&fx.endpoint, &fx.project);
     let dir = fx.project.canonicalize().expect("canonical");
 
     let (_, seen) = with_ui(&fx.agent, Decision::AllowOnce, || {
@@ -408,7 +404,7 @@ fn allow_once_does_not_cover_the_next_identical_request() {
 #[test]
 fn locking_the_vault_stops_the_agent_serving() {
     let fx = fixture();
-    let mut mcp = RawSidecar::start(&fx.socket, &fx.project);
+    let mut mcp = RawSidecar::start(&fx.endpoint, &fx.project);
     let dir = fx.project.canonicalize().expect("canonical");
 
     // One approved write, so there is a live lease to kill.
@@ -463,7 +459,7 @@ fn locking_the_vault_stops_the_agent_serving() {
 #[test]
 fn every_audit_entry_names_the_process_that_made_the_call() {
     let fx = fixture();
-    let mut mcp = RawSidecar::start(&fx.socket, &fx.project);
+    let mut mcp = RawSidecar::start(&fx.endpoint, &fx.project);
 
     // A read-only tool, a structural one, and an injection: three different code paths to the
     // audit log, and the pid has to be on all of them.
@@ -525,7 +521,7 @@ fn every_audit_entry_names_the_process_that_made_the_call() {
 #[test]
 fn the_socket_stops_serving_the_moment_a_lock_is_acknowledged() {
     let fx = fixture();
-    let mut mcp = RawSidecar::start(&fx.socket, &fx.project);
+    let mut mcp = RawSidecar::start(&fx.endpoint, &fx.project);
 
     // A lease first, so there is something for the lock to kill.
     let (written, _) = with_ui(
@@ -550,7 +546,7 @@ fn the_socket_stops_serving_the_moment_a_lock_is_acknowledged() {
 
     // Lock over IPC, the way `kagisecure lock` and the app's menu bar do.
     let mut client = kagisecure_ipc::client::Client::connect(
-        &kagisecure_ipc::Endpoint::Path(fx.socket.clone()),
+        &fx.endpoint,
         kagisecure_ipc::protocol::ClientInfo {
             name: "lock-window-test".to_owned(),
             version: "0".to_owned(),

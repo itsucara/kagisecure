@@ -8,12 +8,15 @@
  *   node e2e/run.mjs --suite mcp     one suite (comma-separated for several)
  *   E2E_KEEP=1 node e2e/run.mjs      keep the temporary vaults, sockets and artifacts
  *   E2E_GUI=1 node e2e/run.mjs       also run suite D, which takes over the mouse and keyboard
+ *   node e2e/run.mjs --preflight     only check that this Mac is ready for suite D, and say why not
  *
  * `make e2e` and `make e2e SUITE=mcp` are the documented spellings; this file is what they call.
  *
  * Suite D drives the real app through XCUITest, which means real clicks and keystrokes at the
  * window server for the better part of half an hour. It is left out of a plain `make e2e` (and
- * refused if named explicitly) unless `E2E_GUI=1` says the Mac is not in use right now.
+ * refused if named explicitly) unless `E2E_GUI=1` says the Mac is not in use right now. Before it
+ * starts, `lib/gui-preflight.mjs` checks that the keystrokes it synthesizes will arrive as typed —
+ * a plain keyboard layout selected, System Settings not open — and refuses the run if not.
  *
  * # What the runner knows about a suite
  *
@@ -33,10 +36,12 @@
 
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describeEnvironment } from "./lib/environment.mjs";
+import { guiPreflight } from "./lib/gui-preflight.mjs";
 import { parseTestcases, renderJunit } from "./lib/junit.mjs";
 import { renderReport } from "./lib/report.mjs";
 
@@ -55,8 +60,15 @@ const TMP_DIR = path.join(E2E_DIR, "tmp");
  * subtle — the daemon refuses to start with "local socket name length exceeds capacity of
  * sun_path" — but it is exactly the kind of thing that works on the author's machine and not on
  * a contributor's, so the runtime state goes somewhere short and stays there.
+ *
+ * Windows has no `sun_path` to overflow — `kagisecure daemon --socket` takes a named pipe name
+ * there (`\\.\pipe\...`, see `lib/harness.mjs`'s `socketPath`), which lives in its own namespace
+ * rather than under this directory — but `E2E_RUN_DIR` (vaults, scratch files) still needs
+ * somewhere writable, and `/tmp` is not it: `path.join("/tmp", …)` on Windows resolves against
+ * whatever drive the process happens to be running from rather than a real temp directory, which
+ * is `os.tmpdir()`'s job.
  */
-const SOCKET_ROOT = "/tmp";
+const SOCKET_ROOT = process.platform === "win32" ? os.tmpdir() : "/tmp";
 
 const KEEP = process.env.E2E_KEEP === "1";
 
@@ -88,6 +100,8 @@ function parseArgs(argv) {
         .split(",")
         .map((s) => s.trim())
         .filter(Boolean);
+    } else if (arg === "--preflight") {
+      options.preflight = true;
     } else if (arg === "--help" || arg === "-h") {
       options.help = true;
     } else {
@@ -192,7 +206,11 @@ async function runSuite(definition, runId) {
     ...process.env,
     // The toolchain this repo documents. A `make e2e` from a GUI-launched terminal otherwise has
     // no rustup on PATH, and the failure reads as "cargo: command not found" three layers down.
-    PATH: `/opt/homebrew/opt/rustup/bin:${process.env.PATH}`,
+    // macOS/Homebrew-specific, and only additive (prepended) on any other platform, but there is
+    // no reason to carry a directory that can never exist into a Windows or Linux PATH.
+    ...(process.platform === "darwin"
+      ? { PATH: `/opt/homebrew/opt/rustup/bin:${process.env.PATH}` }
+      : {}),
     E2E_JUNIT: junitPath,
     E2E_ARTIFACTS: artifactDir,
     E2E_RUN_DIR: socketDir,
@@ -296,18 +314,43 @@ async function runSuite(definition, runId) {
   };
 }
 
+/**
+ * Check that suite D's keystrokes will arrive as typed (`lib/gui-preflight.mjs`), print what was
+ * found, and say whether the suite may start. Detects and tells; never changes a setting.
+ */
+function reportGuiPreflight() {
+  const { refusals, notes } = guiPreflight();
+  for (const note of notes) console.log(`   preflight  ${note}`);
+  if (refusals.length === 0) {
+    console.log(`   preflight  ready for suite "${GUI_SUITE}"`);
+    return true;
+  }
+  console.error(
+    `e2e: suite "${GUI_SUITE}" will not start on this Mac as it is. It changes nothing on the ` +
+      `machine it is measuring, so this is for you to fix:\n\n` +
+      refusals.join("\n\n") +
+      "\n",
+  );
+  return false;
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const available = discoverSuites();
 
   if (options.help) {
-    console.log("usage: node e2e/run.mjs [--suite NAME[,NAME...]]");
+    console.log("usage: node e2e/run.mjs [--suite NAME[,NAME...]] [--preflight]");
     console.log(`suites: ${available.map((s) => s.name).join(", ")}`);
     console.log(
       `suite "${GUI_SUITE}" takes over the mouse and keyboard for ~30 minutes and is left out ` +
         `unless E2E_GUI=1 is set (run it only when the Mac is not in use)`,
     );
+    console.log(`--preflight checks that this Mac is ready for suite "${GUI_SUITE}" and runs nothing`);
     return 0;
+  }
+
+  if (options.preflight) {
+    return reportGuiPreflight() ? 0 : 2;
   }
 
   let selected = available;
@@ -346,6 +389,12 @@ async function main() {
 
   if (selected.length === 0) {
     console.error("e2e: no suites to run");
+    return 2;
+  }
+
+  // Before any build: a machine that is not ready should hear so in seconds, not after the
+  // twenty-minute build and the first failed keystroke.
+  if (selected.some((s) => s.name === GUI_SUITE) && !reportGuiPreflight()) {
     return 2;
   }
 

@@ -30,7 +30,7 @@ final class I_SettingsTests: UITestCase {
             capture("settings-before", "The main window, before ⌘, opens Settings")
         }
 
-        step("⌘, opens Settings on the Security tab") {
+        step("⌘, opens Settings, and its Security tab carries the clipboard interval") {
             openSettings()
             // By name, not by identifier. `.tabItem` hands AppKit a title and an image and builds
             // its own tab item; a view modifier on the label reaches nothing, so the tabs have no
@@ -106,10 +106,13 @@ final class I_SettingsTests: UITestCase {
             XCTAssertEqual(
                 text("ks.settings.auditState"), "Chain intact",
                 "a vault the CLI has just written should have an unbroken audit chain")
-            XCTAssertTrue(
-                text("ks.settings.wordlist").contains("7776"),
+            // Digits only: the count is a number interpolated into a `Text`, which formats it for
+            // the locale — "7,776" here, "7 776" or "7.776" elsewhere — and that is right.
+            let wordlist = text("ks.settings.wordlist")
+            XCTAssertEqual(
+                wordlist.filter(\.isNumber), "7776",
                 "the generator's word list is the EFF long list, which is 7776 words; Settings "
-                    + "said \(text("ks.settings.wordlist"))")
+                    + "said \(wordlist)")
 
             capture("settings-vault", "Settings: the Vault tab, naming the scratch vault")
         }
@@ -193,14 +196,33 @@ final class I_SettingsTests: UITestCase {
 
     // MARK: - Driving Settings
 
-    /// Open Settings with ⌘, and wait for the pane rather than for a window.
+    /// Open Settings with ⌘, and put it on the Security tab.
     ///
-    /// `Settings { }` is a separate scene with a title AppKit localises and decorates ("Kagisecure
-    /// Settings", "…Preferences" on older systems), so the window title is the wrong thing to wait
-    /// on. The first control on the Security tab is unambiguous and is not on the main window.
+    /// Waited for by the panes rather than by a window: `Settings { }` is a separate scene with a
+    /// title AppKit localises and decorates ("Kagisecure Settings", "…Preferences" on older
+    /// systems), so the window title is the wrong thing to wait on.
+    ///
+    /// *Either* pane, then Security explicitly, because Settings reopens on whichever tab it was
+    /// last left on. SwiftUI keeps that in the app's own `UserDefaults.standard`
+    /// (`com_apple_SwiftUI_Settings_selectedTabIndex`), which `-KSUITestDefaultsSuite` does not
+    /// move — so the previous scenario, or whoever used the app last, decides where it opens. The
+    /// first scenario here leaves it on Vault; the second one used to open straight onto that tab
+    /// and wait thirty seconds for a Security control that was never going to appear.
     private func openSettings(file: StaticString = #filePath, line: UInt = #line) {
         app.typeKey(",", modifierFlags: .command)
-        waitFor("ks.settings.autoLockInterval", file: file, line: line)
+        XCTAssertTrue(
+            waitUntil("Settings is open on one of its tabs", timeout: Self.timeout) {
+                self.element("ks.settings.autoLockInterval").exists
+                    || self.element("ks.settings.vaultPath").exists
+            },
+            "⌘, opened no Settings pane. On screen: "
+                + onScreenIdentifiers().joined(separator: ", "),
+            file: file, line: line)
+        if !element("ks.settings.autoLockInterval").exists {
+            selectSettingsTab(
+                Self.securityTab, thenWaitFor: "ks.settings.autoLockInterval", file: file,
+                line: line)
+        }
     }
 
     /// Switch Settings tabs, and wait for something that is only on the destination tab.
@@ -281,18 +303,5 @@ final class I_SettingsTests: UITestCase {
             landed,
             "\(message). The suite \(defaultsSuite!) holds \(String(describing: actual)) instead.",
             file: file, line: line)
-    }
-
-    /// Wait until `condition` holds. Predicate-driven rather than a sleep loop, so it returns the
-    /// moment the preference lands.
-    private func waitUntil(
-        _ description: String, timeout: TimeInterval = UITestCase.shortTimeout,
-        _ condition: @escaping () -> Bool
-    ) -> Bool {
-        if condition() { return true }
-        let expectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate { _, _ in condition() }, object: nil)
-        expectation.expectationDescription = description
-        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
     }
 }

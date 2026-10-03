@@ -9,11 +9,38 @@ use kagisecure_core::model::{
     Category, EnvVar, Environment, FieldKind, Item, ItemId, Secret, VarSource,
 };
 use kagisecure_core::vault::{CreateOptions, Vault};
-use kagisecure_import::commit::commit;
+use kagisecure_import::commit::{ImportOutcome, commit as commit_tx};
 use kagisecure_import::dedupe::{Duplicate, DuplicatePolicy, ItemAction, find_duplicate, resolve};
+use kagisecure_import::error::{ImportError, Result as ImportResult};
 use kagisecure_import::ir::{
     ForeignId, ImportPlan, ImportedField, ImportedItem, ImportedRevision, SourceKind, TargetVault,
 };
+
+/// Test-only shim: [`kagisecure_import::commit::commit`] now takes `&mut Tx<'_>` (`Vault`'s
+/// mutators live only on `Tx`, ADR-0039 step 6), so every test in this file that still holds a
+/// bare `Vault` opens one transaction per call rather than changing its own shape. Mirrors the
+/// same "stash the `ImportError`, roll back on a placeholder `kagisecure_core::Error`" pattern
+/// `kagisecure-cli`'s `commands/import.rs` uses for its own (real) transaction.
+fn commit(
+    vault: &mut Vault,
+    plan: ImportPlan,
+    policy: DuplicatePolicy,
+) -> ImportResult<ImportOutcome> {
+    let plan = Some(plan);
+    let mut failure: Option<ImportError> = None;
+    let result = vault.transact(|tx| {
+        commit_tx(tx, plan.as_ref().expect("the plan"), policy).map_err(|e| {
+            let placeholder = kagisecure_core::Error::Io(std::io::Error::other(e.to_string()));
+            failure = Some(e);
+            placeholder
+        })
+    });
+    match result {
+        Ok(outcome) => Ok(outcome),
+        Err(_) if failure.is_some() => Err(failure.expect("checked by the guard above")),
+        Err(core_err) => Err(core_err.into()),
+    }
+}
 
 const PASSWORD: &[u8] = b"correct horse battery staple";
 
@@ -191,30 +218,35 @@ fn update_rotates_one_value_and_keeps_everything_local() {
     // The user then does local work on the item: a tag of their own, agent visibility they
     // deliberately opted into, and an environment bound to the password field.
     let item_id = find(&vault, "Acme staging");
-    let field_id;
-    {
-        let item = vault.find_item_mut(&item_id.to_string()).unwrap();
-        item.tags.push("mine".to_owned());
-        item.agent_visible = true;
-        item.trashed_at = Some(1_700_000_500);
-        let field = item
-            .fields
-            .iter_mut()
-            .find(|f| f.label == "password")
-            .unwrap();
-        field.agent_visible = true;
-        field_id = field.id;
-    }
     let vault_id = vault.default_vault_id().unwrap();
-    let mut env = Environment::new(vault_id, "acme");
-    env.vars.push(EnvVar {
-        name: "ACME_PASSWORD".to_owned(),
-        source: VarSource::ItemField {
-            item: item_id,
-            field: field_id,
-        },
-    });
-    vault.add_environment(env);
+    let field_id = vault
+        .transact(|tx| {
+            let field_id;
+            {
+                let item = tx.find_item_mut(&item_id.to_string()).unwrap();
+                item.tags.push("mine".to_owned());
+                item.agent_visible = true;
+                item.trashed_at = Some(1_700_000_500);
+                let field = item
+                    .fields
+                    .iter_mut()
+                    .find(|f| f.label == "password")
+                    .unwrap();
+                field.agent_visible = true;
+                field_id = field.id;
+            }
+            let mut env = Environment::new(vault_id, "acme");
+            env.vars.push(EnvVar {
+                name: "ACME_PASSWORD".to_owned(),
+                source: VarSource::ItemField {
+                    item: item_id,
+                    field: field_id,
+                },
+            });
+            tx.add_environment(env);
+            Ok(field_id)
+        })
+        .unwrap();
     let created_at = item_by_id(&vault, item_id).created_at;
 
     // Now the source rotates the password and the user re-imports with --on-duplicate update.
@@ -257,7 +289,7 @@ fn update_rotates_one_value_and_keeps_everything_local() {
     assert_eq!(item.field("password").unwrap().id, field_id);
     let injections = vault.resolve_environment("acme", None).unwrap();
     assert_eq!(injections.len(), 1);
-    assert_eq!(injections[0].name, "ACME_PASSWORD");
+    assert_eq!(injections[0].name.as_str(), "ACME_PASSWORD");
     assert_eq!(injections[0].value.expose(), b"rotated-2026");
 }
 
@@ -370,9 +402,13 @@ fn update_merges_history_and_never_doubles_it() {
     // And it never surfaces in metadata, on an item the user has made agent-visible.
     let item_id = vault.items()[0].id;
     vault
-        .find_item_mut(&item_id.to_string())
-        .unwrap()
-        .agent_visible = true;
+        .transact(|tx| {
+            tx.find_item_mut(&item_id.to_string())
+                .unwrap()
+                .agent_visible = true;
+            Ok(())
+        })
+        .unwrap();
     let rendered = serde_json::to_string(&vault.item_summaries()).unwrap();
     assert!(!rendered.contains("hunter2"), "{rendered}");
     assert!(!rendered.contains("older-2019"), "{rendered}");
@@ -516,7 +552,6 @@ fn a_committed_import_survives_a_save_and_reopen() {
     item.push_revision(ImportedRevision::secret("older-2019".to_owned(), Some(100)));
     item.target_vault = TargetVault::Named("Work".to_owned());
     commit(&mut vault, plan_of(vec![item]), DuplicatePolicy::Skip).unwrap();
-    vault.save().unwrap();
     drop(vault);
 
     let reopened = Vault::open_with_password(&path, PASSWORD).unwrap();

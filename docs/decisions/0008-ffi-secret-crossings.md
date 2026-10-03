@@ -7,6 +7,22 @@
   [ADR-0004](0004-biometric-key-wrapping.md), [ADR-0005](0005-secret-material-in-m1.md),
   [architecture.md](../architecture.md) §4
 
+> **Amended by [ADR-0038](0038-app-release-needs-presence.md) (2026-09-25; both phases
+> implemented):** crossing 2's outbound direction and crossing 5's outbound codes **only** exist
+> behind a presence check now — `release_field` / `release_notes` (crossing 2) and
+> `release_totp` (crossing 5), each `async`, each awaiting a fresh check from the app's
+> `PresenceGate` before any value crosses, with no gate meaning no release. The ungated
+> `reveal_field`, `totp_code` and `item_totp_code`, and the transitional `reveal_notes`, were
+> **removed** in phase 2, once the app had moved every surface onto the release calls; the Swift
+> compiler, not a review, is what proves nothing still calls them. Item **notes** became secret
+> (ADR-0038 user decision 3) and are crossing 2 — a single value, one item's notes at a time —
+> rather than riding along on every `ItemView`, which carries only `has_notes`.
+> `verify_master_password` (the gate's fallback) is crossing 1. `PresenceGate` itself is the
+> boundary's first foreign trait: it carries a sentence built from a title and a label into Swift
+> and an outcome back — **no value**, so it is not a sixth crossing. The crossings enumerated
+> below, and their one-field-at-a-time granularity, are otherwise unchanged; §2 and §5 below are
+> amended in place where they named the removed calls.
+
 ## Context
 
 [architecture.md](../architecture.md) §4 puts a single word in the "may carry plaintext" cell for
@@ -26,11 +42,11 @@ direction and its justification. Adding a sixth requires an edit to this ADR in 
 
 | # | Crossing | Direction | Function |
 | --- | --- | --- | --- |
-| 1 | Master password / recovery code | app → Rust | `VaultSession::create`, `unlock_with_password`, `unlock_with_recovery_code`, `change_master_password` |
-| 2 | A single field or variable value | both | `VaultSession::reveal_field` (out), `save_item` via `FieldDraft.value` (in), `set_variable_value` (in, **added in M4**) |
+| 1 | Master password / recovery code | app → Rust | `VaultSession::create`, `unlock_with_password`, `unlock_with_recovery_code`, `change_master_password`, `verify_master_password` (**ADR-0038**) |
+| 2 | A single field or variable value, or one item's notes | both | `FieldRelease::value` / `copy_shown_value` and `NotesRelease::text` / `copy_shown_text` behind `release_field` / `release_notes` (out, **ADR-0038**, presence-gated — the only way out; the ungated `reveal_field` and `reveal_notes` were removed in phase 2), `save_item` via `FieldDraft.value` and `ItemDraft.notes` (in), `set_variable_value` (in, **added in M4**) |
 | 3 | The raw vault key | Rust → app | `VaultSession::export_vault_key_for_platform_wrapping` |
 | 4 | The unwrapped vault key | app → Rust | `VaultSession::unlock_with_vault_key` |
-| 5 | A generated password, or a one-time code and the `otpauth://` URI it comes from | both | `generate_password` (out), `VaultSession::totp_code` / `item_totp_code` / `totp_preview` (out), `totp_describe` / `totp_preview` / `totp_uri_from_parts` / `totp_uri_is_valid` (in), **added in M5** |
+| 5 | A generated password, or a one-time code and the `otpauth://` URI it comes from | both | `generate_password` (out), `TotpRelease::code_at` / `copy_shown_code_at` behind `release_totp` (out, **ADR-0038**, presence-gated — the only way a stored seed's code leaves; the ungated `totp_code` / `item_totp_code` were removed in phase 2), `totp_preview` (out, for a seed the user is typing and the vault does not hold yet), `totp_describe` / `totp_preview` / `totp_uri_from_parts` / `totp_uri_is_valid` (in), **added in M5** |
 
 **M6 added no sixth kind *here*.** The browser extension is a genuine new place a value crosses,
 but it crosses a **socket**, not this boundary — so it is enumerated in
@@ -70,12 +86,15 @@ What is *designed* is the granularity. There is:
 - **no** call that returns every value in an item;
 - **no** value on `FieldView`, the record the item list and detail pane are built from — a
   concealed field's `value` is `None` there, always, and the plaintext is a separate call;
-- **one** function, `reveal_field(item_id, field_id)`, returning one string.
+- **one** way out, `release_field(item_id, field_id, purpose)` — originally the ungated
+  `reveal_field(item_id, field_id)`, which ADR-0038 replaced — returning a release object bound
+  to one field, which yields one string.
 
-So a bug in the view layer can leak the field the user asked to see, and not the other nine. The
-edit sheet calls `reveal_field` once per concealed field precisely because it needs them all —
-that is a deliberate, visible cost rather than a convenient bulk accessor that would then be
-available to everything else.
+So a bug in the view layer can leak the field the user asked to see, and not the other nine.
+*(As amended by ADR-0038:)* the edit sheet no longer fetches every concealed field — it prefills
+nothing, and shows one field only when the person asks, through that field's own presence-gated
+release (`EditReveal`). Every value out is one field, one call, one fresh presence check; with no
+presence gate installed there is no way out at all.
 
 `FieldView.hasValue` is a boolean, not a length, matching
 [mcp-server.md](../mcp-server.md) §2.4: the mask in the UI is a fixed ten dots regardless of the
@@ -130,12 +149,14 @@ slot is (see also the `platform-opaque` AEAD marker in `crypto::wrap`).
 This is a genuinely new kind, and it points both ways.
 
 **Out.** `generate_password` returns a password the user just asked to be generated, and
-`totp_code` / `item_totp_code` / `totp_preview` return a six-to-eight digit code. There is no
+`TotpRelease::code_at` (for a stored seed, behind a presence check since ADR-0038 — it replaced the
+ungated `totp_code` / `item_totp_code`) and `totp_preview` (for a seed the setup sheet is still
+being given) return a six-to-eight digit code. There is no
 version of these features in which the value stays in Rust: a generator whose output cannot be
 shown, or a TOTP field whose code cannot be read, is not the feature. The core holds both as
 `Secret` right up to the boundary — `generator::Recipe::generate` and `Totp::code_at` both return
 `Secret`, not `String` — and the `expose_str()` call is at the FFI edge where it is greppable, the
-same discipline `reveal_field` follows.
+same discipline the field release follows.
 
 **In.** `totp_describe`, `totp_preview`, `totp_uri_from_parts` and `totp_uri_is_valid` take an
 `otpauth://` URI or a Base32 seed that the user pasted or typed. This is crossing 2's shape — one
@@ -144,10 +165,10 @@ exists because ui-spec.md §9 requires a live preview *before* the field is comm
 the code has to be derivable from something the vault does not hold yet.
 
 The granularity rules from crossing 2 hold. There is no call that returns codes for several
-fields; every call that returns a code names one item and one field, or one item and takes the
-first (`item_totp_code`, which the list's hover action and Quick Access's ⌥⏎ need because they know
-a row, not a field); and `FieldView` still carries no value for a TOTP field, so a rendered field
-list contains no seeds. `TotpCodeView` carries the code, the seconds remaining and the parameters
+fields; every release that yields a code names one item and one field, or one item and takes the
+first (`release_totp` with no field named, which the list's hover action and Quick Access's ⌥⏎
+need because they know a row, not a field); and `FieldView` still carries no value for a TOTP
+field, so a rendered field list contains no seeds. `TotpCodeView` carries the code, the seconds remaining and the parameters
 — it does **not** carry the seed.
 
 Why the code is `Secret` in the core at all, when it expires in thirty seconds: because anyone
@@ -198,8 +219,9 @@ stdout.
 - The M5 additions did not need a new *kind* of argument or a new escape hatch in the core: they
   reuse `Secret` and `expose_str`, and the new modules are behind the same feature flag as the
   vault. A crate that may not hold plaintext still cannot.
-- `reveal_field`'s granularity is the FFI-level echo of `Secret::expose`'s greppability
-  (ADR-0005): both are the narrow, loudly-named hole in an otherwise closed surface.
+- The field release's granularity (`reveal_field`'s, before ADR-0038) is the FFI-level echo of
+  `Secret::expose`'s greppability (ADR-0005): both are the narrow, loudly-named hole in an
+  otherwise closed surface.
 - The Windows port inherits the shape. `KeyCredentialManager` has the same constraint, so
   crossings 3 and 4 will exist there too, with the same justification already written down.
 
@@ -208,7 +230,8 @@ stdout.
 - **Swift-heap plaintext is not zeroizable.** Passwords and revealed values linger in Swift
   `String`s until the allocator reuses the memory. `Data` buffers we can and do wipe; `String`s we
   cannot. Documented, minimized (the app holds a revealed value only while its row is on screen
-  and drops it when the selection changes), not eliminated.
+  and drops it when the selection changes, the vault locks or five minutes pass — ADR-0038), not
+  eliminated.
 - **Crossings 3 and 4 mean the vault key is in Swift memory, briefly, twice.** For the length of
   one function call, in a `Data` that is explicitly wiped. Against an attacker who can read the
   app's memory at that moment (threat-model T-3 and worse), this changes nothing that was not
@@ -240,3 +263,28 @@ why even imported password history crosses as a count and nothing else.
 
 **M8 added no sixth kind.** The plan never leaves Rust, and the report it hands back is
 values-free by construction, not by convention.
+
+## Pointer 2026-09-27 — the machine vault key, for the Keychain
+
+[ADR-0042](0042-unattended-agent-access.md) implementation decisions 1 and 5 (accepted for macOS)
+add one crossing, when the app side is built (ADR-0042 Phase 3): on arming, the machine vault's
+key — `MachineVaultKey::to_keychain_bytes`, 48 bytes in a zeroizing buffer — crosses to Swift to be
+stored in the login Keychain, and at launch the same bytes cross back so the app can re-arm. It is
+the same kind of crossing as the platform slot's vault key. In the FFI since ADR-0042 Phase 2:
+`unattended_arm` returns the bytes and `unattended_resume` takes them back, and since Phase 3
+the app keeps them in the login Keychain (`KeychainArmKeyStore`), wiping its own copy after each
+call.
+
+## Pointer 2026-09-27 — a shared vault's invitation words
+
+[ADR-0035](0035-shared-vaults.md) decision 86 adds one crossing, both ways: the six words that
+open a shared-vault invitation. They come **out** once, in `SharedInvitation.passphrase`, from
+`SharedVaultSession::invite_member` and `invite_device`, for the admin to say or send another way
+than the file; and they go **in** at `VaultSession::join_shared_vault`, typed by the person
+joining. Anyone holding the file and the words can join as the invited device, so they are
+treated like a generated password (crossing 5): shown in the invite sheet only, never logged,
+never in a `Debug` output (`SharedInvitation`'s leaves them out), and dropped with the sheet. On
+the way in, Rust holds them in a zeroizing buffer and stretches them with Argon2id without
+holding the personal vault (`kagisecure_shared::admin::enroll::open_invitation`). The invitation
+file (`.kagisecure-invite`) is written and read by path; its bytes never cross. See the
+`kagisecure-ffi/src/shared.rs` module documentation.

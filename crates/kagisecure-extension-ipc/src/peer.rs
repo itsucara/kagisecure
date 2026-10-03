@@ -186,29 +186,69 @@ pub fn known_browser_for(executable: &str) -> Option<KnownBrowser> {
         ("brave-browser", KnownBrowser::Brave),
         ("chromium-browser", KnownBrowser::Chromium),
         ("chromium", KnownBrowser::Chromium),
+        // Windows. `QueryFullProcessImageNameW` returns a path like
+        // `C:\Program Files\Google\Chrome\Application\chrome.exe`, so it is the leaf that is
+        // matched here, exactly as on the other two platforms. Chrome for Testing ships as
+        // `chrome.exe` as well and is therefore reported as Chrome rather than Chromium; the
+        // distinction only ever affected which name the approval sheet prints.
+        ("chrome.exe", KnownBrowser::Chrome),
+        ("msedge.exe", KnownBrowser::Edge),
+        ("brave.exe", KnownBrowser::Brave),
+        ("chromium.exe", KnownBrowser::Chromium),
+        ("Arc.exe", KnownBrowser::Arc),
     ];
     let name = Path::new(executable).file_name()?.to_str()?;
     // Exact file-name match only. A *prefix* match would accept `Google Chrome Helper (Renderer)`
     // and `Google Chrome Framework`, neither of which launches a native messaging host, and a
     // *substring* match would accept `/tmp/Not Google Chrome At All`.
+    //
+    // "Exact" means case-insensitively on Windows, where `CHROME.EXE` and `chrome.exe` name the
+    // same file on disk and a case-sensitive comparison would refuse a genuine browser for a
+    // difference the filesystem does not recognise. That is not a loosening: this function is a
+    // *name* check and says so — it is not, and never was, evidence that the program is genuine.
+    // Unix keeps byte-exact matching, where two spellings really are two different files.
     TABLE
         .iter()
-        .find(|(needle, _)| name == *needle)
+        .find(|(needle, _)| {
+            if cfg!(windows) {
+                name.eq_ignore_ascii_case(needle)
+            } else {
+                name == *needle
+            }
+        })
         .map(|(_, browser)| *browser)
 }
 
 /// The parent process id of `pid`, or `None` if it cannot be determined.
 ///
-/// Implemented with `/bin/ps` rather than with `sysctl(KERN_PROC_PID)` so that this crate stays
-/// free of `unsafe` — the one FFI module in the workspace's IPC layer is
-/// `kagisecure_ipc::kernel_peer`, and adding a second one for a fact that `ps` reports accurately
-/// would be a poor trade. The cost is one short-lived process per approval, on a path that is
-/// already going to show a human a dialog.
+/// On Unix this is `/bin/ps` rather than `sysctl(KERN_PROC_PID)` so that this crate stays free of
+/// `unsafe` — the one FFI module in the workspace's IPC layer is `kagisecure_ipc::kernel_peer`,
+/// and adding a second one for a fact that `ps` reports accurately would be a poor trade. The
+/// cost is one short-lived process per approval, on a path that is already going to show a human
+/// a dialog.
+///
+/// Windows has no `ps`, and parsing `wmic`/PowerShell output would put a shell on the very path
+/// that gates browser-extension trust, so it delegates to
+/// `kagisecure_ipc::kernel_peer::parent_pid` — the existing FFI module, rather than a second one
+/// here. (That item is itself `#[cfg(windows)]`-only, so a doc build for any other target cannot
+/// link to it — hence the plain code span rather than a real intra-doc link here.)
+///
+/// # TODO(windows): pid reuse
+///
+/// Neither implementation pins the answer to a *particular* process: a parent that exited before
+/// the caller resolves the pid may by then be a different program wearing the same number.
+/// Windows makes this easier to hit than Unix does, because it keeps no zombie entry to hold the
+/// pid open. Closing it on Windows means recording the ancestor's creation time with
+/// `GetProcessTimes` (`Win32::System::Threading`) at snapshot time and re-checking it after the
+/// image path is resolved, refusing the hop when the two disagree. This is a Windows-session job:
+/// it needs a real process tree to test against, and it should land together with an equivalent
+/// on the macOS side (`KERN_PROC_PID`'s `p_starttime`) rather than leaving the two platforms with
+/// different ancestry guarantees.
 #[must_use]
 pub fn parent_pid(pid: u32) -> Option<u32> {
     #[cfg(unix)]
     {
-        let out = std::process::Command::new("/bin/ps")
+        let out = ps_command()?
             .args(["-o", "ppid=", "-p"])
             .arg(pid.to_string())
             .output()
@@ -217,11 +257,29 @@ pub fn parent_pid(pid: u32) -> Option<u32> {
         let parsed: u32 = text.trim().parse().ok()?;
         if parsed == 0 { None } else { Some(parsed) }
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        kagisecure_ipc::kernel_peer::parent_pid(pid)
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         let _ = pid;
         None
     }
+}
+
+/// Absolute locations `ps` is known to live at, tried in order, rather than a `PATH` lookup:
+/// this backs the process-ancestry check that gates browser-extension trust, and an
+/// attacker-influenced `PATH` could otherwise redirect it to a binary of the attacker's
+/// choosing, whereas these absolute paths cannot be. `/bin/ps` — correct on macOS and Linux,
+/// the only platforms this is exercised on today — stays first so behavior there is unchanged;
+/// `/usr/bin/ps` and `/system/bin/ps` cover the BSDs and Android.
+#[cfg(unix)]
+fn ps_command() -> Option<std::process::Command> {
+    ["/bin/ps", "/usr/bin/ps", "/system/bin/ps"]
+        .into_iter()
+        .find(|path| std::path::Path::new(path).exists())
+        .map(std::process::Command::new)
 }
 
 /// What the app established about the process on the other end of the extension socket.
@@ -363,19 +421,20 @@ impl HostIdentity {
             // process on the socket, so the line names what is actually established rather than
             // implying a second process was inspected.
             (Some(browser), Some(_)) if self.app_extension => lines.push(format!(
-                "Launched by: {} (extension {SAFARI_EXTENSION_BUNDLE_ID}, pid {})",
+                "Launched by: {} (extension {SAFARI_EXTENSION_BUNDLE_ID}, pid {}) — signature not \
+                 checked here",
                 browser.display_name(),
                 self.pid.map_or_else(|| "?".to_owned(), |p| p.to_string())
             )),
             (Some(browser), Some(path)) => lines.push(format!(
-                "Launched by: {} — {} (pid {})",
+                "Launched by: {} — {} (pid {}) — signature not checked here",
                 browser.display_name(),
                 path,
                 self.browser_pid
                     .map_or_else(|| "?".to_owned(), |p| p.to_string())
             )),
             _ => lines.push(format!(
-                "Launched by: {} — not a recognized browser",
+                "Launched by: {} — not a recognized browser, signature not checked here",
                 self.parent_executable
                     .as_deref()
                     .unwrap_or("unknown parent")
@@ -416,6 +475,52 @@ mod tests {
         );
         assert_eq!(
             known_browser_for("/usr/bin/google-chrome-stable"),
+            Some(KnownBrowser::Chrome)
+        );
+    }
+
+    /// The Windows leaf names, asserted on every platform so that a table edit made on a Mac
+    /// cannot quietly break the ancestry gate on Windows — where a browser that is not
+    /// recognized means every extension fill is refused, and the only symptom is a sheet that
+    /// never appears.
+    ///
+    /// Forward slashes rather than `\`, so that `Path::file_name` finds the leaf when this test
+    /// runs on a Unix host too; a real Windows path is exercised by the case below.
+    #[test]
+    fn the_windows_executable_names_are_recognized() {
+        for (path, expected) in [
+            (
+                "C:/Program Files/Google/Chrome/Application/chrome.exe",
+                KnownBrowser::Chrome,
+            ),
+            (
+                "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+                KnownBrowser::Edge,
+            ),
+            (
+                "C:/Program Files/BraveSoftware/Brave-Browser/Application/brave.exe",
+                KnownBrowser::Brave,
+            ),
+            ("C:/Users/x/AppData/Local/Arc/Arc.exe", KnownBrowser::Arc),
+            ("chromium.exe", KnownBrowser::Chromium),
+        ] {
+            assert_eq!(known_browser_for(path), Some(expected), "{path}");
+        }
+        assert_eq!(
+            known_browser_for("C:/Program Files/Google/Chrome/Application/chrome_proxy.exe"),
+            None,
+            "a neighbouring executable in the same directory is not the browser"
+        );
+    }
+
+    /// Backslash separators and mixed case, which is what `QueryFullProcessImageNameW` actually
+    /// hands back. Windows-only because `Path` on Unix does not treat `\` as a separator, so the
+    /// leaf would come out as the whole string.
+    #[cfg(windows)]
+    #[test]
+    fn a_native_windows_path_is_recognized_whatever_its_case() {
+        assert_eq!(
+            known_browser_for(r"C:\Program Files\Google\Chrome\Application\CHROME.EXE"),
             Some(KnownBrowser::Chrome)
         );
     }

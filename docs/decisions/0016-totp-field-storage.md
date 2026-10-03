@@ -6,6 +6,15 @@
 - **Refines:** [vault-format.md](../vault-format.md) §5, §5.3,
   [ADR-0002](0002-no-secret-values-over-mcp.md)
 
+> **Amended by [ADR-0038](0038-app-release-needs-presence.md) (implemented, 2026-09-25):**
+> `reveal_field` was replaced by a presence-gated `release_field`, and `totp_code` /
+> `item_totp_code` by a presence-gated `release_totp` (`code_at(at)`, the item's first one-time
+> password when no field is named); the ungated calls are gone. In the app a stored code is
+> **masked until touched**, then live for at most five minutes (ADR-0038 user decision 2), and a
+> copy of a masked code is its own presence-gated release. The URI-vs-code distinction this ADR
+> describes, including the Consequences caveat that releasing a TOTP *field* returns the URI and
+> not a code, is otherwise unchanged.
+
 ## Context
 
 [vault-format.md](../vault-format.md) §5 sketches a `FieldValue` with a dedicated variant:
@@ -89,7 +98,9 @@ compiles the `totp` module only under the `secret-material` feature, which `kagi
 - **`reveal_field` on a TOTP field returns the URI, not a code.** That is correct — edit mode needs
   the URI, and `totp_code` is the call that returns a code — but it is a surprise if you expect
   "reveal shows what the detail pane shows". The FFI documents it; the app never calls it for a
-  TOTP field except when opening the setup sheet.
+  TOTP field except when opening the setup sheet. *(Since ADR-0038 the same holds for
+  `release_field` versus `release_totp`: the app releases a TOTP field's URI only for the setup
+  sheet's "Show current setup", purpose `EditReveal`, and never prefills it.)*
 - **The parse happens on every render.** Once a second, per visible field. Measured against the
   HMAC it is noise; if it ever were not, the fix is a cache in `VaultSession`, not a schema change.
 

@@ -27,7 +27,7 @@ struct LeasesView: View {
                 ext.revokeAll()
             }
             .disabled(agent.leases.isEmpty && ext.fillLeases.isEmpty)
-            .help("Drop every lease, shred every file they wrote, and make the next browser fill ask again")
+            .help("Drop every lease, shred every file they wrote, and make the next browser fill show the full approval sheet again")
             .accessibilityIdentifier("ks.leases.revokeAll")
         }
     }
@@ -36,8 +36,8 @@ struct LeasesView: View {
     ///
     /// A separate table rather than extra columns on the one above, because a fill lease is a
     /// different thing: it is scoped to an origin and an item, it has no use counter, and what it
-    /// grants is "no second fingerprint", not "an injection may happen". Merging them would need
-    /// four columns that are empty half the time.
+    /// grants is "no second sheet" — every fill still asks for Touch ID (ADR-0037) — not "an
+    /// injection may happen". Merging them would need four columns that are empty half the time.
     private var fillLeases: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("Browser fills")
@@ -92,7 +92,7 @@ struct LeasesView: View {
 
     private func remainingFill(_ lease: FillLeaseView) -> String {
         let seconds = Double(lease.expiresAt) - agent.now.timeIntervalSince1970
-        if seconds <= 0 { return "expired" }
+        if seconds <= 0 { return String(localized: "expired") }
         return ApprovalSheet.duration(UInt64(seconds))
     }
 
@@ -106,11 +106,9 @@ struct LeasesView: View {
             if agent.leases.isEmpty && ext.fillLeases.isEmpty {
                 EmptyStateView(
                     symbol: "clock.badge.checkmark",
-                    title: "No active leases",
+                    title: String(localized: "No active leases"),
                     message:
-                        "A lease is minted when you approve an injection or a browser fill, and "
-                        + "dies on expiry, use exhaustion, or when the vault locks. Nothing is "
-                        + "granted right now.")
+                        String(localized: "A lease is minted when you approve an injection or a browser fill, and dies on expiry, use exhaustion, or when the vault locks. Nothing is granted right now."))
                     .accessibilityIdentifier("ks.leases.empty")
             } else if !agent.leases.isEmpty {
                 // As in the fill-lease table below: one identifier per column, shared by every
@@ -121,7 +119,7 @@ struct LeasesView: View {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(caller(lease))
                                 .lineLimit(1)
-                            Text(lease.kind == "env-file" ? ".env file" : "command")
+                            (lease.kind == "env-file" ? Text(".env file") : Text("command"))
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -175,7 +173,7 @@ struct LeasesView: View {
 
     private func remaining(_ lease: LeaseView) -> String {
         let seconds = Double(lease.expiresAt) - agent.now.timeIntervalSince1970
-        if seconds <= 0 { return "expired" }
+        if seconds <= 0 { return String(localized: "expired") }
         return ApprovalSheet.duration(UInt64(seconds))
     }
 

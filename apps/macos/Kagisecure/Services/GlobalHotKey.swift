@@ -36,9 +36,9 @@ final class GlobalHotKey {
         var description: String {
             switch self {
             case .alreadyRegistered:
-                "another app already uses this shortcut"
+                String(localized: "another app already uses this shortcut")
             case .osStatus(let status):
-                "the system refused to register it (error \(status))"
+                String(localized: "the system refused to register it (error \(Int(status)))")
             }
         }
     }

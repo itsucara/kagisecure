@@ -22,6 +22,81 @@ pub enum Error {
     #[error("a vault already exists at {0}")]
     VaultExists(PathBuf),
 
+    /// Another writer held the vault's lock file for longer than this caller was willing to wait
+    /// (`vault::lock`). Nothing was written; retrying later is safe.
+    #[error(
+        "another kagisecure process is writing to the vault at {path}; gave up waiting after {waited:?}"
+    )]
+    VaultBusy {
+        /// The vault, not its lock file: the path a user recognises.
+        path: PathBuf,
+        /// The timeout that ran out.
+        waited: std::time::Duration,
+    },
+
+    /// The file system holding the vault does not support file locks (`ENOTSUP`, `ENOLCK`).
+    ///
+    /// Writes are refused rather than attempted unlocked, because an unlocked write is exactly
+    /// the silent lost update the lock exists to prevent. Reading still works.
+    #[error(
+        "the file system holding {0} does not support file locks, so kagisecure will not write to it"
+    )]
+    LockUnsupported(PathBuf),
+
+    /// The vault's lock file was renamed or deleted while this process held it, so another
+    /// process may have taken a lock of its own. Nothing was written.
+    #[error("the lock file for {0} was moved or deleted while in use; nothing was written")]
+    LockLost(PathBuf),
+
+    /// The vault file changed on disk after this session last read or wrote it, and the write
+    /// that noticed cannot merge (the non-transactional `Vault::save`). Nothing was written.
+    #[error(
+        "the vault at {0} was changed by another process since this session last read it; nothing was written"
+    )]
+    VaultConflict(PathBuf),
+
+    /// The vault file on disk no longer continues the audit log this session saw on disk — it is
+    /// shorter, or its entries differ — which is what restoring an older copy looks like.
+    /// Nothing was written, so the file stays exactly as found.
+    #[error(
+        "the vault at {0} does not continue this session's audit log (was an older copy restored?); nothing was written"
+    )]
+    VaultDiverged(PathBuf),
+
+    /// The file at the vault's path is no longer the vault this session unlocked: a different
+    /// `vault_id`, or a body the session's vault key does not open. Nothing was written.
+    #[error("the file at {0} is no longer the vault this session unlocked; nothing was written")]
+    VaultReplaced(PathBuf),
+
+    /// `Vault::overwrite_with_this_session` was asked to overwrite a file that this session can
+    /// build on again: it is the version the session last read or wrote, or one that continues
+    /// it. There is nothing to overwrite; an ordinary transaction merges with it instead. Nothing
+    /// was written.
+    #[error(
+        "the vault at {0} continues this session again, so there is nothing to overwrite; nothing was written"
+    )]
+    VaultNotInConflict(PathBuf),
+
+    /// A write (`save`, `transact`, `refresh_if_changed`) was started from inside a transaction
+    /// on the same vault. A transaction commits once, when its closure returns.
+    #[error("a vault write was started from inside a transaction on the same vault")]
+    NestedTransaction,
+
+    /// A transaction's closure declined to commit, for a reason its caller holds separately (the
+    /// closure's own error type is not this one). Returning it from the closure rolls the
+    /// transaction back like any other error; nothing was written.
+    #[error("the transaction was abandoned by its caller; nothing was written")]
+    TransactionAborted,
+
+    /// The vault file is larger than this build will read or write.
+    #[error("the vault file at {path} is larger than the {max} bytes this build accepts")]
+    VaultTooLarge {
+        /// The vault.
+        path: PathBuf,
+        /// The limit, in bytes.
+        max: u64,
+    },
+
     /// The file does not start with the kagisecure magic bytes.
     #[error("not a kagisecure vault file")]
     BadMagic,
@@ -32,6 +107,24 @@ pub enum Error {
         /// Version read from the file.
         found: u16,
         /// Highest version this build can read.
+        supported: u16,
+    },
+
+    /// `body.schema` or `header.v` is newer than the version this build writes.
+    ///
+    /// Opening still succeeds — unknown fields survive via passthrough (vault-format §9 rule 1) —
+    /// but this build refuses to write the vault back, because a schema bump (unlike an additive
+    /// field) may mean a structural change this build cannot faithfully reproduce. Upgrading
+    /// kagisecure, not editing the vault, is the fix.
+    #[error(
+        "this vault's {field} is {found}, newer than the {supported} this build writes; upgrade kagisecure before saving to it"
+    )]
+    VaultSchemaTooNew {
+        /// Which schema field is too new: `"body.schema"` or `"header.v"`.
+        field: &'static str,
+        /// The version found in the file.
+        found: u16,
+        /// The highest version this build writes.
         supported: u16,
     },
 
@@ -131,6 +224,14 @@ pub enum Error {
     #[error("{0:?} has no value yet; set it with `kagisecure env add-var`")]
     VarNotPopulated(String),
 
+    /// A variable name is not `^[A-Za-z_][A-Za-z0-9_]*$` (at most 128 bytes), so it cannot be
+    /// written into a `.env` file or a process environment without becoming something else.
+    #[error(
+        "{0:?} is not a usable variable name: use letters, digits and underscores, not starting \
+         with a digit, at most 128 characters"
+    )]
+    InvalidVarName(String),
+
     /// The audit log's hash chain does not verify.
     #[error("the audit log is not intact: {0}")]
     AuditChain(#[from] crate::audit::ChainError),
@@ -157,6 +258,23 @@ pub enum Error {
     #[error("this one-time password is not usable: {0}")]
     Totp(&'static str),
 
+    /// A shared-vault device key was refused: the wrong suite or key length, an over-long label,
+    /// or an id the vault already holds (ADR-0035 §5).
+    ///
+    /// `&'static str` for the same reason as [`Error::Generator`]: the input is key material.
+    #[error("device key refused: {0}")]
+    DeviceKey(&'static str),
+
+    /// A machine vault, its key, or one of its records broke a rule of ADR-0042 §2: a website
+    /// that is not an exact https origin on a Login item, a one-time-password seed bound to a
+    /// variable, a reference out of the machine vault, a job or grant out of bounds, or a key
+    /// that does not belong to the file.
+    ///
+    /// `&'static str` for the same reason as [`Error::Generator`]: nothing the caller supplied is
+    /// echoed.
+    #[error("machine vault: {0}")]
+    MachineVault(&'static str),
+
     /// A child process could not be started.
     #[error("could not run {program:?}: {reason}")]
     Spawn {
@@ -165,4 +283,169 @@ pub enum Error {
         /// The OS error, rendered.
         reason: String,
     },
+}
+
+#[cfg(feature = "test-support")]
+impl Error {
+    /// One placeholder instance of every variant, named, so a downstream crate can test that it
+    /// maps every variant of this `#[non_exhaustive]` enum on purpose.
+    ///
+    /// `#[non_exhaustive]` only stops a `match` *outside* this crate from being exhaustive; inside
+    /// it, ordinary exhaustiveness checking still applies. The private `assert_every_variant`
+    /// below has no wildcard arm, so this function fails to compile the moment a variant is added
+    /// without also being taught to it — which is what keeps the list honest. It does not, by
+    /// itself, guarantee the list below was extended too: that still takes a human noticing the
+    /// compile error and adding a sample a few lines up in the same function. What it does
+    /// guarantee is that nobody can add a variant and have this function silently keep compiling
+    /// as if nothing changed.
+    ///
+    /// Gated behind the `test-support` feature so none of this — not even the strings — ships in
+    /// a release binary; `kagisecure-cli` enables it only in `[dev-dependencies]`.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn all_variants_for_test() -> Vec<(&'static str, Error)> {
+        let p = || std::path::PathBuf::from("/test");
+        let s = || String::new();
+        let all: Vec<(&'static str, Error)> = vec![
+            ("VaultNotFound", Error::VaultNotFound(p())),
+            ("VaultExists", Error::VaultExists(p())),
+            (
+                "VaultBusy",
+                Error::VaultBusy {
+                    path: p(),
+                    waited: std::time::Duration::from_secs(1),
+                },
+            ),
+            ("LockUnsupported", Error::LockUnsupported(p())),
+            ("LockLost", Error::LockLost(p())),
+            ("VaultConflict", Error::VaultConflict(p())),
+            ("VaultDiverged", Error::VaultDiverged(p())),
+            ("VaultReplaced", Error::VaultReplaced(p())),
+            ("VaultNotInConflict", Error::VaultNotInConflict(p())),
+            ("NestedTransaction", Error::NestedTransaction),
+            ("TransactionAborted", Error::TransactionAborted),
+            ("VaultTooLarge", Error::VaultTooLarge { path: p(), max: 1 }),
+            ("BadMagic", Error::BadMagic),
+            (
+                "UnsupportedFormatVersion",
+                Error::UnsupportedFormatVersion {
+                    found: 99,
+                    supported: 1,
+                },
+            ),
+            (
+                "VaultSchemaTooNew",
+                Error::VaultSchemaTooNew {
+                    field: "body.schema",
+                    found: 2,
+                    supported: 1,
+                },
+            ),
+            ("Malformed", Error::Malformed),
+            ("HeaderDecode", Error::HeaderDecode(s())),
+            ("BodyDecode", Error::BodyDecode(s())),
+            ("Decrypt", Error::Decrypt),
+            ("NoSuchSlot", Error::NoSuchSlot("test")),
+            (
+                "Unsupported",
+                Error::Unsupported {
+                    what: "test",
+                    value: s(),
+                },
+            ),
+            ("KdfParams", Error::KdfParams(s())),
+            ("KdfFailed", Error::KdfFailed(1)),
+            ("BadRecoveryCode", Error::BadRecoveryCode),
+            ("ItemNotFound", Error::ItemNotFound(s())),
+            ("AmbiguousItem", Error::AmbiguousItem(s())),
+            (
+                "FieldNotFound",
+                Error::FieldNotFound {
+                    item: s(),
+                    field: s(),
+                },
+            ),
+            ("NotASecret", Error::NotASecret(s())),
+            ("NonUtf8EnvValue", Error::NonUtf8EnvValue(s())),
+            ("InvalidEnvFileName", Error::InvalidEnvFileName(s())),
+            ("EnvFileExists", Error::EnvFileExists(p())),
+            ("InvalidPath", Error::InvalidPath(p())),
+            ("EnvNotFound", Error::EnvNotFound(s())),
+            ("AmbiguousEnv", Error::AmbiguousEnv(s())),
+            ("VarNotFound", Error::VarNotFound(s(), s())),
+            ("VarNotPopulated", Error::VarNotPopulated(s())),
+            ("InvalidVarName", Error::InvalidVarName(s())),
+            (
+                "AuditChain",
+                Error::AuditChain(crate::audit::ChainError::HeadMismatch),
+            ),
+            ("Io", Error::Io(std::io::Error::other("test"))),
+            ("Rng", Error::Rng),
+            ("Generator", Error::Generator("test")),
+            ("Totp", Error::Totp("test")),
+            ("DeviceKey", Error::DeviceKey("test")),
+            ("MachineVault", Error::MachineVault("test")),
+            (
+                "Spawn",
+                Error::Spawn {
+                    program: s(),
+                    reason: s(),
+                },
+            ),
+        ];
+
+        fn assert_every_variant(e: &Error) {
+            match e {
+                Error::VaultNotFound(_)
+                | Error::VaultExists(_)
+                | Error::VaultBusy { .. }
+                | Error::LockUnsupported(_)
+                | Error::LockLost(_)
+                | Error::VaultConflict(_)
+                | Error::VaultDiverged(_)
+                | Error::VaultReplaced(_)
+                | Error::VaultNotInConflict(_)
+                | Error::NestedTransaction
+                | Error::TransactionAborted
+                | Error::VaultTooLarge { .. }
+                | Error::BadMagic
+                | Error::UnsupportedFormatVersion { .. }
+                | Error::VaultSchemaTooNew { .. }
+                | Error::Malformed
+                | Error::HeaderDecode(_)
+                | Error::BodyDecode(_)
+                | Error::Decrypt
+                | Error::NoSuchSlot(_)
+                | Error::Unsupported { .. }
+                | Error::KdfParams(_)
+                | Error::KdfFailed(_)
+                | Error::BadRecoveryCode
+                | Error::ItemNotFound(_)
+                | Error::AmbiguousItem(_)
+                | Error::FieldNotFound { .. }
+                | Error::NotASecret(_)
+                | Error::NonUtf8EnvValue(_)
+                | Error::InvalidEnvFileName(_)
+                | Error::EnvFileExists(_)
+                | Error::InvalidPath(_)
+                | Error::EnvNotFound(_)
+                | Error::AmbiguousEnv(_)
+                | Error::VarNotFound(..)
+                | Error::VarNotPopulated(_)
+                | Error::InvalidVarName(_)
+                | Error::AuditChain(_)
+                | Error::Io(_)
+                | Error::Rng
+                | Error::Generator(_)
+                | Error::Totp(_)
+                | Error::DeviceKey(_)
+                | Error::MachineVault(_)
+                | Error::Spawn { .. } => {}
+            }
+        }
+        for (_, e) in &all {
+            assert_every_variant(e);
+        }
+        all
+    }
 }

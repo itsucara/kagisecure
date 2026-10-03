@@ -133,7 +133,12 @@ fn the_flags_the_overview_carries_all_survive() {
     assert_eq!(item.created_at, Some(1_000));
     assert_eq!(item.updated_at, Some(2_000));
     assert_eq!(item.tags, ["work", "finance", "imported:1password"]);
-    assert_eq!(item.notes.as_deref(), Some("line one\nline two"));
+    assert_eq!(
+        item.notes
+            .as_ref()
+            .map(kagisecure_core::model::SecretText::expose),
+        Some("line one\nline two")
+    );
     // `overview.url` first, then `overview.urls[]`, and the repeat is not repeated.
     assert_eq!(
         item.urls,

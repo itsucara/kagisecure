@@ -32,7 +32,18 @@ let package = Package(
                 // generated code is genuinely thread-agnostic — the Rust side is behind a mutex —
                 // so this target opts back out. Only this target: the app's own code keeps the
                 // MainActor default it wants.
-                .defaultIsolation(nil)
+                .defaultIsolation(nil),
+                // Swift 5 language mode, for this generated target only (ADR-0038). UniFFI 0.32's
+                // bridge for an async *foreign* trait — `PresenceGate`, which Swift implements
+                // and Rust awaits — starts a `Task` from a non-`Sendable` closure in
+                // `uniffiTraitInterfaceCallAsync{,WithError}`, which Swift 6's region-based
+                // isolation checking rejects as an error. The bridge is sound as written (the
+                // closure is handed off exactly once and nothing else touches it), and the
+                // generated file is checked in rather than edited (ADR-0009), so the target is
+                // compiled in the mode the generator was written for. The app's own code, and
+                // the gate the app will implement in phase 2, stay in Swift 6 mode with complete
+                // concurrency checking.
+                .swiftLanguageMode(.v5),
             ]
         )
     ]

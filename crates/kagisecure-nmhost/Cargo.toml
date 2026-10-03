@@ -18,3 +18,7 @@ path = "src/main.rs"
 # type a vault key could sit in. It is a pipe.
 kagisecure-extension-ipc = { path = "../kagisecure-extension-ipc", version = "0.1.0" }
 serde_json = "1"
+
+[dev-dependencies]
+# For the socket a stand-in app listens on in `tests/duplex.rs`.
+tempfile = "3"

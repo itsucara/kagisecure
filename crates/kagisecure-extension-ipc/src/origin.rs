@@ -273,6 +273,266 @@ pub fn item_match(
     }
 }
 
+/// Which of an item's saved websites covers `page`, under the one rule in [`origin_match`].
+///
+/// The saved website the approval sheet shows beside the page's origin (ADR-0036 §5), so the human
+/// can see *which* of their records the rule relied on — and, when its host is not the page's,
+/// that the page is a subdomain of it. `None` exactly when [`item_match`] refuses a top-frame fill
+/// of `page`: this is the same rule, answering a different question, not a second rule.
+///
+/// When several saved websites cover the page, one on the page's exact host is preferred, so the
+/// subdomain disclosure appears only when no saved website names the page's own host; otherwise
+/// the first in the item's order. Unparseable and non-http(s) entries are skipped, as
+/// [`item_match`] skips them.
+#[must_use]
+pub fn covering_website(saved_websites: &[String], page: &Origin) -> Option<Origin> {
+    let covering: Vec<Origin> = saved_websites
+        .iter()
+        .filter_map(|s| Origin::parse(s).ok())
+        .filter(|saved| origin_match(saved, page))
+        .collect();
+    covering
+        .iter()
+        .find(|saved| saved.host == page.host)
+        .cloned()
+        .or_else(|| covering.into_iter().next())
+}
+
+/// How the agent-fill approval sheet renders a page origin so that a look-alike is obvious
+/// (ADR-0036 §5).
+///
+/// The origin rule is what stops a look-alike — `examp1e.com` never covers `example.com` — so
+/// this is defence in depth for what the rule allows by design, and it hides nothing: the
+/// pieces concatenate back to exactly [`Origin::ascii_serialization`] (see [`Self::ascii`]), the
+/// string the rule compared and the audit log records.
+///
+/// * The host is split into the **registrable domain**, to be emphasized, and whatever precedes
+///   it, to be dimmed — because the rule accepts any subdomain of a saved site, and
+///   `user-content.example.com` is a subdomain an agent can be steered to. A host with no
+///   registrable domain (an IP literal, a single label, a public suffix) is emphasized whole.
+/// * When any label is punycode (`xn--`), the Unicode rendering the browser may show is given
+///   beside the ASCII form, with a mixed-script flag.
+/// * `http` is flagged as not encrypted.
+/// * A non-default port is always given; a default one never is, exactly as in the ASCII
+///   serialization.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentOriginRendering {
+    /// The scheme, `http` or `https`.
+    pub scheme: String,
+    /// The labels in front of the registrable domain, with their trailing dot — `login.` in
+    /// `login.example.com` — to be dimmed. Empty when there are none.
+    pub dimmed_prefix: String,
+    /// The registrable domain, to be emphasized; the whole host when there is none. ASCII, with
+    /// an IPv6 literal in brackets.
+    pub emphasized: String,
+    /// The port, when it is not the scheme's default.
+    pub port: Option<u16>,
+    /// The whole host with every `xn--` label decoded to Unicode, when at least one label is
+    /// punycode: what the address bar may show. Shown *beside* the ASCII form, never instead.
+    pub unicode_host: Option<String>,
+    /// Whether the Unicode host mixes scripts, or has a punycode label that does not decode.
+    ///
+    /// Deliberately conservative: set when the host's letters, taken together across every label,
+    /// come from more than one of Latin, Greek, Cyrillic, and "anything else" — so a Cyrillic
+    /// letter in a Latin label is flagged, and so is an all-Cyrillic label under a Latin
+    /// top-level domain, the whole-script homograph (`аррӏе.com`). Digits, hyphens and combining
+    /// marks belong to no script. Scripts other than those three are one class here: the check is
+    /// aimed at look-alikes of Latin names, not at telling, say, Han from Hiragana. A false alarm
+    /// costs a warning line on the sheet; a missed homograph costs the thing the sheet is for.
+    pub mixed_script: bool,
+    /// Whether the scheme is `http`: the value would travel unencrypted. The rule refuses a
+    /// scheme that differs from the saved one, so this appears only when the saved website is
+    /// itself `http`.
+    pub not_encrypted: bool,
+}
+
+impl AgentOriginRendering {
+    /// Render `origin`.
+    #[must_use]
+    pub fn of(origin: &Origin) -> Self {
+        let host = match &origin.host {
+            Host::Domain(d) => d.clone(),
+            Host::Ipv4(a) => a.to_string(),
+            Host::Ipv6(a) => format!("[{a}]"),
+        };
+        let (dimmed_prefix, emphasized) = match origin.registrable_domain() {
+            Some(registrable)
+                if host.len() > registrable.len()
+                    && host.ends_with(&registrable)
+                    && host[..host.len() - registrable.len()].ends_with('.') =>
+            {
+                let split = host.len() - registrable.len();
+                (host[..split].to_owned(), host[split..].to_owned())
+            }
+            // The host *is* its registrable domain, or has none, or is spelled in a way the
+            // split cannot line up with (a trailing dot): emphasize all of it rather than dim
+            // anything by guesswork.
+            _ => (String::new(), host.clone()),
+        };
+        let (unicode_host, mixed_script) = match &origin.host {
+            Host::Domain(d) if d.split('.').any(is_punycode_label) => {
+                let (unicode, all_decoded) = decode_labels(d);
+                let mixed = !all_decoded || mixes_scripts(&unicode);
+                (Some(unicode), mixed)
+            }
+            _ => (None, false),
+        };
+        let default = if origin.scheme == "https" { 443 } else { 80 };
+        Self {
+            scheme: origin.scheme.clone(),
+            dimmed_prefix,
+            emphasized,
+            port: (origin.port != default).then_some(origin.port),
+            unicode_host,
+            mixed_script,
+            not_encrypted: origin.scheme == "http",
+        }
+    }
+
+    /// The pieces put back together: `scheme://` + dimmed prefix + emphasized part + `:port`.
+    /// Always equal to the origin's [`Origin::ascii_serialization`].
+    #[must_use]
+    pub fn ascii(&self) -> String {
+        let mut out = format!(
+            "{}://{}{}",
+            self.scheme, self.dimmed_prefix, self.emphasized
+        );
+        if let Some(port) = self.port {
+            out.push(':');
+            out.push_str(&port.to_string());
+        }
+        out
+    }
+}
+
+/// Whether a host label is punycode.
+fn is_punycode_label(label: &str) -> bool {
+    label.len() > 4
+        && label
+            .get(..4)
+            .is_some_and(|p| p.eq_ignore_ascii_case("xn--"))
+}
+
+/// The host with each punycode label decoded, and whether every one of them decoded.
+///
+/// A label that does not decode is kept in its ASCII form rather than dropped, so the rendering
+/// never shows less than the host has.
+fn decode_labels(host: &str) -> (String, bool) {
+    let mut all_decoded = true;
+    let labels: Vec<String> = host
+        .split('.')
+        .map(|label| {
+            if is_punycode_label(label) {
+                idna::punycode::decode_to_string(&label[4..]).unwrap_or_else(|| {
+                    all_decoded = false;
+                    label.to_owned()
+                })
+            } else {
+                label.to_owned()
+            }
+        })
+        .collect();
+    (labels.join("."), all_decoded)
+}
+
+/// The script classes [`AgentOriginRendering::mixed_script`] tells apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Script {
+    Latin,
+    Greek,
+    Cyrillic,
+    Other,
+}
+
+/// Which script `c` belongs to, or `None` for a character that belongs to none.
+///
+/// By code-point block, written out rather than taken from a Unicode database so the check has
+/// no dependency of its own; the blocks are the ones the three named scripts' letters live in.
+fn script_of(c: char) -> Option<Script> {
+    if c.is_ascii_alphabetic() {
+        return Some(Script::Latin);
+    }
+    if c.is_ascii() {
+        // Digits, the hyphen, and anything else ASCII a host can hold.
+        return None;
+    }
+    Some(match u32::from(c) {
+        // Combining diacritical marks take the script of the letter they sit on.
+        0x0300..=0x036F | 0x1AB0..=0x1AFF | 0x1DC0..=0x1DFF | 0x20D0..=0x20FF | 0xFE20..=0xFE2F => {
+            return None;
+        }
+        // Latin-1 Supplement's letters (not its signs or ×/÷), Latin Extended-A/B, IPA
+        // Extensions, Latin Extended Additional, -C, -D, -E, and the fullwidth Latin letters.
+        0x00C0..=0x00D6
+        | 0x00D8..=0x00F6
+        | 0x00F8..=0x02AF
+        | 0x1E00..=0x1EFF
+        | 0x2C60..=0x2C7F
+        | 0xA720..=0xA7FF
+        | 0xAB30..=0xAB6F
+        | 0xFF21..=0xFF3A
+        | 0xFF41..=0xFF5A => Script::Latin,
+        0x0370..=0x03FF | 0x1F00..=0x1FFF => Script::Greek,
+        0x0400..=0x052F | 0x1C80..=0x1C8F | 0x2DE0..=0x2DFF | 0xA640..=0xA69F => Script::Cyrillic,
+        _ => Script::Other,
+    })
+}
+
+/// Whether the letters of `host` come from more than one script class.
+fn mixes_scripts(host: &str) -> bool {
+    let mut seen: Option<Script> = None;
+    for script in host.chars().filter_map(script_of) {
+        match seen {
+            None => seen = Some(script),
+            Some(first) if first != script => return true,
+            Some(_) => {}
+        }
+    }
+    false
+}
+
+/// Whether a two-step agent fill that began at `first` may continue at `next` (ADR-0036 §7.3).
+///
+/// A transcription of `sameSite` in `extensions/shared/tabmemory.js`, the rule the extension
+/// already uses to carry an identifier-first choice from page one to page two, so the app and
+/// the browser half cannot disagree about which page two is the same sign-in. It is the same
+/// origin, or a subdomain of it: same scheme, and the rest of `next` either equal to the rest of
+/// `first` or ending in `.` followed by it. The port is part of "the rest", as there — so a
+/// subdomain on another port is not a continuation.
+///
+/// Stricter than [`origin_match`], on purpose: two siblings under one registrable domain
+/// (`accounts.example.com` then `login.example.com`) are not a continuation, although the item
+/// may cover both. The caller checks coverage separately; this answers only "is this still the
+/// sign-in that started at `first`".
+///
+/// Both arguments are expected to be origins as the browser serializes them, which is what
+/// [`Origin::ascii_serialization`] produces. Anything without a `scheme://` and a non-empty rest
+/// is never a continuation of anything, as in the JavaScript.
+#[must_use]
+pub fn continues_same_site(first: &str, next: &str) -> bool {
+    fn parts(origin: &str) -> Option<(&str, &str)> {
+        let marker = origin.find("://")?;
+        if marker == 0 {
+            return None;
+        }
+        let rest = &origin[marker + 3..];
+        if rest.is_empty() {
+            return None;
+        }
+        Some((&origin[..marker], rest))
+    }
+    let (Some((scheme_a, host_a)), Some((scheme_b, host_b))) = (parts(first), parts(next)) else {
+        return false;
+    };
+    if scheme_a != scheme_b {
+        return false;
+    }
+    if host_a == host_b {
+        return true;
+    }
+    host_b.ends_with(&format!(".{host_a}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -599,6 +859,301 @@ mod tests {
         let matched =
             item_match(&saved, "https://shop.test", Some("https://login.bank.test")).unwrap();
         assert_eq!(matched.ascii_serialization(), "https://login.bank.test");
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // covering_website: which saved website the rule relied on.
+    // ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn the_covering_website_is_the_saved_one_the_rule_relied_on() {
+        let saved = vec![
+            "not a url at all".to_owned(),
+            "https://other.test".to_owned(),
+            "https://example.com".to_owned(),
+        ];
+        let covering = covering_website(&saved, &o("https://login.example.com")).unwrap();
+        assert_eq!(covering.ascii_serialization(), "https://example.com");
+        assert_ne!(
+            covering.host(),
+            "login.example.com",
+            "the hosts differ, so the sheet says the page is a subdomain of it"
+        );
+        assert_eq!(covering_website(&saved, &o("https://evil.test")), None);
+        assert_eq!(covering_website(&[], &o("https://example.com")), None);
+    }
+
+    #[test]
+    fn a_saved_website_on_the_pages_own_host_is_preferred() {
+        let saved = vec![
+            "https://example.com".to_owned(),
+            "https://login.example.com/signin".to_owned(),
+        ];
+        assert_eq!(
+            covering_website(&saved, &o("https://login.example.com"))
+                .unwrap()
+                .ascii_serialization(),
+            "https://login.example.com"
+        );
+        // And with no exact host, the first in the item's order.
+        let saved = vec![
+            "https://www.example.com".to_owned(),
+            "https://example.com".to_owned(),
+        ];
+        assert_eq!(
+            covering_website(&saved, &o("https://login.example.com"))
+                .unwrap()
+                .ascii_serialization(),
+            "https://www.example.com"
+        );
+    }
+
+    #[test]
+    fn the_covering_website_agrees_with_item_match_on_every_page() {
+        // One rule, two questions: whatever `item_match` allows for a top frame, there is a
+        // covering website, and whatever it refuses, there is none.
+        let saved = vec![
+            "https://example.com".to_owned(),
+            "http://localhost:3000".to_owned(),
+            "https://alice.github.io".to_owned(),
+        ];
+        for page in [
+            "https://example.com",
+            "https://login.example.com",
+            "http://example.com",
+            "https://example.com:8443",
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "https://mallory.github.io",
+            "https://blog.alice.github.io",
+            "https://example.org",
+        ] {
+            assert_eq!(
+                covering_website(&saved, &o(page)).is_some(),
+                item_match(&saved, page, None).is_ok(),
+                "{page}"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // AgentOriginRendering: making a look-alike obvious on the agent-fill sheet.
+    // ---------------------------------------------------------------------------------------
+
+    fn render(s: &str) -> AgentOriginRendering {
+        AgentOriginRendering::of(&o(s))
+    }
+
+    #[test]
+    fn the_registrable_domain_is_split_out_for_emphasis() {
+        for (page, dimmed, emphasized) in [
+            ("https://login.example.com", "login.", "example.com"),
+            (
+                "https://user-content.example.com",
+                "user-content.",
+                "example.com",
+            ),
+            ("https://a.b.example.com", "a.b.", "example.com"),
+            ("https://example.com", "", "example.com"),
+            ("https://news.bbc.co.uk", "news.", "bbc.co.uk"),
+            // The Public Suffix List decides where the split goes, not "the last two labels".
+            ("https://alice.github.io", "", "alice.github.io"),
+            ("https://blog.alice.github.io", "blog.", "alice.github.io"),
+            // No registrable domain: the whole host is emphasized, nothing is dimmed.
+            ("https://github.io", "", "github.io"),
+            ("http://localhost:3000", "", "localhost"),
+            ("http://127.0.0.1:3000", "", "127.0.0.1"),
+            ("http://[::1]:3000", "", "[::1]"),
+        ] {
+            let rendering = render(page);
+            assert_eq!(rendering.dimmed_prefix, dimmed, "{page}");
+            assert_eq!(rendering.emphasized, emphasized, "{page}");
+            assert_eq!(
+                rendering.ascii(),
+                o(page).ascii_serialization(),
+                "the pieces hide nothing: {page}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_xn_label_gets_a_unicode_rendering_and_a_mixed_script_flag() {
+        // The literals below are non-ASCII on purpose: they are what the address bar would show,
+        // which is the thing under test. Each input is given in punycode.
+
+        // A Cyrillic "а" inside a Latin label: the classic mixed-script look-alike.
+        let mixed = render("https://xn--pypal-4ve.com");
+        assert_eq!(mixed.unicode_host.as_deref(), Some("pаypal.com"));
+        assert!(mixed.mixed_script);
+        assert_eq!(
+            mixed.emphasized, "xn--pypal-4ve.com",
+            "the ASCII form is what is emphasized"
+        );
+
+        // An all-Cyrillic label under a Latin top-level domain: the whole-script homograph.
+        let whole = render("https://login.xn--80ak6aa92e.com");
+        assert_eq!(whole.unicode_host.as_deref(), Some("login.аррӏе.com"));
+        assert!(whole.mixed_script);
+        assert_eq!(whole.dimmed_prefix, "login.");
+        assert_eq!(whole.emphasized, "xn--80ak6aa92e.com");
+
+        // A Latin letter with a diacritic is still Latin: rendered, not flagged.
+        let accented = render("https://xn--exmple-cua.com");
+        assert_eq!(accented.unicode_host.as_deref(), Some("exämple.com"));
+        assert!(!accented.mixed_script);
+
+        // One script throughout, whatever it is, is not mixed.
+        let greek = render("https://xn--hxajbheg2az3al.xn--jxalpdlp");
+        assert_eq!(greek.unicode_host.as_deref(), Some("παράδειγμα.δοκιμή"));
+        assert!(!greek.mixed_script);
+
+        // A host with no punycode label has no Unicode rendering and nothing to flag.
+        let plain = render("https://login.example.com");
+        assert_eq!(plain.unicode_host, None);
+        assert!(!plain.mixed_script);
+    }
+
+    #[test]
+    fn the_script_check_treats_digits_hyphens_and_marks_as_neutral() {
+        assert!(!mixes_scripts("login-2.example.com"));
+        assert!(
+            !mixes_scripts("e\u{0301}xample.com"),
+            "a combining accent is not a script"
+        );
+        assert!(mixes_scripts("pаypal.com"));
+        assert!(mixes_scripts("παypal.com"));
+        assert!(
+            mixes_scripts("בדיקה.com"),
+            "Latin with anything else is mixed"
+        );
+        assert!(
+            !mixes_scripts("בדיקה.טעסט"),
+            "the check is about Latin look-alikes"
+        );
+        assert!(mixes_scripts("аα"), "Greek with Cyrillic is mixed too");
+    }
+
+    #[test]
+    fn a_punycode_label_that_does_not_decode_is_flagged_not_trusted() {
+        // `url` refuses such a host before an `Origin` exists, so this is the helper's own
+        // contract: the label is kept verbatim, and the caller is told.
+        for bad in ["xn--99999999999999", "xn--a-!!"] {
+            let host = format!("login.{bad}.com");
+            let (unicode, all_decoded) = decode_labels(&host);
+            assert!(!all_decoded, "{bad}");
+            assert_eq!(unicode, host, "nothing dropped, nothing guessed");
+        }
+        let (unicode, all_decoded) = decode_labels("xn--pypal-4ve.com");
+        assert!(all_decoded);
+        assert_eq!(unicode, "pаypal.com");
+    }
+
+    #[test]
+    fn http_is_flagged_as_not_encrypted() {
+        assert!(render("http://example.com").not_encrypted);
+        assert!(render("http://localhost:3000").not_encrypted);
+        assert!(!render("https://example.com").not_encrypted);
+    }
+
+    #[test]
+    fn a_non_default_port_is_always_rendered() {
+        for (page, port) in [
+            ("https://example.com:8443", Some(8443)),
+            ("https://login.example.com:8443/signin", Some(8443)),
+            ("http://example.com:8080", Some(8080)),
+            // The other scheme's default is not this scheme's default.
+            ("https://example.com:80", Some(80)),
+            ("http://example.com:443", Some(443)),
+            ("http://[::1]:3000", Some(3000)),
+            ("https://example.com:443", None),
+            ("http://example.com:80", None),
+            ("https://example.com", None),
+        ] {
+            let rendering = render(page);
+            assert_eq!(rendering.port, port, "{page}");
+            let ascii = rendering.ascii();
+            match port {
+                Some(port) => assert!(ascii.ends_with(&format!(":{port}")), "{ascii}"),
+                None => assert_eq!(ascii.matches(':').count(), 1, "{ascii}"),
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // continues_same_site: the extension's `sameSite`, transcribed.
+    // ---------------------------------------------------------------------------------------
+
+    #[test]
+    fn same_site_continuation_matches_tabmemory_same_site() {
+        // Every row is a case `extensions/chrome/test/tabmemory.test.js` asserts of `sameSite`,
+        // directly or through `recall`, with the answer it asserts.
+        for (first, next, same) in [
+            // The same origin, and a subdomain of it: the case the feature exists for.
+            ("https://example.com", "https://example.com", true),
+            ("https://example.com", "https://login.example.com", true),
+            ("https://example.test", "https://login.example.test", true),
+            // A sibling subdomain: the app's rule would allow it; this one does not.
+            (
+                "https://accounts.example.com",
+                "https://login.example.com",
+                false,
+            ),
+            (
+                "https://login.example.test",
+                "https://evil.example.test",
+                false,
+            ),
+            // Two sites under a public suffix are strangers.
+            (
+                "https://alice.github.io",
+                "https://mallory.github.io",
+                false,
+            ),
+            // Not a subdomain, however it ends.
+            ("https://example.com", "https://notexample.com", false),
+            (
+                "https://example.com",
+                "https://example.com.evil.test",
+                false,
+            ),
+            // Scheme and port are part of the comparison.
+            ("https://example.com", "http://example.com", false),
+            ("http://example.test", "https://example.test", false),
+            ("http://example.com:8080", "http://example.com:8080", true),
+            ("http://example.com:8080", "http://example.com:9090", false),
+            ("https://example.test", "https://example.test:8443", false),
+            ("https://example.test:8443", "https://example.test", false),
+            (
+                "https://example.test",
+                "https://login.example.test:8443",
+                false,
+            ),
+            // Malformed input is never the same site as anything.
+            ("example.com", "https://example.com", false),
+            ("https://example.com", "null", false),
+            ("https://example.com", "", false),
+            ("", "", false),
+        ] {
+            assert_eq!(continues_same_site(first, next), same, "{first} -> {next}");
+        }
+    }
+
+    #[test]
+    fn a_continuation_needs_a_scheme_marker_and_something_after_it() {
+        // The edges of the JavaScript's string surgery: `indexOf("://") <= 0` and an empty rest.
+        assert!(!continues_same_site("://example.com", "://example.com"));
+        assert!(!continues_same_site("https://", "https://"));
+        assert!(continues_same_site("https://a", "https://b.a"));
+        // A subdomain of a subdomain is still a subdomain.
+        assert!(continues_same_site(
+            "https://example.com",
+            "https://a.b.example.com"
+        ));
+        // And the direction matters: going *up* from a subdomain is not a continuation.
+        assert!(!continues_same_site(
+            "https://login.example.com",
+            "https://example.com"
+        ));
     }
 
     #[test]

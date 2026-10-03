@@ -24,8 +24,9 @@ import os
 /// on every Mac, regenerated on reinstall — so there is nothing there to pin. The stable identity
 /// is this app extension's bundle identifier, which *this process* knows about itself and web
 /// content does not. So a `hello` arriving from the JavaScript side has its `extension_id` and
-/// `browser` replaced with facts rather than claims, before it is forwarded. Every other message
-/// is forwarded byte for byte.
+/// `browser` replaced with facts rather than claims, before it is forwarded, and its
+/// `capabilities` emptied: a Safari session never declares `agent_fill`, because the app has no
+/// connection to push on (ADR-0036 §12). Every other message is forwarded byte for byte.
 ///
 /// # What is logged
 ///
@@ -83,6 +84,9 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
             // The rewrite. See the type documentation for why.
             body["extension_id"] = Bundle.main.bundleIdentifier ?? ""
             body["browser"] = "safari"
+            // No capabilities, whatever the JavaScript side said: this transport opens one
+            // connection per message, so there is nothing the app could push to (ADR-0036 §12).
+            body["capabilities"] = [String]()
         }
 
         guard let group = Self.appGroup else {
@@ -138,6 +142,8 @@ final class SafariWebExtensionHandler: NSObject, NSExtensionRequestHandling {
                 "browser": "safari",
                 "extension_version": body["extension_version"] as? String ?? "0.1.0",
                 "protocol_version": 1,
+                // Declares nothing, for the same reason as the rewrite above.
+                "capabilities": [String](),
             ],
         ]
     }

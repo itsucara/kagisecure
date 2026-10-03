@@ -20,7 +20,7 @@ struct VaultStoreTests {
         let path = directory.appendingPathComponent("test.kagivault")
         let session = try VaultSession.create(
             path: path.path, masterPassword: "correct horse battery staple",
-            vaultName: "Personal", kdfMKib: 8, kdfT: 1)
+            vaultName: "Personal", kdfMKib: 64, kdfT: 1)
         return (session, path)
     }
 
@@ -46,7 +46,7 @@ struct VaultStoreTests {
         #expect(!item.agentVisible, "a new item is never visible to agents")
     }
 
-    @Test func roundTripsAConcealedFieldThroughSaveAndReveal() throws {
+    @Test func roundTripsAConcealedFieldThroughSaveAndReveal() async throws {
         let (session, path) = try Self.newVault()
         let store = VaultStore(session: session)
         try store.createItem(category: "login")
@@ -62,7 +62,8 @@ struct VaultStoreTests {
                         ? "sk_live_kagisecure_9f3a" : (field.label == "username" ? "deploy" : ""),
                     section: field.section, agentVisible: field.agentVisible)
             },
-            tags: ["prod"], urls: ["https://acme.example"], notes: "a note")
+            tags: ["prod"], urls: ["https://acme.example"], notes: "a note",
+            revision: item.revision)
         draft.title = "Acme production"
         try store.save(draft: draft)
 
@@ -76,17 +77,16 @@ struct VaultStoreTests {
         #expect(password.hasValue)
         #expect(password.value == nil, "a concealed value never rides along in the list")
         #expect(
-            try session.revealField(itemId: saved.id, fieldId: password.id)
+            try await releasedValue(session, itemId: saved.id, fieldId: password.id)
                 == "sk_live_kagisecure_9f3a")
 
         // And it survives a lock/unlock cycle, which is what "saved" has to mean.
         let reopened = try VaultSession.unlockWithPassword(
             path: path.path, masterPassword: "correct horse battery staple")
         let again = try #require(reopened.listItems(filter: .all, query: nil, sort: .title).first)
+        let againPassword = try #require(again.fields.first { $0.label == "password" })
         #expect(
-            try reopened.revealField(
-                itemId: again.id,
-                fieldId: try #require(again.fields.first { $0.label == "password" }).id)
+            try await releasedValue(reopened, itemId: again.id, fieldId: againPassword.id)
                 == "sk_live_kagisecure_9f3a")
     }
 
@@ -103,7 +103,8 @@ struct VaultStoreTests {
                         id: nil, label: "password", kind: .concealed, concealed: true,
                         value: "canary-marker-value", section: nil, agentVisible: false)
                 ],
-                tags: ["prod"], urls: ["https://acme.example"], notes: nil))
+                tags: ["prod"], urls: ["https://acme.example"], notes: nil,
+                revision: item.revision))
 
         store.query = "acme"
         #expect(store.items.count == 1)
@@ -150,8 +151,13 @@ struct VaultStoreTests {
         store.selection = .all
         #expect(store.items.map(\.id) == [database.id])
 
-        // And a permanent delete really removes it.
-        try store.deleteForever(database)
+        // A permanent delete is refused for an item that is not in the Trash…
+        #expect(throws: FfiError.self) { try store.deleteForever(database) }
+        // …and really removes one that is, as the Trash row shows it.
+        try store.setTrashed(database, true)
+        store.selection = .trash
+        let binned = try #require(store.items.first { $0.id == database.id })
+        try store.deleteForever(binned)
         store.selection = .all
         #expect(store.items.isEmpty)
     }

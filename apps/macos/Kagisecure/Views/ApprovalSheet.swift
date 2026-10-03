@@ -44,6 +44,7 @@ struct ApprovalSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     identity
+                    SharedSourceFacts(request: request)
                     if isFill {
                         fillTarget
                         if request.topOrigin != nil { frameWarning }
@@ -52,7 +53,6 @@ struct ApprovalSheet: View {
                     if !request.command.isEmpty { command }
                     location
                     if request.gitignored == false { gitWarning }
-                    if request.mintsLease || isFill { lease }
                     scopeSummary
                 }
                 .padding(20)
@@ -87,11 +87,9 @@ struct ApprovalSheet: View {
                     .font(.headline)
                     .fixedSize(horizontal: false, vertical: true)
                     .accessibilityIdentifier("ks.approval.sentence")
-                Text(
-                    isFill
-                        ? "The value goes to the browser only if you allow it, and only for this page."
-                        : "No secret value is shown to the caller either way."
-                )
+                (isFill
+                    ? Text("The value goes to the browser only if you allow it, and only for this page.")
+                    : Text("No secret value is shown to the caller either way."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -112,6 +110,7 @@ struct ApprovalSheet: View {
         case .createEnvironment: "folder.badge.plus"
         case .addVariables: "text.badge.plus"
         case .fillCredential: "key.horizontal"
+        case .agentFill: "person.badge.key"
         }
     }
 
@@ -125,105 +124,136 @@ struct ApprovalSheet: View {
     /// mistake in it — the wrong origin, the wrong item, an unquoted self-reported name — is the
     /// most consequential bug this file could have.
     static func sentence(for request: ApprovalRequestView) -> String {
-        let who = "“\(request.clientName)”"
+        let who = "“\(safe(request.clientName))”"
         switch request.action {
         case .writeEnvFile:
             let n = request.variables.count
-            return "\(who) wants to write \(n) variable\(n == 1 ? "" : "s") to a .env file"
+            return n == 1
+                ? String(localized: "\(who) wants to write \(n) variable to a .env file")
+                : String(localized: "\(who) wants to write \(n) variables to a .env file")
         case .runWithEnv:
-            return "\(who) wants to run \(request.command.joined(separator: " ")) with environment variables"
+            let cmd = safe(request.command.joined(separator: " "), limit: 80)
+            return String(localized: "\(who) wants to run \(cmd) with environment variables")
         case .createEnvironment:
-            return "\(who) wants to create the environment \(request.environmentName ?? "")"
+            let env = safe(request.environmentName ?? "")
+            return String(localized: "\(who) wants to create the environment \(env)")
         case .addVariables:
-            return "\(who) wants to add variables to \(request.environmentName ?? "an environment")"
+            let env = safe(request.environmentName ?? String(localized: "an environment"))
+            return String(localized: "\(who) wants to add variables to \(env)")
         case .fillCredential:
             // The browser name here is the app's own conclusion from the native host's process
             // ancestry, not a claim the extension made, so it is *not* quoted — the quotation
             // marks in this file mean "the caller said so".
-            let browser = request.browser ?? "A browser"
-            let what = request.fillFields.contains("one-time password")
-                ? "the one-time code for" : "the password for"
-            return "\(browser) wants \(what) “\(request.itemTitle ?? "an item")”"
+            let browser = request.browser ?? String(localized: "A browser")
+            let item = safe(request.itemTitle ?? String(localized: "an item"))
+            return request.fillFields.contains("one-time password")
+                ? String(localized: "\(browser) wants the one-time code for “\(item)”")
+                : String(localized: "\(browser) wants the password for “\(item)”")
+        case .agentFill:
+            // Its own sheet, and its own sentence, which leads with the site rather than the
+            // agent's name (ADR-0036 §9.2).
+            return AgentFillSheetView.sentence(for: request)
         }
+    }
+
+    // MARK: - Untrusted text
+
+    /// Quote characters an untrusted run could use to close — or forge — the sheet's own quoting.
+    ///
+    /// The sheet opens exactly one `“` and closes exactly one `”` around a self-reported name, and
+    /// that pair is what tells a human "the caller said so". A name of `” is verified by Apple — “`
+    /// otherwise reads as the app's own verification clause.
+    private static let quoteScalars: Set<Unicode.Scalar> = [
+        "\u{0022}", "\u{00AB}", "\u{00BB}", "\u{2018}", "\u{2019}", "\u{201A}", "\u{201B}",
+        "\u{201C}", "\u{201D}", "\u{201E}", "\u{201F}", "\u{2033}", "\u{2036}", "\u{2039}",
+        "\u{203A}", "\u{301D}", "\u{301E}", "\u{301F}", "\u{FF02}",
+    ]
+
+    /// How much of an untrusted run the sentence will carry before it is cut.
+    private static let untrustedRunLimit = 64
+
+    /// Sanitize one attacker-controlled run for display inside the app's own sentence.
+    ///
+    /// Four separate holes, all of them the same shape — the caller supplies the string and the
+    /// app supplies the frame around it:
+    ///
+    ///   * **quoting**: any quote glyph becomes `'`, so the caller cannot close our quotation and
+    ///     continue in the app's voice;
+    ///   * **direction**: Unicode format characters (the bidi overrides, embeds, isolates and
+    ///     marks, and the zero-width joiners) and surrogates/private-use scalars are dropped, so
+    ///     the run cannot reorder or hide the words around it;
+    ///   * **shape**: every control character, line/paragraph separator and whitespace run
+    ///     collapses to a single space, so the sentence stays one line;
+    ///   * **length**: bounded, with a visible `…`, so the verb can never be pushed out of view.
+    ///
+    /// A structural fix — rendering the untrusted run as its own `Text` — was the first choice and
+    /// was rejected: the sentence is also `AgentService.reason(for:)`'s neighbour, it is what the
+    /// UI tests and `#expect`s read as one string, and splitting it would leave a second,
+    /// unsanitized copy of the same text in the accessibility tree and the Touch ID prompt. One
+    /// sanitizer on the string, applied at every site that quotes untrusted text, is the boring
+    /// version and it covers all of them.
+    static func safe(_ raw: String, limit: Int = untrustedRunLimit) -> String {
+        var scalars = String.UnicodeScalarView()
+        var pendingSpace = false
+        for scalar in raw.unicodeScalars {
+            if quoteScalars.contains(scalar) {
+                if pendingSpace, !scalars.isEmpty { scalars.append(" ") }
+                pendingSpace = false
+                scalars.append("'")
+                continue
+            }
+            switch scalar.properties.generalCategory {
+            case .format, .surrogate, .privateUse:
+                // Invisible by construction: dropped outright rather than turned into a space.
+                continue
+            case .control, .lineSeparator, .paragraphSeparator:
+                pendingSpace = true
+                continue
+            default:
+                break
+            }
+            if scalar.properties.isWhitespace {
+                pendingSpace = true
+                continue
+            }
+            if pendingSpace, !scalars.isEmpty { scalars.append(" ") }
+            pendingSpace = false
+            scalars.append(scalar)
+        }
+        let collapsed = String(scalars)
+        if collapsed.isEmpty { return String(localized: "unnamed") }
+        guard collapsed.count > limit else { return collapsed }
+        return String(collapsed.prefix(limit - 1)) + "…"
     }
 
     // MARK: - Sections
 
     /// The two-process identity block a fill gets: the native host, and the browser above it.
-    ///
-    /// Two rows rather than one word, because on this build they genuinely differ: Chrome is
-    /// signed by Google and can be *verified*; a `cargo build` native host is ad-hoc and cannot.
-    /// Collapsing them would either claim a verification our own helper does not have, or discard
-    /// the one real fact on the sheet.
-    @ViewBuilder
+    /// Shared with the agent-fill sheet, which shows the browser exactly this way.
     private var fillIdentity: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            verdictRow(
-                "Browser", fillSignature?.browser,
-                fallback: "No recognized browser launched the helper.")
-                .accessibilityIdentifier("ks.approval.verdict.browser")
-            verdictRow("Helper", fillSignature?.host, fallback: "The helper could not be checked.")
-                .accessibilityIdentifier("ks.approval.verdict.helper")
-            if let extensionId = request.extensionId {
-                Text("Extension \(extensionId) — pinned in this app and in the browser's manifest.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier("ks.approval.extensionId")
-            }
-            if let exe = request.clientExecutable {
-                row("Helper process", "\(exe)  ·  pid \(request.clientPid.map(String.init) ?? "?")")
-                    .accessibilityIdentifier("ks.approval.helperProcess")
-            }
-            if let browserExe = request.browserExecutable {
-                row(
-                    "Browser process",
-                    "\(browserExe)  ·  pid \(request.browserPid.map(String.init) ?? "?")"
-                )
-                .accessibilityIdentifier("ks.approval.browserProcess")
-            }
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func verdictRow(
-        _ label: String, _ verdict: PeerSignature?, fallback: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            if verdict?.verified == true {
-                Label("\(label): verified", systemImage: "checkmark.seal.fill")
-                    .foregroundStyle(.green)
-                    .font(.callout.weight(.semibold))
-            } else {
-                Label("\(label): unverified", systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                    .font(.callout.weight(.semibold))
-            }
-            Text(verdict?.evidence ?? fallback)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        BrowserIdentityBlock(
+            fillSignature: fillSignature,
+            extensionId: request.extensionId,
+            hostExecutable: request.clientExecutable, hostPid: request.clientPid,
+            browserExecutable: request.browserExecutable, browserPid: request.browserPid)
     }
 
     /// What would be written, and where. Names only — there is no field on the record a value
     /// could be in, which is the point.
     private var fillTarget: some View {
         VStack(alignment: .leading, spacing: 6) {
-            row("Item", request.itemTitle ?? request.itemId ?? "unknown")
-                .accessibilityIdentifier("ks.approval.fill.item")
-            row("Website", request.origin ?? "unknown")
-                .accessibilityIdentifier("ks.approval.fill.website")
-            row("Fields", request.fillFields.joined(separator: ", "))
-                .accessibilityIdentifier("ks.approval.fill.fields")
+            // The title is the string the user compares against their own vault, so it gets the
+            // same sanitization the sentence gives it — an invisible character here is a
+            // different item wearing the same name.
+            Self.row(
+                "Item", Self.safe(request.itemTitle ?? request.itemId ?? String(localized: "unknown"), limit: 120),
+                identifier: "ks.approval.fill.item")
+            Self.row("Website", request.origin ?? String(localized: "unknown"), identifier: "ks.approval.fill.website")
+            Self.row(
+                "Fields", request.fillFields.joined(separator: ", "),
+                identifier: "ks.approval.fill.fields")
             Text(
-                "kagisecure matched this page against the websites saved on the item. It will not "
-                + "fill anywhere else."
+                "kagisecure matched this page against the websites saved on the item. It will not fill anywhere else."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -235,8 +265,7 @@ struct ApprovalSheet: View {
     private var frameWarning: some View {
         Label {
             Text(
-                "This form is inside a frame on \(request.topOrigin ?? "another site"). kagisecure "
-                + "matched the frame, not the page — check that you meant to sign in here."
+                "This form is inside a frame on \(request.topOrigin ?? String(localized: "another site")). kagisecure matched the frame, not the page — check that you meant to sign in here."
             )
             .fixedSize(horizontal: false, vertical: true)
         } icon: {
@@ -281,19 +310,18 @@ struct ApprovalSheet: View {
                     .accessibilityIdentifier("ks.approval.evidence")
             }
             Text(
-                "Reports itself as “\(request.clientName)”. That name is unverified — it is whatever the caller said."
+                "Reports itself as “\(Self.safe(request.clientName))”. That name is unverified — it is whatever the caller said."
             )
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("ks.approval.reportedName")
             if let exe = request.clientExecutable {
-                row(
+                Self.row(
                     "Process",
                     "\(exe)  ·  pid \(request.clientPid.map(String.init) ?? "?")"
-                        + (request.clientPidFromKernel ? "" : " (self-reported)")
-                )
-                .accessibilityIdentifier("ks.approval.process")
+                        + (request.clientPidFromKernel ? "" : " " + String(localized: "(self-reported)")),
+                    identifier: "ks.approval.process")
             }
         }
         .padding(12)
@@ -341,19 +369,15 @@ struct ApprovalSheet: View {
     @ViewBuilder
     private var location: some View {
         if let path = request.targetPath {
-            row("File", path)
-                .accessibilityIdentifier("ks.approval.targetPath")
+            Self.row("File", path, identifier: "ks.approval.targetPath")
         } else if let dir = request.directory {
-            row("Directory", dir)
-                .accessibilityIdentifier("ks.approval.directory")
+            Self.row("Directory", dir, identifier: "ks.approval.directory")
         }
         if let env = request.environmentName {
-            row("Environment", env)
-                .accessibilityIdentifier("ks.approval.environment")
+            Self.row("Environment", env, identifier: "ks.approval.environment")
         }
         if let cwd = request.clientCwd, cwd != request.directory {
-            row("Caller started in", cwd)
-                .accessibilityIdentifier("ks.approval.callerCwd")
+            Self.row("Caller started in", cwd, identifier: "ks.approval.callerCwd")
         }
     }
 
@@ -372,32 +396,52 @@ struct ApprovalSheet: View {
         .accessibilityIdentifier("ks.approval.gitignoreWarning")
     }
 
+    /// The longest lease the user may pick: what the caller asked for (mcp-server.md §5 — the
+    /// user may shorten, never lengthen), and never less than the one-minute floor.
+    private var ttlCeiling: Double { Double(max(request.requestedTtlSeconds, 60)) }
+
+    /// The TTL in whole minutes, for the field and stepper. Rounded *up*, so that a request that is
+    /// not a whole number of minutes — 90 s — still has its own value as the top of the range; and
+    /// written back clamped to the ceiling, so the top of the range is exactly what was asked for.
+    private var ttlMinutes: Binding<Int> {
+        Binding(
+            get: { Int((ttlSeconds / 60).rounded(.up)) },
+            set: { ttlSeconds = min(Double($0 * 60), ttlCeiling) })
+    }
+
     private var lease: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Access expires after")
                 .font(.subheadline.weight(.semibold))
-            HStack {
-                Slider(
-                    value: $ttlSeconds, in: 60...Double(max(request.requestedTtlSeconds, 60)),
-                    step: 60
-                )
-                .accessibilityIdentifier("ks.approval.ttlSlider")
+            HStack(spacing: 10) {
+                Slider(value: $ttlSeconds, in: 60...ttlCeiling, step: 60)
+                    .accessibilityLabel("Access expires after")
+                    .accessibilityValue(Self.duration(UInt64(ttlSeconds)))
+                    .accessibilityIdentifier("ks.approval.ttlSlider")
+                // The exact value, and the keyboard's way in: a slider takes key focus only with
+                // Full Keyboard Access on, and this is the one control on the sheet that changes
+                // what is granted (`ExactNumberField`, ui-spec.md §10.2 and §13).
+                ExactNumberField(
+                    label: String(localized: "Access expires after, in minutes"),
+                    value: ttlMinutes,
+                    range: 1...Int((ttlCeiling / 60).rounded(.up)),
+                    identifier: "ks.approval.ttlMinutes")
+                Text("min")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
                 Text(Self.duration(UInt64(ttlSeconds)))
                     .font(.callout.monospacedDigit())
                     .frame(width: 90, alignment: .trailing)
                     .accessibilityIdentifier("ks.approval.ttlValue")
             }
-            Text(
-                isFill
-                    ? "“Allow for this session” lets this item fill on this website for that long "
-                      + "without asking again. Every fill still needs your click in the page, and "
-                      + "locking the vault ends it."
-                    : "The caller asked for \(Self.duration(request.requestedTtlSeconds)). You can shorten it, never lengthen it."
-            )
+            (isFill
+                ? Text("“Allow for this session” lets this item fill on this website for that long without showing this sheet again. A fill asks for Touch ID or your login password unless you confirmed recently, and locking the vault ends both.")
+                : Text("The caller asked for \(Self.duration(request.requestedTtlSeconds)). You can shorten it, never lengthen it."))
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var scopeSummary: some View {
@@ -414,16 +458,27 @@ struct ApprovalSheet: View {
     static func summary(for request: ApprovalRequestView, ttlSeconds: UInt64) -> String {
         if request.action == .fillCredential {
             let fields = request.fillFields.joined(separator: " and ")
-            return "This sends the \(fields) for “\(request.itemTitle ?? "this item")” to "
-                + "\(request.origin ?? "this page"), once. Nothing else is sent, and nothing is "
-                + "stored in the browser."
+            // `origin` is `Url::origin().ascii_serialization()` and is shown exactly as it
+            // arrived: nothing in this app decodes punycode back into the lookalike it encodes,
+            // because that field is the one a human can use to spot a homograph. `safe` is a
+            // no-op on an ASCII serialization and is applied only so that a malformed one cannot
+            // carry invisible characters either.
+            let fieldsText = safe(fields, limit: 80)
+            let item = safe(request.itemTitle ?? String(localized: "this item"))
+            let origin = safe(request.origin ?? String(localized: "this page"), limit: 120)
+            return String(localized: "This sends the \(fieldsText) for “\(item)” to \(origin), once. Nothing else is sent, and nothing is stored in the browser.")
         }
         guard request.mintsLease else {
-            return "This changes the structure of your vault. It grants no access to any value."
+            return String(localized: "This changes the structure of your vault. It grants no access to any value.")
         }
-        let names = request.variables.isEmpty ? "no variables" : request.variables.joined(separator: ", ")
-        let place = request.directory ?? request.targetPath ?? "this directory"
-        return "This grants access to \(names) in \(place) for \(Self.duration(ttlSeconds)), up to \(request.requestedUses) use\(request.requestedUses == 1 ? "" : "s")."
+        let names = request.variables.isEmpty
+            ? String(localized: "no variables") : safe(request.variables.joined(separator: ", "), limit: 100)
+        let place = safe(request.directory ?? request.targetPath ?? String(localized: "this directory"), limit: 100)
+        let time = Self.duration(ttlSeconds)
+        let uses = Int(request.requestedUses)
+        return uses == 1
+            ? String(localized: "This grants access to \(names) in \(place) for \(time), up to \(uses) use.")
+            : String(localized: "This grants access to \(names) in \(place) for \(time), up to \(uses) uses.")
     }
 
     // MARK: - Footer
@@ -436,6 +491,21 @@ struct ApprovalSheet: View {
                     .foregroundStyle(.red)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityIdentifier("ks.approval.biometricProblem")
+            }
+            // Out of the scroll area and next to the buttons, so the TTL is on screen whenever
+            // "Allow for this session" is — it is that button's argument, and a sheet with a
+            // long variable list used to scroll it out of sight (ui-spec.md §10.2).
+            if request.mintsLease || isFill {
+                lease
+                Divider()
+            }
+            if agent.presenceGraceCovers(request) {
+                Text(PresenceGrace.sheetCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("ks.approval.presenceGrace")
             }
             countdown
             HStack {
@@ -484,14 +554,25 @@ struct ApprovalSheet: View {
                 break
             case .cancelled:
                 // Back to the dialog: a cancelled fingerprint is not a decision.
-                biometricProblem = "Authentication cancelled. Nothing has been granted."
+                biometricProblem = String(localized: "Authentication cancelled. Nothing has been granted.")
             case .unavailable(let why):
-                biometricProblem = "Could not ask for authentication: \(why)"
+                biometricProblem = String(localized: "Could not ask for authentication: \(why)")
+            case .busy:
+                // Another prompt — a reveal, a copy, another fill — is on screen. Not raised beside
+                // it (ADR-0037 §3, ADR-0038 §6): the sheet stays, to be answered once it is gone.
+                biometricProblem =
+                    String(localized: "Another confirmation is already on screen. Finish or cancel it, then try again.")
             }
         }
     }
 
-    private func row(_ label: String, _ value: String) -> some View {
+    /// A caption over a value — "File" over the path it names.
+    ///
+    /// `identifier` goes on the **value**, the leaf a reader (or a test) wants, and not on the
+    /// stack: an identifier on a SwiftUI layout container is stamped onto every leaf inside it
+    /// (ui-spec.md §15), so `ks.approval.targetPath` on the `VStack` named the caption "File" as
+    /// well as the path, and the first element answering to it was the caption.
+    static func row(_ label: LocalizedStringKey, _ value: String, identifier: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(label)
                 .font(.caption)
@@ -500,16 +581,135 @@ struct ApprovalSheet: View {
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier(identifier)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// `900` → `15 minutes`. Used on the sheet and in the leases table, so they agree.
     static func duration(_ seconds: UInt64) -> String {
-        if seconds < 60 { return "\(seconds) s" }
+        if seconds < 60 { return String(localized: "\(seconds) s") }
         let minutes = seconds / 60
-        if minutes < 60 { return "\(minutes) minute\(minutes == 1 ? "" : "s")" }
+        if minutes < 60 {
+            return minutes == 1
+                ? String(localized: "\(minutes) minute") : String(localized: "\(minutes) minutes")
+        }
         let hours = Double(seconds) / 3600
-        return String(format: "%.1f hours", hours)
+        return String(format: String(localized: "%.1f hours"), hours)
+    }
+}
+
+/// A release from a shared vault (ADR-0035 §14): where the values come from, and every value that
+/// changed since this Mac last approved releasing it — or is released from this Mac for the first
+/// time — with who changed it and when. Nothing at all for the personal vault. Shared by the
+/// approval sheet and the agent-fill sheet.
+///
+/// Every line is a name, a label this Mac's person typed, and a time — never a value — and is
+/// sanitized like every other string on the sheet.
+struct SharedSourceFacts: View {
+    let request: ApprovalRequestView
+
+    var body: some View {
+        if let source = request.sharedSource {
+            VStack(alignment: .leading, spacing: 6) {
+                ApprovalSheet.row(
+                    "From", ApprovalSheet.safe(source, limit: 160),
+                    identifier: "ks.approval.sharedSource")
+                if !request.changedSinceApproval.isEmpty {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            ForEach(Array(request.changedSinceApproval.enumerated()), id: \.offset) {
+                                _, line in
+                                Text(ApprovalSheet.safe(line, limit: 200))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    } icon: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                    }
+                    .font(.callout)
+                    .foregroundStyle(.orange)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityIdentifier("ks.approval.changedSinceApproval")
+                }
+            }
+        }
+    }
+}
+
+/// The browser half of a fill's identity: the native messaging helper's verdict and the browser's,
+/// stacked, with the pinned extension id and both processes below them (ui-spec.md §10.5).
+///
+/// Two rows rather than one word, because on this build they genuinely differ: Chrome is signed by
+/// its vendor and can be *verified*; a `cargo build` native host is ad-hoc and cannot. Collapsing
+/// them would either claim a verification our own helper does not have, or discard the one real
+/// fact on the sheet. Shared by the browser-fill sheet and the agent-fill sheet (§10.7), which
+/// show the browser identically because the value lands in it the same way.
+struct BrowserIdentityBlock: View {
+    let fillSignature: FillSignature?
+    let extensionId: String?
+    let hostExecutable: String?
+    let hostPid: UInt32?
+    let browserExecutable: String?
+    let browserPid: UInt32?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Self.verdictRow(
+                String(localized: "Browser"), fillSignature?.browser,
+                fallback: String(localized: "No recognized browser launched the helper."))
+                .accessibilityIdentifier("ks.approval.verdict.browser")
+            Self.verdictRow(
+                String(localized: "Helper"), fillSignature?.host,
+                fallback: String(localized: "The helper could not be checked."))
+                .accessibilityIdentifier("ks.approval.verdict.helper")
+            if let extensionId {
+                Text("Extension \(extensionId) — pinned in this app and in the browser's manifest.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("ks.approval.extensionId")
+            }
+            if let hostExecutable {
+                ApprovalSheet.row(
+                    "Helper process", "\(hostExecutable)  ·  pid \(hostPid.map(String.init) ?? "?")",
+                    identifier: "ks.approval.helperProcess")
+            }
+            if let browserExecutable {
+                ApprovalSheet.row(
+                    "Browser process",
+                    "\(browserExecutable)  ·  pid \(browserPid.map(String.init) ?? "?")",
+                    identifier: "ks.approval.browserProcess")
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// A green "verified" or red "unverified" label over the evidence line.
+    static func verdictRow(
+        _ label: String, _ verdict: PeerSignature?, fallback: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            if verdict?.verified == true {
+                Label("\(label): verified", systemImage: "checkmark.seal.fill")
+                    .foregroundStyle(.green)
+                    .font(.callout.weight(.semibold))
+            } else {
+                Label("\(label): unverified", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+                    .font(.callout.weight(.semibold))
+            }
+            Text(verdict?.evidence ?? fallback)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -35,7 +35,7 @@ enum Harness {
     /// Deliberately cheap KDF parameters. The released profile takes about a second per unlock and
     /// this suite unlocks on nearly every scenario; what is under test here is the UI, and suite C
     /// already opens a vault written at the real parameters.
-    static let cheapKdf = ["--kdf-m-kib", "8", "--kdf-t", "1"]
+    static let cheapKdf = ["--kdf-m-kib", "64", "--kdf-t", "1"]
 
     struct CommandResult {
         let status: Int32

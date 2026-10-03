@@ -79,22 +79,30 @@ final class D_ItemTests: UITestCase {
 
     func testAnItemIsEditedTaggedFavouritedAndGrowsACustomField() throws {
         try Harness.seedVault(at: vaultPath)
-        launch()
+        // The scripted gate says yes: "Show" in edit mode is a presence-gated release (ADR-0038).
+        launch(biometrics: "allow")
         unlock()
         selectItem("GitHub")
 
         step("edit mode opens on ⌘E") {
             app.typeKey("e", modifierFlags: .command)
             waitFor("ks.edit.title")
-            capture("item-edit-mode", "Edit mode, with the concealed value shown for correction")
+            capture("item-edit-mode", "Edit mode, with the concealed value still masked")
         }
 
-        step("a concealed field shows its real value while being edited") {
-            // ui-spec.md §4.3: fixing a typo must not need a separate reveal step.
-            let value = waitFor("ks.edit.fieldValue.password")
+        step("a concealed field is masked in edit mode until its own Show") {
+            // ui-spec.md §4.3, ADR-0038 user decision 4: edit mode prefills nothing. Showing one
+            // value to edit it is one presence-gated release, for that field only. The mask's
+            // accessibility value is its announcement, not its dots (`UITestCase.text(of:)`).
+            let masked = waitFor("ks.edit.fieldValue.password")
             XCTAssertEqual(
-                value.value as? String, "g1thub-p4ssw0rd",
-                "edit mode should show the concealed value it is about to let you change")
+                masked.value as? String,
+                Self.concealedAnnouncement("password", action: "Show"),
+                "edit mode must open with the concealed value masked, not prefilled")
+            click("ks.edit.fieldReveal.password")
+            XCTAssertTrue(
+                waitForValue("ks.edit.fieldValue.password", equals: "g1thub-p4ssw0rd"),
+                "Show should put the stored value in the field to be edited")
         }
 
         step("the title, a tag and a custom field all change together") {
@@ -144,33 +152,41 @@ final class D_ItemTests: UITestCase {
     func testAConcealedFieldRevealsCopiesAndIsTakenBackOffTheClipboard() throws {
         try Harness.seedVault(at: vaultPath)
         // Fifteen seconds is the shortest interval the Settings pane offers, which makes it the
-        // shortest one a user can actually choose — so it is the one worth waiting out.
-        launch(pasteboardSeconds: 15)
+        // shortest one a user can actually choose — so it is the one worth waiting out. The
+        // scripted gate says yes to every presence prompt (ADR-0038); the refusal is the next
+        // scenario's.
+        launch(biometrics: "allow", pasteboardSeconds: 15)
         unlock()
         selectItem("GitHub")
 
-        step("a concealed value is masked at a fixed width, and says so out loud") {
+        step("a concealed value is masked, and says so out loud") {
             let masked = waitFor("ks.item.fieldValue.password")
-            // The dots are the *value*; the `label` is what VoiceOver reads, and ui-spec.md §13
-            // asks it to announce the field rather than recite ten bullets. Two different
-            // promises, asserted separately.
+            // On macOS a `Text`'s `.accessibilityLabel` *replaces* its string as the static text's
+            // value (measured; `UITestCase.text(of:)`), so the ten dots are drawn and never in the
+            // tree: what the tree holds is the sentence VoiceOver reads instead of them
+            // (ui-spec.md §13, ADR-0038). Being one fixed sentence, it cannot carry the value's
+            // length either — the property ui-spec.md §4.2 asks of the dots. The dots themselves
+            // are in the capture below.
             XCTAssertEqual(
-                masked.value as? String, "••••••••••",
-                "the mask must be length-independent — ten dots for any password (ui-spec.md §4.2)")
-            XCTAssertEqual(
-                masked.label, "password, concealed, activate to reveal",
-                "a concealed field announces itself rather than reading the mask (ui-spec.md §13)")
+                masked.value as? String, Self.concealedAnnouncement("password"),
+                "a concealed field announces itself, and what revealing it will ask for, rather "
+                    + "than reading the mask (ui-spec.md §13, ADR-0038)")
+            XCTAssertFalse(
+                "\(masked.label) \(masked.value as? String ?? "")".contains("g1thub-p4ssw0rd"),
+                "nothing about a masked field may carry its value")
             capture("item-concealed", "A concealed field, masked")
         }
 
-        step("the eye reveals it") {
+        step("the eye reveals it, after one presence prompt") {
             click("ks.item.fieldReveal.password")
-            let revealed = waitFor("ks.item.fieldValue.password")
-            XCTAssertEqual(revealed.value as? String, "g1thub-p4ssw0rd")
+            XCTAssertTrue(
+                waitForValue("ks.item.fieldValue.password", equals: "g1thub-p4ssw0rd"),
+                "a confirmed reveal should show the value")
             capture("item-revealed", "The same field, revealed")
             click("ks.item.fieldReveal.password")
-            XCTAssertEqual(
-                waitFor("ks.item.fieldValue.password").value as? String, "••••••••••",
+            XCTAssertTrue(
+                waitForValue(
+                    "ks.item.fieldValue.password", equals: Self.concealedAnnouncement("password")),
                 "the eye should conceal again")
         }
 
@@ -201,6 +217,67 @@ final class D_ItemTests: UITestCase {
                 "PasteboardService should take the value back off the clipboard after 15 seconds")
             capture("item-clipboard-cleared", "The item after the clipboard cleared itself")
         }
+    }
+
+    func testACancelledPresencePromptShowsAndCopiesNothing() throws {
+        try Harness.seedVault(at: vaultPath)
+        // The scripted gate says no to every prompt — a person dismissing Touch ID, or an
+        // automation agent that pressed the button and has no finger (ADR-0038).
+        launch(biometrics: "cancel")
+        unlock()
+        selectItem("GitHub")
+
+        step("a cancelled reveal leaves the value masked") {
+            waitFor("ks.item.fieldValue.password")
+            let asked = presenceAnswers().count
+            click("ks.item.fieldReveal.password")
+            settleRefusedRelease(
+                after: asked, control: "ks.item.fieldReveal.password", what: "the reveal")
+            XCTAssertEqual(
+                element("ks.item.fieldValue.password").value as? String,
+                Self.concealedAnnouncement("password"),
+                "nothing may be shown without a confirmed presence check")
+            XCTAssertFalse(
+                element("ks.alert.storeOk").exists,
+                "a cancelled prompt is not an error worth an alert")
+            capture("item-reveal-cancelled", "A reveal whose presence prompt was cancelled")
+        }
+
+        step("a cancelled copy leaves the clipboard alone") {
+            let stamp = NSPasteboard.general.changeCount
+            let asked = presenceAnswers().count
+            click("ks.item.fieldCopy.password")
+            settleRefusedRelease(after: asked, control: "ks.item.fieldCopy.password", what: "the copy")
+            XCTAssertEqual(
+                NSPasteboard.general.changeCount, stamp,
+                "a copy whose presence prompt was cancelled must not write to the pasteboard")
+            XCTAssertNotEqual(NSPasteboard.general.string(forType: .string), "g1thub-p4ssw0rd")
+        }
+    }
+
+    /// Wait until the release a click started has been refused *and* the pane has finished with
+    /// the refusal, then check it asked exactly once.
+    ///
+    /// A refusal changes nothing on screen, so "nothing changed" is only evidence once the answer
+    /// is known to be in. Two conditions, in order: the scripted gate logged its answer (the prompt
+    /// was up and was refused), and `control` is enabled again — the detail pane disables it from
+    /// before the prompt is raised until the release has come back and been dealt with
+    /// (`ItemReleases.pending`), so enabled-after-answered means settled.
+    private func settleRefusedRelease(
+        after asked: Int, control: String, what: String,
+        file: StaticString = #filePath, line: UInt = #line
+    ) {
+        XCTAssertTrue(
+            waitForPresenceAnswers(asked + 1),
+            "\(what) never reached the presence gate — a release the app did not ask for is not "
+                + "a refused one", file: file, line: line)
+        XCTAssertTrue(
+            waitUntil("\(control) is enabled again") { self.element(control).isEnabled },
+            "\(control) stayed disabled after the prompt was answered", file: file, line: line)
+        XCTAssertEqual(
+            presenceAnswers(), Array(repeating: "cancelled", count: asked + 1),
+            "one action, one prompt (ADR-0038 user decision 1) — and the scripted gate refuses "
+                + "them all", file: file, line: line)
     }
 
     func testAnItemGoesToTheArchiveComesBackAndIsFinallyDeletedForGood() throws {

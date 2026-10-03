@@ -1,0 +1,40 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kagisecure.Interop", "Kagisecure.Interop\Kagisecure.Interop.csproj", "{ABE1C2A5-22A7-4C1C-B9B9-FBB99F4A7512}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kagisecure.Interop.Tests", "Kagisecure.Interop.Tests\Kagisecure.Interop.Tests.csproj", "{E6CE1FA3-15CF-49C7-B44C-FA1E0EE5344A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kagisecure.App", "Kagisecure.App\Kagisecure.App.csproj", "{C984DB11-FB15-49E1-9D1C-5F0F9DBA4DB3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Kagisecure.App.Tests", "Kagisecure.App.Tests\Kagisecure.App.Tests.csproj", "{471DE451-F97D-4BA2-B33B-BE415DE29445}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{ABE1C2A5-22A7-4C1C-B9B9-FBB99F4A7512}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ABE1C2A5-22A7-4C1C-B9B9-FBB99F4A7512}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ABE1C2A5-22A7-4C1C-B9B9-FBB99F4A7512}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ABE1C2A5-22A7-4C1C-B9B9-FBB99F4A7512}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E6CE1FA3-15CF-49C7-B44C-FA1E0EE5344A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E6CE1FA3-15CF-49C7-B44C-FA1E0EE5344A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E6CE1FA3-15CF-49C7-B44C-FA1E0EE5344A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E6CE1FA3-15CF-49C7-B44C-FA1E0EE5344A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{C984DB11-FB15-49E1-9D1C-5F0F9DBA4DB3}.Debug|Any CPU.ActiveCfg = Debug|x64
+		{C984DB11-FB15-49E1-9D1C-5F0F9DBA4DB3}.Debug|Any CPU.Build.0 = Debug|x64
+		{C984DB11-FB15-49E1-9D1C-5F0F9DBA4DB3}.Release|Any CPU.ActiveCfg = Release|x64
+		{C984DB11-FB15-49E1-9D1C-5F0F9DBA4DB3}.Release|Any CPU.Build.0 = Release|x64
+		{471DE451-F97D-4BA2-B33B-BE415DE29445}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{471DE451-F97D-4BA2-B33B-BE415DE29445}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{471DE451-F97D-4BA2-B33B-BE415DE29445}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{471DE451-F97D-4BA2-B33B-BE415DE29445}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

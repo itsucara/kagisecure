@@ -9,30 +9,23 @@ import KagisecureFFI
 ///
 /// It deliberately does *not* share `VaultStore.query` or `selectedItemId`. Typing into Quick
 /// Access must not re-filter the main window behind it, and dismissing the panel must not leave
-/// the three-pane UI showing a search the user has already finished with. So the panel keeps its
-/// own two pieces of state and asks the session directly.
+/// the three-pane UI showing a search the user has already finished with. So the panel has its
+/// own model, `QuickAccessModel`, made fresh every time the panel opens and dropped when it
+/// closes — which is also where the copy actions live, behind the presence gate (ADR-0038).
 ///
 /// # Locked
 ///
 /// Quick Access does not present Touch ID in v1. With no unlocked store there is nothing to
 /// search, so it says so and offers the main window, which is where unlocking lives.
 struct QuickAccessView: View {
-    @Environment(AppModel.self) private var model
-
-    @State private var query = ""
-    @State private var results: [ItemView] = []
-    @State private var selection: String?
-    @State private var toast: String?
+    @Bindable var model: QuickAccessModel
     @FocusState private var searchFocused: Bool
-
-    /// Called for Esc and after a copy, so the panel behaves like Spotlight: do the thing, go away.
-    let onDismiss: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             searchField
             Divider()
-            if model.store == nil {
+            if model.isLocked {
                 lockedState
             } else {
                 list
@@ -48,16 +41,16 @@ struct QuickAccessView: View {
         // *while the user is typing* — that is the whole interaction.
         .onKeyPress(keys: [.return], phases: .down) { press in
             if press.modifiers.contains(.command) {
-                copyUsername()
+                model.copyUsername()
             } else if press.modifiers.contains(.option) {
-                copyTotp()
+                Task { await model.copyTotp() }
             } else {
-                copyPassword()
+                Task { await model.copyPassword() }
             }
             return .handled
         }
         .onAppear {
-            reload()
+            model.reload()
             searchFocused = true
             // …and again once the panel has actually become key. A focus request made while the
             // window is still on its way to key status is dropped, and the symptom is a panel
@@ -67,7 +60,7 @@ struct QuickAccessView: View {
                 searchFocused = true
             }
         }
-        .onExitCommand(perform: onDismiss)
+        .onExitCommand(perform: model.onDismiss)
     }
 
     // MARK: - Pieces
@@ -77,15 +70,20 @@ struct QuickAccessView: View {
             Image(systemName: "magnifyingglass")
                 .foregroundStyle(.secondary)
                 .font(.title3)
-            TextField("Search all items", text: $query)
+            TextField("Search all items", text: $model.query)
                 .textFieldStyle(.plain)
                 .font(.title3)
                 .focused($searchFocused)
-                .onSubmit { copyPassword() }
-                .onChange(of: query) { _, _ in reload() }
+                .onSubmit { Task { await model.copyPassword() } }
                 .accessibilityLabel("Search all items")
                 .accessibilityIdentifier("ks.quickAccess.search")
-            if let toast {
+            if model.awaitingPresence {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("Waiting for confirmation")
+                    .accessibilityIdentifier("ks.quickAccess.awaitingPresence")
+            }
+            if let toast = model.toast {
                 Text(toast)
                     .font(.caption)
                     .padding(.horizontal, 8)
@@ -114,7 +112,7 @@ struct QuickAccessView: View {
                 .frame(maxWidth: 340)
             Button("Open Kagisecure") {
                 NSApp.activate(ignoringOtherApps: true)
-                onDismiss()
+                model.onDismiss()
             }
             .buttonStyle(.bordered)
             .accessibilityIdentifier("ks.quickAccess.openMainWindow")
@@ -124,12 +122,12 @@ struct QuickAccessView: View {
 
     @ViewBuilder
     private var list: some View {
-        if results.isEmpty {
+        if model.results.isEmpty {
             VStack(spacing: 8) {
-                Image(systemName: query.isEmpty ? "tray" : "magnifyingglass")
+                Image(systemName: model.query.isEmpty ? "tray" : "magnifyingglass")
                     .font(.system(size: 26, weight: .light))
                     .foregroundStyle(.tertiary)
-                Text(query.isEmpty ? "No items yet" : "Nothing matches “\(query)”")
+                (model.query.isEmpty ? Text("No items yet") : Text("Nothing matches “\(model.query)”"))
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -138,8 +136,8 @@ struct QuickAccessView: View {
             // A `List` with a bound selection is what gives ↑/↓ for free: the field keeps focus
             // for typing, and the arrow keys move the highlight because the list is the only
             // other thing in the responder chain that wants them.
-            List(results, id: \.id, selection: $selection) { item in
-                QuickAccessRow(item: item, isSelected: selection == item.id)
+            List(model.results, id: \.id, selection: $model.selection) { item in
+                QuickAccessRow(item: item, isSelected: model.selection == item.id)
                     .tag(item.id)
             }
             .listStyle(.inset)
@@ -175,91 +173,13 @@ struct QuickAccessView: View {
                     .padding(.horizontal, 5)
                     .padding(.vertical, 1)
                     .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
-                Text(what)
+                // `what` doubles as the identifier suffix, so it stays English; the text shown is
+                // its localization (the four keys are in the string catalog).
+                Text(LocalizedStringKey(what))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("ks.quickAccess.legend.\(what)")
             }
-        }
-    }
-
-    // MARK: - Data and actions
-
-    private func reload() {
-        guard let store = model.store else {
-            results = []
-            return
-        }
-        // A flat list across everything that is not archived or trashed — ui-spec.md §7 says
-        // "across all vaults", and the sidebar's notion of a current section does not apply here.
-        results = store.session.listItems(
-            filter: .all, query: query.isEmpty ? nil : query, sort: .title)
-        if let selection, results.contains(where: { $0.id == selection }) { return }
-        selection = results.first?.id
-    }
-
-    private var selectedItem: ItemView? {
-        guard let selection else { return nil }
-        return results.first { $0.id == selection }
-    }
-
-    private func copyPassword() {
-        guard let store = model.store, let item = selectedItem else { return }
-        guard
-            let field = item.fields.first(where: {
-                $0.concealed && $0.hasValue && $0.kind == .concealed
-            })
-        else {
-            flash("No password on this item")
-            return
-        }
-        do {
-            let value = try store.session.revealField(itemId: item.id, fieldId: field.id)
-            PasteboardService.copy(value, label: field.label)
-            flash("Password copied", thenDismiss: true)
-        } catch {
-            flash("Could not copy")
-        }
-    }
-
-    private func copyUsername() {
-        guard let item = selectedItem else { return }
-        // The username is a public value, so it is on the record already — no reveal call, and
-        // nothing to fetch.
-        guard
-            let value = item.fields.first(where: {
-                $0.label.caseInsensitiveCompare("username") == .orderedSame
-            })?.value ?? item.subtitle, !value.isEmpty
-        else {
-            flash("No username on this item")
-            return
-        }
-        PasteboardService.copy(value, label: "Username")
-        flash("Username copied", thenDismiss: true)
-    }
-
-    private func copyTotp() {
-        guard let store = model.store, let item = selectedItem else { return }
-        do {
-            guard let code = try store.session.itemTotpCode(
-                itemId: item.id, at: TotpCountdown.unixNow())
-            else {
-                flash("No one-time password on this item")
-                return
-            }
-            PasteboardService.copy(code.code, label: "One-time password")
-            flash("Code copied — \(code.secondsRemaining)s left", thenDismiss: true)
-        } catch {
-            flash("Could not copy")
-        }
-    }
-
-    private func flash(_ message: String, thenDismiss: Bool = false) {
-        withAnimation { toast = message }
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(thenDismiss ? 450 : 1_200))
-            withAnimation { toast = nil }
-            if thenDismiss { onDismiss() }
         }
     }
 }

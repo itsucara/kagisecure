@@ -102,3 +102,21 @@ pub fn capture_all(command: &mut Command) -> Result<(bool, String)> {
 pub fn says(haystack: &str, needle: &str) -> bool {
     haystack.contains(needle)
 }
+
+/// SHA-256 of a file's contents, as uppercase hex, via `certutil` — the tool `dist_windows`
+/// already prints a release's checksum with; no crate dependency needed for a hash any more than
+/// macOS's `dist.rs` needs one for `shasum`. Shared with `winget.rs`, which needs the same MSI's
+/// hash for `InstallerSha256`, so the two never compute it two different ways.
+pub fn sha256_file(path: &Path) -> Result<String> {
+    // Output is `SHA256 hash of <file>:\n<hex>\nCertUtil: ... successful.`
+    let text = capture(
+        Command::new("certutil")
+            .args(["-hashfile"])
+            .arg(path)
+            .arg("SHA256"),
+    )?;
+    text.lines()
+        .nth(1)
+        .map(|line| line.replace(' ', ""))
+        .context("certutil produced no hash line")
+}

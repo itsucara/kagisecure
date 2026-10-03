@@ -6,6 +6,8 @@
 //! ask us to allocate an arbitrary amount of memory before the AEAD gets a chance to reject it.
 //! [`KdfParams::validate`] therefore bounds every parameter before it reaches Argon2.
 
+use std::collections::BTreeMap;
+
 use argon2::{Algorithm, Argon2, Params, Version};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
@@ -25,6 +27,30 @@ pub const DEFAULT_P: u32 = 1;
 /// Salt length in bytes.
 pub const SALT_LEN: usize = 16;
 
+/// Lower bound on `m_kib` accepted from a file.
+///
+/// Argon2's own absolute minimum (`Params::MIN_M_COST`, 8 KiB) is not a policy: a file that
+/// genuinely declares it unlocks at essentially no work factor, so a stolen vault is only as
+/// strong as the password. This floor refuses that.
+///
+/// **It is deliberately low.** The v1 golden vector (`tests/vectors/v1-argon2id-64k.kagivault`)
+/// was written at m = 64 KiB and golden vectors are never edited (vault-format §9 rule 5), so
+/// the strongest floor the *open* path can carry without breaking format compatibility is the
+/// cost of that file. A security-meaningful floor (OWASP's m = 19 MiB, t = 2) belongs on the
+/// *creation* path and on the UI's "this vault is weak" warning, where it can be raised without
+/// making an existing file unopenable; see [`MEANINGFUL_M_KIB`] / [`MEANINGFUL_T`] and
+/// [`KdfParams::meets_recommended_floor`].
+pub const MIN_M_KIB: u32 = 64;
+/// Lower bound on `t` accepted from a file. Same compatibility constraint as [`MIN_M_KIB`]: the
+/// v1 golden vector declares `t = 1`.
+pub const MIN_T: u32 = 1;
+
+/// The memory cost a *new* vault should be created with at the very least (OWASP 2024 Argon2id
+/// minimum). Not enforced by [`KdfParams::validate`]; see [`MIN_M_KIB`].
+pub const MEANINGFUL_M_KIB: u32 = 19 * 1024;
+/// The iteration count a *new* vault should be created with at the very least.
+pub const MEANINGFUL_T: u32 = 2;
+
 /// Upper bound on `m_kib` accepted from a file: 1 GiB.
 ///
 /// This is not a cryptographic limit. It stops a corrupted or hostile header from turning an
@@ -36,7 +62,9 @@ pub const MAX_T: u32 = 64;
 pub const MAX_P: u32 = 16;
 
 /// The KDF descriptor stored in the vault header (vault-format §2.1).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// `PartialEq` but not `Eq`: [`KdfParams::unknown`] holds CBOR values, which may be floats.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct KdfParams {
     /// Algorithm name; only `"argon2id"` is implemented.
     pub alg: String,
@@ -51,6 +79,18 @@ pub struct KdfParams {
     pub p: u32,
     /// Output length in bytes; only 32 is implemented.
     pub out_len: u32,
+    /// Descriptor keys this build does not recognize, preserved verbatim (vault-format §9 rule
+    /// 1), so an older build rewriting the header does not drop what a newer one added — a
+    /// dropped KDF parameter would leave the newer build deriving a different key and the slot
+    /// unopenable.
+    ///
+    /// Preserved, but never *used*: a derivation this build cannot fully understand would produce
+    /// the wrong key and look like a wrong password, so [`KdfParams::derive`] refuses a
+    /// descriptor that carries any (`Unsupported`: upgrade Kagisecure), and [`KdfParams::reroll_salt`] — the
+    /// start of every fresh wrap this build makes — drops them, so a descriptor this build writes
+    /// for its own derivation never claims a parameter it did not apply.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, ciborium::Value>,
 }
 
 impl KdfParams {
@@ -68,6 +108,7 @@ impl KdfParams {
             t,
             p,
             out_len: KEY_LEN as u32,
+            unknown: BTreeMap::new(),
         };
         params.validate()?;
         Ok(params)
@@ -82,13 +123,21 @@ impl KdfParams {
         Self::new(DEFAULT_M_KIB, DEFAULT_T, DEFAULT_P)
     }
 
-    /// Re-roll the salt, keeping the cost parameters. Used on password change (vault-format §2.1).
+    /// Re-roll the salt, keeping the cost parameters — the start of every fresh wrap: a password
+    /// change, a KDF upgrade and a new recovery code (vault-format §2.1).
+    ///
+    /// Also drops [`KdfParams::unknown`]. The descriptor that comes out describes a derivation
+    /// *this* build is about to perform, with only the parameters it understands; carrying over a
+    /// key a newer build added would write a descriptor claiming a parameter that was never
+    /// applied, and the newer build would then derive a different key from it than the one the
+    /// slot was wrapped under.
     ///
     /// # Errors
     ///
     /// [`Error::Rng`] if the operating system's generator fails.
     pub fn reroll_salt(&mut self) -> Result<()> {
         self.salt = super::random::array::<SALT_LEN>()?.to_vec();
+        self.unknown.clear();
         Ok(())
     }
 
@@ -117,18 +166,18 @@ impl KdfParams {
                 self.salt.len()
             )));
         }
-        if self.m_kib < Params::MIN_M_COST || self.m_kib > MAX_M_KIB {
+        let m_floor = MIN_M_KIB.max(Params::MIN_M_COST);
+        if self.m_kib < m_floor || self.m_kib > MAX_M_KIB {
             return Err(Error::KdfParams(format!(
-                "m_kib {} is outside {}..={MAX_M_KIB}",
+                "m_kib {} is outside {m_floor}..={MAX_M_KIB}",
                 self.m_kib,
-                Params::MIN_M_COST
             )));
         }
-        if self.t < Params::MIN_T_COST || self.t > MAX_T {
+        let t_floor = MIN_T.max(Params::MIN_T_COST);
+        if self.t < t_floor || self.t > MAX_T {
             return Err(Error::KdfParams(format!(
-                "t {} is outside {}..={MAX_T}",
+                "t {} is outside {t_floor}..={MAX_T}",
                 self.t,
-                Params::MIN_T_COST
             )));
         }
         if self.p < Params::MIN_P_COST || self.p > MAX_P {
@@ -141,6 +190,17 @@ impl KdfParams {
         Ok(())
     }
 
+    /// Whether these parameters meet the cost a *new* vault should be created with
+    /// ([`MEANINGFUL_M_KIB`] / [`MEANINGFUL_T`]).
+    ///
+    /// [`validate`](Self::validate) deliberately does not enforce this, because an existing file
+    /// written below it must still open. A caller that is about to *create* a vault, or that
+    /// wants to tell the user their vault is weak, asks this instead.
+    #[must_use]
+    pub fn meets_recommended_floor(&self) -> bool {
+        self.m_kib >= MEANINGFUL_M_KIB && self.t >= MEANINGFUL_T
+    }
+
     /// Stretch `password` into a 32-byte key encryption key.
     ///
     /// The same function serves the password slot and the recovery-code slot; only the input and
@@ -148,10 +208,22 @@ impl KdfParams {
     ///
     /// # Errors
     ///
-    /// [`Error::KdfParams`] / [`Error::Unsupported`] if the parameters are unacceptable, or
+    /// [`Error::KdfParams`] / [`Error::Unsupported`] if the parameters are unacceptable —
+    /// including a parameter this build does not recognize ([`KdfParams::unknown`]) — or
     /// [`Error::KdfFailed`] if Argon2id could not run (in practice: allocation failure).
     pub fn derive(&self, password: &[u8]) -> Result<Key> {
         self.validate()?;
+        // A parameter this build does not know may change what the derivation is; running it
+        // without would produce the wrong key and read as a wrong password. Refuse, never guess
+        // (vault-format §9). Only here, at the derivation, not in `validate`: a slot this session
+        // does not open by (the recovery slot, while unlocking by password) must not stop the
+        // vault from opening at all.
+        if let Some(key) = self.unknown.keys().next() {
+            return Err(Error::Unsupported {
+                what: "KDF parameter",
+                value: key.clone(),
+            });
+        }
         let params = Params::new(self.m_kib, self.t, self.p, Some(KEY_LEN))
             .map_err(|e| Error::KdfParams(e.to_string()))?;
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
@@ -219,6 +291,48 @@ mod tests {
         let mut p = cheap();
         p.salt = vec![0u8; 4];
         assert!(matches!(p.derive(b"pw"), Err(Error::KdfParams(_))));
+    }
+
+    #[test]
+    fn an_unknown_parameter_is_refused_for_derivation_and_dropped_by_a_fresh_wrap() {
+        let mut p = cheap();
+        p.unknown
+            .insert("pepper_id".to_owned(), ciborium::Value::Integer(7.into()));
+        assert!(matches!(
+            p.derive(b"pw"),
+            Err(Error::Unsupported {
+                what: "KDF parameter",
+                ..
+            })
+        ));
+        // It survives an encode/decode round trip untouched…
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&p, &mut bytes).unwrap();
+        let back: KdfParams = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(back, p);
+        // …and a fresh wrap starts clean.
+        let mut fresh = p.clone();
+        fresh.reroll_salt().unwrap();
+        assert!(fresh.unknown.is_empty());
+        assert!(fresh.derive(b"pw").is_ok());
+    }
+
+    #[test]
+    fn a_cost_below_the_floor_is_refused() {
+        let mut p = cheap();
+        p.m_kib = Params::MIN_M_COST; // 8 KiB: Argon2's absolute minimum, no work factor at all
+        assert!(matches!(p.validate(), Err(Error::KdfParams(_))));
+        assert!(matches!(p.derive(b"pw"), Err(Error::KdfParams(_))));
+        assert!(KdfParams::new(Params::MIN_M_COST, 1, 1).is_err());
+
+        // The v1 golden vector's own cost must stay openable; see MIN_M_KIB.
+        assert!(KdfParams::new(64, 1, 1).unwrap().validate().is_ok());
+    }
+
+    #[test]
+    fn the_recommended_floor_is_separate_from_what_opens() {
+        assert!(!cheap().meets_recommended_floor());
+        assert!(KdfParams::defaults().unwrap().meets_recommended_floor());
     }
 
     #[test]

@@ -24,7 +24,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use kagisecure_core::model::{Category, FieldKind, FieldValue, Secret};
+use kagisecure_core::model::{Category, FieldKind, FieldValue, Secret, SecretText};
 use serde::Serialize;
 
 // ---------------------------------------------------------------------------------------------
@@ -237,12 +237,18 @@ impl ImportedValue {
         }
     }
 
-    /// Convert into the vault's own value type. The one-way door into storage.
+    /// A copy in the vault's own value type, leaving this one in place. The door into storage.
+    ///
+    /// A copy rather than a move so that [`crate::commit::commit`] can run inside a transaction
+    /// that may still fail to write — another writer holding the lock, a conflicting file, a
+    /// full disk — without spending the plan: the copy dies with the rolled-back transaction, and
+    /// the plan is still whole for the next attempt. A secret's copy is a new [`Secret`], held and
+    /// zeroized exactly as the original is; nothing here widens where a value can go.
     #[must_use]
-    pub fn into_field_value(self) -> FieldValue {
+    pub fn to_field_value(&self) -> FieldValue {
         match self {
-            Self::Public(s) => FieldValue::Public(s),
-            Self::Secret(s) => FieldValue::Secret(s),
+            Self::Public(s) => FieldValue::Public(s.clone()),
+            Self::Secret(s) => FieldValue::Secret(Secret::new(s.expose().to_vec())),
         }
     }
 }
@@ -537,8 +543,9 @@ pub struct ImportedItem {
     pub tags: Vec<String>,
     /// Associated URLs, deduped by the parser.
     pub urls: Vec<String>,
-    /// Free-form note.
-    pub notes: Option<String>,
+    /// Free-form note. Secret material, like a concealed field (ADR-0038 user decision 3), so it
+    /// is redacted in this struct's `Debug` and never reaches a report.
+    pub notes: Option<SecretText>,
     /// Marked favourite in the source.
     pub favorite: bool,
     /// Archived in the source.

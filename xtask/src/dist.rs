@@ -26,6 +26,7 @@ use anyhow::{Context, Result, bail};
 use crate::bindgen::bindgen;
 use crate::embed::embed;
 use crate::helpers::{Arches, HELPERS, HELPERS_DIR, Profile, helpers};
+use crate::sparkle;
 use crate::util::{capture, capture_all, run, says};
 use crate::version;
 
@@ -42,7 +43,9 @@ const IDENTITY: &str = "Developer ID Application";
 ///
 /// A *name*, never a credential: the Apple ID and the app-specific password behind it live in the
 /// keychain, put there once by the person releasing, with
-/// `xcrun notarytool store-credentials`.
+/// `xcrun notarytool store-credentials`. `.github/workflows/release.yml` used to read the same
+/// variable name, so the local and CI paths agreed; that workflow was removed on 2026-09-19 along
+/// with the rest of CI, and releases are built locally only now.
 const PROFILE_ENV: &str = "NOTARY_KEYCHAIN_PROFILE";
 
 /// How much of the pipeline to run.
@@ -80,8 +83,9 @@ pub fn dist(root: &Path, options: &Options) -> Result<()> {
     ensure_icon(root)?;
     bindgen(root, arches)?;
     let staging = helpers(root, Profile::Release, arches)?;
-    let app = build_app(root, &dist_dir, &staging, &team, arches)?;
+    let (app, updates) = build_app(root, &dist_dir, &staging, &team, arches)?;
 
+    sparkle::verify_info(&app, &updates)?;
     assert_no_debug_entitlement(&app)?;
     assert_no_build_paths(&app)?;
     verify_signature(&app)?;
@@ -110,6 +114,14 @@ pub fn dist(root: &Path, options: &Options) -> Result<()> {
         let profile = std::env::var(PROFILE_ENV).expect("checked above");
         notarize(&dist_dir, &dmg, &profile).context("notarizing the disk image")?;
         staple(&dmg)?;
+    }
+
+    // The Sparkle feed (ADR-0044) is built only around a notarized, stapled app: an update that
+    // Gatekeeper would refuse must never reach a feed.
+    if notarized {
+        sparkle::feed(&dist_dir, &dist_dir.join("DerivedData"), &app, &version)?;
+    } else {
+        println!("dist: not notarized, so no Sparkle feed was written");
     }
 
     report(&app, &dmg, notarized)?;
@@ -175,7 +187,7 @@ fn build_app(
     staging: &Path,
     team: &str,
     arches: Arches,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, sparkle::Settings)> {
     let macos_dir = root.join("apps/macos");
     run(Command::new("xcodegen")
         .current_dir(&macos_dir)
@@ -195,6 +207,10 @@ fn build_app(
             }
         }
     };
+
+    // Sparkle's feed URL and public key go in on the command line (ADR-0044), so only this build
+    // ever has an updater.
+    let updates = sparkle::settings(&macos_dir, &derived)?;
 
     run(Command::new("xcodebuild")
         .current_dir(&macos_dir)
@@ -228,6 +244,7 @@ fn build_app(
         .arg("STRIP_INSTALLED_PRODUCT=YES")
         .arg("STRIP_STYLE=non-global")
         .arg("STRIP_SWIFT_SYMBOLS=YES")
+        .args(updates.build_settings())
         .arg("build"))
     .context("building the app")?;
 
@@ -260,7 +277,7 @@ fn build_app(
         }
     }
     println!("dist: app -> {}", app.display());
-    Ok(app)
+    Ok((app, updates))
 }
 
 /// Refuse to submit anything carrying the entitlement Apple always rejects.

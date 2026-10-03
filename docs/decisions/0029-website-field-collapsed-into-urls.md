@@ -3,6 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-10
 - **Deciders:** Cleanup pass following M6/M7
+- **Refined by:** [ADR-0039](0039-transactional-vault-writes-and-the-lock-file.md)
 
 ## Context
 
@@ -53,7 +54,7 @@ and migrating its value once is the smaller change.
 
 ### Why folding on read, not a `body.schema` migration
 
-vault-format.md §9 rule 2 requires an explicit upgrade prompt and a `.bak` copy before a
+vault-format.md §9 rule 3 requires an explicit upgrade prompt and a `.bak` copy before a
 `body.schema` bump changes what is written to disk. That machinery governs *schema* changes; this
 is not one — `Item`'s shape (`urls: Vec<String>`, `fields: Vec<Field>`) is unchanged, and
 `BODY_SCHEMA_VERSION` does not move. The fold is an in-memory normalization of redundant data the
@@ -61,6 +62,11 @@ old schema already allowed, exactly like any other edit the app makes to an `Ite
 does not touch the file until the caller calls `Vault::save`, at which point it is one edit among
 the ones a save already persists. Rule 1 (nothing destroyed) holds: the value moves into `urls`
 rather than being dropped.
+
+Note (2026-09-25): since [ADR-0039](0039-transactional-vault-writes-and-the-lock-file.md) step 6,
+there is no `&mut self` `Vault::save` a caller reaches after mutating in place; the fold is one
+more change a caller makes inside a `Vault::transact` closure, persisted by that transaction's
+write.
 
 ### 1PUX import
 

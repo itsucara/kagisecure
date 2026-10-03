@@ -31,6 +31,19 @@ pub fn derive_subkey(vault_key: &[u8; KEY_LEN], info: &[u8]) -> Key {
     out
 }
 
+/// Whether two keys are equal, in time that does not depend on where they first differ.
+///
+/// Every byte pair is XORed and folded into one accumulator, with `black_box` keeping the
+/// optimiser from turning the loop back into an early-exit comparison.
+#[must_use]
+pub fn keys_equal(a: &[u8; KEY_LEN], b: &[u8; KEY_LEN]) -> bool {
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= std::hint::black_box(x ^ y);
+    }
+    std::hint::black_box(diff) == 0
+}
+
 /// The body key for a vault key.
 #[must_use]
 pub fn body_key(vault_key: &[u8; KEY_LEN]) -> Key {
@@ -47,6 +60,18 @@ mod tests {
         assert_eq!(*body_key(&vk), *body_key(&vk));
         assert_ne!(*body_key(&vk), *derive_subkey(&vk, b"kagisecure/item/abc"));
         assert_ne!(*body_key(&vk), vk);
+    }
+
+    #[test]
+    fn keys_equal_compares_every_byte() {
+        let a = [7u8; KEY_LEN];
+        let mut b = a;
+        assert!(keys_equal(&a, &b));
+        b[KEY_LEN - 1] ^= 1;
+        assert!(!keys_equal(&a, &b));
+        b = a;
+        b[0] ^= 0x80;
+        assert!(!keys_equal(&a, &b));
     }
 
     #[test]

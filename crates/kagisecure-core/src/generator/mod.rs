@@ -474,7 +474,24 @@ mod tests {
     fn word_mode_shape() {
         let recipe = Recipe::Words(WordOptions::default());
         let password = text(&recipe.generate().unwrap());
-        assert_eq!(password.split('-').count(), 4, "{password}");
+        // A few list words carry a hyphen of their own ("t-shirt"), so a correct four-word
+        // passphrase can split into more than four pieces. Re-join greedily against the list:
+        // the separator must fall between whole list words, exactly three times.
+        let pieces: Vec<&str> = password.split('-').collect();
+        let mut words = 0;
+        let mut i = 0;
+        while i < pieces.len() {
+            let joined = pieces.get(i..=i + 1).map(|p| p.join("-"));
+            match joined {
+                Some(pair) if wordlist::words().contains(&pair.as_str()) => i += 2,
+                _ => {
+                    assert!(wordlist::words().contains(&pieces[i]), "{password}");
+                    i += 1;
+                }
+            }
+            words += 1;
+        }
+        assert_eq!(words, 4, "{password}");
         assert!(password.chars().all(|c| c.is_ascii_lowercase() || c == '-'));
     }
 
@@ -505,12 +522,16 @@ mod tests {
     #[test]
     fn word_counts_clamp() {
         for (asked, expected) in [(3u32, 3usize), (10, 10), (1, 3), (40, 10)] {
+            // Counted on spaces, not the default hyphen: four EFF words ("drop-down", "felt-tip",
+            // "t-shirt", "yo-yo") contain a hyphen themselves, so splitting a hyphen-separated
+            // passphrase miscounts about once in two hundred ten-word draws.
             let recipe = Recipe::Words(WordOptions {
                 words: asked,
+                separator: Separator::Space,
                 ..WordOptions::default()
             });
             assert_eq!(
-                text(&recipe.generate().unwrap()).split('-').count(),
+                text(&recipe.generate().unwrap()).split(' ').count(),
                 expected
             );
         }

@@ -336,7 +336,7 @@ struct SafariExtensionTransportTests {
         let session = try VaultSession.create(
             path: directory.appendingPathComponent("t.kagivault").path,
             masterPassword: "correct horse battery staple", vaultName: "Personal",
-            kdfMKib: 8, kdfT: 1)
+            kdfMKib: 64, kdfT: 1)
         _ = session.takeRecoveryCode()
 
         let safari = directory.appendingPathComponent("s.sock").path
@@ -367,7 +367,7 @@ struct SafariExtensionTransportTests {
         let session = try VaultSession.create(
             path: directory.appendingPathComponent("t.kagivault").path,
             masterPassword: "correct horse battery staple", vaultName: "Personal",
-            kdfMKib: 8, kdfT: 1)
+            kdfMKib: 64, kdfT: 1)
         _ = session.takeRecoveryCode()
 
         _ = try extensionStart(

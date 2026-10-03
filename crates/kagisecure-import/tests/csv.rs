@@ -56,7 +56,12 @@ fn apple_csv_is_detected_from_its_header_and_maps_every_column() {
         b"hunter2"
     );
     assert_eq!(item.field("password").unwrap().kind, FieldKind::Concealed);
-    assert_eq!(item.notes.as_deref(), Some("a note"));
+    assert_eq!(
+        item.notes
+            .as_ref()
+            .map(kagisecure_core::model::SecretText::expose),
+        Some("a note")
+    );
     let otp = item.field("one-time password").unwrap();
     assert_eq!(otp.kind, FieldKind::Totp);
     assert!(
@@ -80,7 +85,13 @@ fn chromium_csv_is_detected_in_its_five_and_four_column_forms() {
     );
     let plan = parse(&five, None).unwrap();
     assert_eq!(plan.source, SourceKind::ChromiumCsv);
-    assert_eq!(plan.items[0].notes.as_deref(), Some("a note"));
+    assert_eq!(
+        plan.items[0]
+            .notes
+            .as_ref()
+            .map(kagisecure_core::model::SecretText::expose),
+        Some("a note")
+    );
 
     let (_dir, four) = write_csv(
         b"name,url,username,password\n\
@@ -138,7 +149,12 @@ fn one_password_csv_is_detected_with_the_website_and_one_time_password_aliases()
     assert!(item.tags.contains(&"work".to_owned()));
     assert!(item.tags.contains(&"prod".to_owned()));
     assert!(item.tags.contains(&"imported:1password".to_owned()));
-    assert_eq!(item.notes.as_deref(), Some("a note"));
+    assert_eq!(
+        item.notes
+            .as_ref()
+            .map(kagisecure_core::model::SecretText::expose),
+        Some("a note")
+    );
     assert!(
         plan.decisions
             .iter()
@@ -234,7 +250,12 @@ fn quoted_commas_and_multiline_notes_survive_the_round_trip() {
     let plan = parse(&path, None).unwrap();
     let item = &plan.items[0];
     assert_eq!(item.title, "Acme, Inc.");
-    assert_eq!(item.notes.as_deref(), Some("line one\nline two"));
+    assert_eq!(
+        item.notes
+            .as_ref()
+            .map(kagisecure_core::model::SecretText::expose),
+        Some("line one\nline two")
+    );
 }
 
 #[test]

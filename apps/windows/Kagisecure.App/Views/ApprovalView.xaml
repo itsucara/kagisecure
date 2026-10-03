@@ -1,0 +1,187 @@
+<UserControl
+    x:Class="Kagisecure.App.Views.ApprovalView"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:converters="using:Kagisecure.App.Converters">
+
+    <UserControl.Resources>
+        <converters:ObjectToVisibilityConverter x:Key="ObjectToVisibilityConverter" />
+        <converters:StringToBoolConverter x:Key="StringToBoolConverter" />
+    </UserControl.Resources>
+
+    <UserControl.KeyboardAccelerators>
+        <!-- ui-spec.md §10.3 / §11: Esc denies; Return does nothing (no default button). -->
+        <KeyboardAccelerator Key="Escape" Invoked="OnEscape" />
+    </UserControl.KeyboardAccelerators>
+
+    <Grid RowDefinitions="Auto,*,Auto">
+
+        <!-- Header: the sentence (ui-spec.md §10.2) -->
+        <Grid Grid.Row="0" Padding="20" ColumnSpacing="12" ColumnDefinitions="Auto,*">
+            <FontIcon Grid.Column="0" Glyph="{x:Bind ViewModel.Glyph}" FontSize="26" VerticalAlignment="Top"
+                      Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" AutomationProperties.AccessibilityView="Raw" />
+            <StackPanel Grid.Column="1" Spacing="4">
+                <TextBlock Text="{x:Bind ViewModel.Sentence}" Style="{StaticResource SubtitleTextBlockStyle}" TextWrapping="Wrap"
+                           AutomationProperties.AutomationId="ks.approval.sentence" />
+                <TextBlock Text="{x:Bind ViewModel.Headline}" Opacity="0.7" FontSize="12" TextWrapping="Wrap"
+                           AutomationProperties.AutomationId="ks.approval.headline" />
+            </StackPanel>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" BorderThickness="0,1,0,1" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+            <StackPanel Padding="20" Spacing="14">
+
+                <!-- Identity: an agent request. A warning, never a gate (ADR-0015, ADR-0032). -->
+                <StackPanel Spacing="6" Visibility="{x:Bind ViewModel.IsAgentRequest}">
+                    <InfoBar IsOpen="True" IsClosable="False"
+                             Severity="{x:Bind Severity(ViewModel.IsVerified, ViewModel.IsChecking), Mode=OneWay}"
+                             Title="{x:Bind ViewModel.VerdictTitle, Mode=OneWay}"
+                             Message="{x:Bind ViewModel.VerdictEvidence, Mode=OneWay}"
+                             AutomationProperties.AutomationId="ks.approval.verdict" />
+                    <TextBlock Text="{x:Bind ViewModel.ReportedNameLine}" FontSize="12" Opacity="0.7" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="ks.approval.reportedName" />
+                    <StackPanel Visibility="{x:Bind ViewModel.ProcessLine, Converter={StaticResource ObjectToVisibilityConverter}}">
+                        <TextBlock Text="Process" FontSize="12" Opacity="0.7" />
+                        <TextBlock Text="{x:Bind ViewModel.ProcessLine}" FontFamily="Consolas" IsTextSelectionEnabled="True" TextWrapping="Wrap"
+                                   AutomationProperties.AutomationId="ks.approval.process" />
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Identity: a browser fill — two verdicts (ADR-0020 §5) -->
+                <StackPanel Spacing="6" Visibility="{x:Bind ViewModel.IsFill}">
+                    <InfoBar IsOpen="True" IsClosable="False"
+                             Severity="{x:Bind Severity(ViewModel.BrowserVerified, ViewModel.IsChecking), Mode=OneWay}"
+                             Title="{x:Bind ViewModel.BrowserVerdictTitle, Mode=OneWay}"
+                             Message="{x:Bind ViewModel.BrowserVerdictEvidence, Mode=OneWay}"
+                             AutomationProperties.AutomationId="ks.approval.verdict.browser" />
+                    <InfoBar IsOpen="True" IsClosable="False"
+                             Severity="{x:Bind Severity(ViewModel.HelperVerified, ViewModel.IsChecking), Mode=OneWay}"
+                             Title="{x:Bind ViewModel.HelperVerdictTitle, Mode=OneWay}"
+                             Message="{x:Bind ViewModel.HelperVerdictEvidence, Mode=OneWay}"
+                             AutomationProperties.AutomationId="ks.approval.verdict.helper" />
+                    <TextBlock Text="{x:Bind ViewModel.ExtensionIdLine}" FontSize="12" Opacity="0.7" TextWrapping="Wrap" IsTextSelectionEnabled="True"
+                               Visibility="{x:Bind ViewModel.ExtensionIdLine, Converter={StaticResource ObjectToVisibilityConverter}}" />
+                    <StackPanel Visibility="{x:Bind ViewModel.HelperProcessLine, Converter={StaticResource ObjectToVisibilityConverter}}">
+                        <TextBlock Text="Helper process" FontSize="12" Opacity="0.7" />
+                        <TextBlock Text="{x:Bind ViewModel.HelperProcessLine}" FontFamily="Consolas" IsTextSelectionEnabled="True" TextWrapping="Wrap" />
+                    </StackPanel>
+                    <StackPanel Visibility="{x:Bind ViewModel.BrowserProcessLine, Converter={StaticResource ObjectToVisibilityConverter}}">
+                        <TextBlock Text="Browser process" FontSize="12" Opacity="0.7" />
+                        <TextBlock Text="{x:Bind ViewModel.BrowserProcessLine}" FontFamily="Consolas" IsTextSelectionEnabled="True" TextWrapping="Wrap" />
+                    </StackPanel>
+
+                    <!-- What would be written, and where. Names only. -->
+                    <TextBlock Text="Item" FontSize="12" Opacity="0.7" Margin="0,8,0,0" />
+                    <TextBlock Text="{x:Bind ViewModel.FillItem}" FontFamily="Consolas" IsTextSelectionEnabled="True" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="ks.approval.fill.item" />
+                    <TextBlock Text="Website" FontSize="12" Opacity="0.7" />
+                    <TextBlock Text="{x:Bind ViewModel.FillWebsite}" FontFamily="Consolas" IsTextSelectionEnabled="True" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="ks.approval.fill.website" />
+                    <TextBlock Text="Fields" FontSize="12" Opacity="0.7" />
+                    <TextBlock Text="{x:Bind ViewModel.FillFields}" FontFamily="Consolas" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="ks.approval.fill.fields" />
+                    <TextBlock Text="kagisecure matched this page against the websites saved on the item. It will not fill anywhere else."
+                               FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <InfoBar IsOpen="{x:Bind ViewModel.ShowFrameWarning}" IsClosable="False" Severity="Warning"
+                         Message="{x:Bind ViewModel.FrameWarning}" AutomationProperties.AutomationId="ks.approval.frameWarning" />
+
+                <!-- Variables: names only -->
+                <StackPanel Spacing="6" Visibility="{x:Bind ViewModel.ShowVariables}">
+                    <TextBlock Text="Variables" FontWeight="SemiBold" />
+                    <ScrollViewer MaxHeight="110">
+                        <ItemsControl ItemsSource="{x:Bind ViewModel.Variables}" AutomationProperties.AutomationId="ks.approval.variables">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="x:String">
+                                    <TextBlock Text="{x:Bind}" FontFamily="Consolas" />
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+                    <TextBlock Text="Names only. kagisecure never shows a value, or a length, to the caller." FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <!-- Command -->
+                <StackPanel Spacing="6" Visibility="{x:Bind ViewModel.ShowCommand}">
+                    <TextBlock Text="Command" FontWeight="SemiBold" />
+                    <TextBlock Text="{x:Bind ViewModel.CommandLine}" FontFamily="Consolas" IsTextSelectionEnabled="True" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="ks.approval.command" />
+                    <TextBlock Text="Run directly, with no shell: ; | $() in an argument are just characters." FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <!-- Location -->
+                <StackPanel Visibility="{x:Bind ViewModel.LocationLabel, Converter={StaticResource ObjectToVisibilityConverter}}">
+                    <TextBlock Text="{x:Bind ViewModel.LocationLabel}" FontSize="12" Opacity="0.7" />
+                    <TextBlock Text="{x:Bind ViewModel.LocationValue}" FontFamily="Consolas" IsTextSelectionEnabled="True" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="ks.approval.targetPath" />
+                </StackPanel>
+                <StackPanel Visibility="{x:Bind ViewModel.EnvironmentName, Converter={StaticResource ObjectToVisibilityConverter}}">
+                    <TextBlock Text="Environment" FontSize="12" Opacity="0.7" />
+                    <TextBlock Text="{x:Bind ViewModel.EnvironmentName}" FontFamily="Consolas" IsTextSelectionEnabled="True" TextWrapping="Wrap"
+                               AutomationProperties.AutomationId="ks.approval.environment" />
+                </StackPanel>
+                <StackPanel Visibility="{x:Bind ViewModel.CallerCwd, Converter={StaticResource ObjectToVisibilityConverter}}">
+                    <TextBlock Text="Caller started in" FontSize="12" Opacity="0.7" />
+                    <TextBlock Text="{x:Bind ViewModel.CallerCwd}" FontFamily="Consolas" IsTextSelectionEnabled="True" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <InfoBar IsOpen="{x:Bind ViewModel.ShowGitWarning}" IsClosable="False" Severity="Error"
+                         Message="Not gitignored — this file is inside a git work tree and would be committable."
+                         AutomationProperties.AutomationId="ks.approval.gitignoreWarning" />
+                <InfoBar IsOpen="{x:Bind ViewModel.ShowOverwriteWarning}" IsClosable="False" Severity="Error"
+                         Message="This replaces an existing file that kagisecure did not write." />
+
+                <!-- Lease -->
+                <StackPanel Spacing="6" Visibility="{x:Bind ViewModel.ShowTtl}">
+                    <TextBlock Text="Access expires after" FontWeight="SemiBold" />
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+                        <Slider Grid.Column="0" Minimum="{x:Bind ViewModel.TtlMinimum}" Maximum="{x:Bind ViewModel.TtlMaximum}"
+                                StepFrequency="60" SmallChange="60" LargeChange="300"
+                                Value="{x:Bind ViewModel.TtlSeconds, Mode=TwoWay}" IsThumbToolTipEnabled="False"
+                                AutomationProperties.Name="Access expires after" AutomationProperties.AutomationId="ks.approval.ttlSlider" />
+                        <TextBlock Grid.Column="1" Text="{x:Bind ViewModel.TtlText, Mode=OneWay}" MinWidth="90" TextAlignment="Right" VerticalAlignment="Center"
+                                   AutomationProperties.AutomationId="ks.approval.ttlValue" />
+                    </Grid>
+                    <TextBlock Text="{x:Bind ViewModel.TtlHelp}" FontSize="12" Opacity="0.7" TextWrapping="Wrap" />
+                </StackPanel>
+
+                <TextBlock Text="{x:Bind ViewModel.Summary, Mode=OneWay}" Opacity="0.8" TextWrapping="Wrap"
+                           AutomationProperties.AutomationId="ks.approval.summary" />
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Footer -->
+        <StackPanel Grid.Row="2" Padding="20" Spacing="8">
+            <InfoBar IsOpen="{x:Bind ViewModel.Problem, Mode=OneWay, Converter={StaticResource StringToBoolConverter}}"
+                     IsClosable="False" Severity="Error" Message="{x:Bind ViewModel.Problem, Mode=OneWay}"
+                     AutomationProperties.AutomationId="ks.approval.biometricProblem" />
+
+            <!-- ADR-0004's fallback: only once Windows Hello has said it is unavailable. -->
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="8" Visibility="{x:Bind ViewModel.ShowPasswordFallback, Mode=OneWay}">
+                <PasswordBox Grid.Column="0" PlaceholderText="Master password"
+                             Password="{x:Bind ViewModel.FallbackPassword, Mode=TwoWay}"
+                             AutomationProperties.Name="Master password" />
+                <Button Grid.Column="1" Content="{x:Bind ViewModel.ApproveWithPasswordLabel, Mode=OneWay}"
+                        Command="{x:Bind ViewModel.ApproveWithPasswordCommand}" />
+            </Grid>
+
+            <ProgressBar Maximum="{x:Bind ViewModel.TotalSeconds}" Value="{x:Bind ViewModel.RemainingSeconds, Mode=OneWay}"
+                         ShowError="{x:Bind ViewModel.IsUrgent, Mode=OneWay}" AutomationProperties.AutomationId="ks.approval.countdown" />
+            <TextBlock Text="{x:Bind ViewModel.CountdownText, Mode=OneWay}" FontSize="11" Opacity="0.7" TextWrapping="Wrap" />
+
+            <ProgressBar IsIndeterminate="True" Visibility="{x:Bind ViewModel.IsBusy, Mode=OneWay}" />
+            <!-- Deny first; nothing is the default action. Equal columns, so no button is ever cut off. -->
+            <Grid ColumnDefinitions="*,*,*" ColumnSpacing="8">
+                <Button Grid.Column="0" HorizontalAlignment="Stretch" Content="Deny" Command="{x:Bind ViewModel.DenyCommand}"
+                        AutomationProperties.AutomationId="ks.approval.deny" />
+                <Button Grid.Column="1" HorizontalAlignment="Stretch" Content="Allow once" Command="{x:Bind ViewModel.AllowOnceCommand}"
+                        AutomationProperties.AutomationId="ks.approval.allowOnce" />
+                <Button Grid.Column="2" HorizontalAlignment="Stretch" Command="{x:Bind ViewModel.AllowSessionCommand}"
+                        AutomationProperties.AutomationId="ks.approval.allowSession">
+                    <TextBlock Text="Allow for this session" TextWrapping="Wrap" TextAlignment="Center" />
+                </Button>
+            </Grid>
+        </StackPanel>
+    </Grid>
+</UserControl>

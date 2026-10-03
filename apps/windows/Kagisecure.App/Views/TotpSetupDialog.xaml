@@ -1,0 +1,165 @@
+<ContentDialog
+    x:Class="Kagisecure.App.Views.TotpSetupDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:converters="using:Kagisecure.App.Converters"
+    xmlns:vm="using:Kagisecure.App.ViewModels"
+    Title="One-time password"
+    PrimaryButtonText="Save"
+    CloseButtonText="Cancel"
+    DefaultButton="Primary"
+    IsPrimaryButtonEnabled="{x:Bind ViewModel.CanSave, Mode=OneWay}">
+
+    <ContentDialog.Resources>
+        <converters:EnumEqualsVisibilityConverter x:Key="ModeVisibility" />
+        <converters:StringToVisibilityConverter x:Key="StringToVisibilityConverter" />
+        <converters:InverseBoolToVisibilityConverter x:Key="InverseBoolToVisibilityConverter" />
+        <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+    </ContentDialog.Resources>
+
+    <ScrollViewer MaxHeight="520">
+        <StackPanel Width="440" Spacing="14">
+            <RadioButtons
+                SelectedIndex="{x:Bind ViewModel.ModeIndex, Mode=TwoWay}"
+                AutomationProperties.Name="How to set this up"
+                AutomationProperties.AutomationId="ks.totpSetup.mode">
+                <x:String>Enter the secret</x:String>
+                <x:String>Scan a QR code</x:String>
+                <x:String>Advanced: paste a URI</x:String>
+            </RadioButtons>
+
+            <!-- Manual entry: ui-spec.md §9. AutomationIds match macOS's TotpSetupSheet (ks.totpSetup.*) where the field exists there too. -->
+            <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.Mode, Mode=OneWay, Converter={StaticResource ModeVisibility}, ConverterParameter=Manual}">
+                <TextBlock Text="Secret" Opacity="0.6" />
+                <TextBox
+                    Text="{x:Bind ViewModel.SecretText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                    PlaceholderText="Base32, spaces and case ignored"
+                    FontFamily="Consolas"
+                    AutomationProperties.Name="One-time password secret"
+                    AutomationProperties.AutomationId="ks.totpSetup.secret" />
+                <TextBlock Text="Service" Opacity="0.6" />
+                <TextBox
+                    Text="{x:Bind ViewModel.Issuer, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                    PlaceholderText="GitHub"
+                    AutomationProperties.Name="One-time password service"
+                    AutomationProperties.AutomationId="ks.totpSetup.issuer" />
+                <TextBlock Text="Account" Opacity="0.6" />
+                <TextBox
+                    Text="{x:Bind ViewModel.Account, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                    PlaceholderText="you@example.com"
+                    AutomationProperties.Name="One-time password account"
+                    AutomationProperties.AutomationId="ks.totpSetup.account" />
+                <Expander Header="Advanced" HorizontalAlignment="Stretch">
+                    <StackPanel Spacing="8" Padding="0,8,0,0">
+                        <StackPanel Orientation="Horizontal" Spacing="14">
+                            <ComboBox
+                                Header="Algorithm"
+                                ItemsSource="{x:Bind vm:TotpSetupViewModel.Algorithms}"
+                                SelectedItem="{x:Bind ViewModel.Algorithm, Mode=TwoWay}"
+                                Width="150"
+                                AutomationProperties.Name="One-time password algorithm"
+                                AutomationProperties.AutomationId="ks.totpSetup.algorithm" />
+                            <ComboBox
+                                Header="Digits"
+                                ItemsSource="{x:Bind vm:TotpSetupViewModel.DigitChoices}"
+                                SelectedItem="{x:Bind ViewModel.Digits, Mode=TwoWay}"
+                                Width="90"
+                                AutomationProperties.Name="One-time password digits"
+                                AutomationProperties.AutomationId="ks.totpSetup.digits" />
+                        </StackPanel>
+                        <NumberBox
+                            Header="Period (seconds)"
+                            Value="{x:Bind ViewModel.Period, Mode=TwoWay}"
+                            Minimum="10"
+                            Maximum="120"
+                            SpinButtonPlacementMode="Inline"
+                            AutomationProperties.Name="One-time password period"
+                            AutomationProperties.AutomationId="ks.totpSetup.period" />
+                    </StackPanel>
+                </Expander>
+                <TextBlock
+                    Text="SHA-1, six digits and 30 seconds are what almost every service uses."
+                    FontSize="12"
+                    Opacity="0.6"
+                    TextWrapping="Wrap" />
+            </StackPanel>
+
+            <!-- QR import: Windows-only (macOS has none yet) — ui-spec.md §9's brief. -->
+            <StackPanel Spacing="10" Visibility="{x:Bind ViewModel.Mode, Mode=OneWay, Converter={StaticResource ModeVisibility}, ConverterParameter=Qr}">
+                <TextBlock
+                    Text="Import the QR code a service shows you when setting up a one-time password — from a screenshot or saved image, or straight off the clipboard."
+                    FontSize="12"
+                    Opacity="0.7"
+                    TextWrapping="Wrap" />
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button
+                        Content="Import from an image file…"
+                        Command="{x:Bind ViewModel.ImportFromFileCommand}"
+                        AutomationProperties.Name="Import QR code from file"
+                        AutomationProperties.AutomationId="ks.totpSetup.qrFile" />
+                    <Button
+                        Content="Import from clipboard"
+                        Command="{x:Bind ViewModel.ImportFromClipboardCommand}"
+                        AutomationProperties.Name="Import QR code from clipboard"
+                        AutomationProperties.AutomationId="ks.totpSetup.qrClipboard" />
+                    <ProgressRing IsActive="{x:Bind ViewModel.QrBusy, Mode=OneWay}" Width="18" Height="18" />
+                </StackPanel>
+                <TextBlock
+                    Text="{x:Bind ViewModel.QrStatus, Mode=OneWay}"
+                    FontSize="12"
+                    Opacity="0.75"
+                    TextWrapping="Wrap"
+                    Visibility="{x:Bind ViewModel.QrStatus, Mode=OneWay, Converter={StaticResource StringToVisibilityConverter}}"
+                    AutomationProperties.Name="QR import status"
+                    AutomationProperties.AutomationId="ks.totpSetup.qrStatus" />
+            </StackPanel>
+
+            <!-- Advanced: raw URI — kept as an option, matching macOS's TotpSetupSheet. -->
+            <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.Mode, Mode=OneWay, Converter={StaticResource ModeVisibility}, ConverterParameter=Uri}">
+                <TextBox
+                    Text="{x:Bind ViewModel.UriText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                    PlaceholderText="otpauth://totp/Service:you@example.com?secret=…"
+                    FontFamily="Consolas"
+                    AcceptsReturn="True"
+                    TextWrapping="Wrap"
+                    Height="70"
+                    AutomationProperties.Name="One-time password URI"
+                    AutomationProperties.AutomationId="ks.totpSetup.uri" />
+                <TextBlock
+                    Text="This is what a service's QR code encodes. Most sites offer it as “can't scan the code?” — the whole URI, including the secret."
+                    FontSize="12"
+                    Opacity="0.6"
+                    TextWrapping="Wrap" />
+            </StackPanel>
+
+            <Border BorderThickness="0,1,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" Padding="0,10,0,0">
+                <Grid>
+                    <StackPanel
+                        Orientation="Horizontal"
+                        Spacing="12"
+                        Visibility="{x:Bind ViewModel.PreviewAvailable, Mode=OneWay, Converter={StaticResource BoolToVisibilityConverter}}">
+                        <TextBlock
+                            Text="{x:Bind ViewModel.PreviewCode, Mode=OneWay}"
+                            FontFamily="Consolas"
+                            FontSize="22"
+                            VerticalAlignment="Center"
+                            AutomationProperties.Name="One-time password preview code"
+                            AutomationProperties.AutomationId="ks.totpSetup.previewCode" />
+                        <TextBlock
+                            Text="{x:Bind ViewModel.PreviewCaption, Mode=OneWay}"
+                            FontSize="12"
+                            Opacity="0.6"
+                            VerticalAlignment="Center"
+                            TextWrapping="Wrap"
+                            AutomationProperties.AutomationId="ks.totpSetup.previewCaption" />
+                    </StackPanel>
+                    <TextBlock
+                        Text="Fill in a secret to see the code it produces."
+                        Opacity="0.5"
+                        Visibility="{x:Bind ViewModel.PreviewAvailable, Mode=OneWay, Converter={StaticResource InverseBoolToVisibilityConverter}}"
+                        AutomationProperties.AutomationId="ks.totpSetup.previewEmpty" />
+                </Grid>
+            </Border>
+        </StackPanel>
+    </ScrollViewer>
+</ContentDialog>

@@ -171,15 +171,6 @@ final class ExtensionService {
     }
 
     static func message(for error: Error) -> String {
-        if let ffi = error as? FfiError {
-            switch ffi {
-            case .WrongCredential:
-                return "That did not unlock the vault."
-            case .NotFound(let m), .AlreadyExists(let m), .NoSuchSlot(let m), .NotPresent(let m),
-                .Invalid(let m), .Io(let m):
-                return m
-            }
-        }
-        return error.localizedDescription
+        describeAnyError(error)
     }
 }

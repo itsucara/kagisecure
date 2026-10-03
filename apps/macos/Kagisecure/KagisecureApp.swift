@@ -9,6 +9,15 @@ import SwiftUI
 @main
 struct KagisecureApp: App {
     @State private var model = AppModel()
+    /// Sparkle (ADR-0044). Started here, before any window: an old build must be able to update
+    /// itself even when nothing else in it works.
+    @State private var updater: AppUpdater
+
+    init() {
+        let updater = AppUpdater()
+        updater.start()
+        _updater = State(initialValue: updater)
+    }
 
     var body: some Scene {
         Window("Kagisecure", id: "main") {
@@ -17,11 +26,15 @@ struct KagisecureApp: App {
                 .frame(minWidth: 1_040, minHeight: 620)
         }
         .windowToolbarStyle(.unified)
-        .commands { KagisecureCommands(model: model) }
+        .commands {
+            KagisecureCommands(model: model)
+            UpdateCommands(updater: updater)
+        }
 
         Settings {
             SettingsView()
                 .environment(model)
+                .environment(updater)
         }
 
         // The menu-bar status item (ui-spec.md §6.3). Minimal on purpose: lock state, Quick
@@ -32,42 +45,68 @@ struct KagisecureApp: App {
                 .environment(model)
                 .environment(model.agent)
                 .environment(model.browserExtension)
+                .environment(model.unattended)
         } label: {
             Image(systemName: menuBarSymbol)
                 // The lock state is what this icon *is*, and a symbol name is not something a
                 // test should be matching on — so the state is said out loud here, and the
-                // identifier stays constant across all three symbols.
+                // identifier stays constant across all three symbols. The label becomes the status
+                // item's `AXTitle` (measured), which is what VoiceOver reads for it.
                 .accessibilityLabel(menuBarLabel)
                 .accessibilityIdentifier("ks.menuBar.icon")
         }
     }
 
-    /// A locked padlock, an open one, or an open one with a badge when something is waiting.
+    /// A locked padlock, an open one, or an open one with a badge when something is waiting — an
+    /// approval, or an agent-fill notice nobody has looked at yet (ADR-0036 implementation
+    /// decision 11).
     private var menuBarSymbol: String {
         guard model.store != nil else { return "lock.fill" }
-        return model.agent.status.pendingApprovals > 0 ? "lock.open.trianglebadge.exclamationmark" : "lock.open.fill"
+        let waiting =
+            model.agent.status.pendingApprovals > 0 || model.agentFill.unseen > 0
+            || model.unattended.attention > 0
+        return waiting ? "lock.open.trianglebadge.exclamationmark" : "lock.open.fill"
     }
 
-    /// The same three states, in words, for VoiceOver and for the UI-test suite.
+    /// The same states, in words, for VoiceOver and for the UI-test suite.
     private var menuBarLabel: String {
-        guard model.store != nil else { return "Kagisecure, vault locked" }
+        let armed = model.unattended.status.armed ? String(localized: ", unattended jobs armed") : ""
+        guard model.store != nil else { return String(localized: "Kagisecure, vault locked\(armed)") }
         let pending = model.agent.status.pendingApprovals
-        return pending > 0
-            ? "Kagisecure, vault unlocked, \(pending) approval(s) waiting"
-            : "Kagisecure, vault unlocked"
+        let notices = model.agentFill.unseen
+        var label = String(localized: "Kagisecure, vault unlocked")
+        if pending > 0 { label += String(localized: ", \(pending) approval(s) waiting") }
+        if notices > 0 { label += String(localized: ", \(notices) agent-fill notice(s)") }
+        label += armed
+        if model.unattended.attention > 0 {
+            label += String(localized: ", \(model.unattended.attention) unattended event(s)")
+        }
+        return label
     }
 }
 
 /// What the menu-bar icon drops down.
+///
+/// A menu, not a window-style extra: the HIG's advice for a status item whose content is a handful
+/// of commands, and a native `NSMenu` is fully accessible — measured, every entry is an
+/// `AXMenuItem` under the status item with its title and enabled state, open or closed, kept
+/// current as the state changes, so VoiceOver reads it and the arrow keys and type-select work.
+///
+/// What does not come across is `.accessibilityIdentifier`: the `ks.menuBar.*` identifiers below
+/// are not in the tree (a button's comes out as `menuAction:`). They are kept so the entries line
+/// up with ui-spec.md §15 the day SwiftUI does carry them; until then the UI-test suite finds these
+/// entries by their titles, so a title change here is a change to `L_MenuBarAndDarkModeTests` too.
 struct MenuBarPanel: View {
     @Environment(AppModel.self) private var model
     @Environment(AgentService.self) private var agent
     @Environment(ExtensionService.self) private var ext
+    @Environment(UnattendedService.self) private var unattended
 
     var body: some View {
         if model.store == nil {
             Text("Vault locked")
                 .accessibilityIdentifier("ks.menuBar.lockState")
+            unattendedEntries
             Button("Open Kagisecure") { NSApp.activate(ignoringOtherApps: true) }
                 .accessibilityIdentifier("ks.menuBar.openMainWindow")
         } else {
@@ -83,18 +122,21 @@ struct MenuBarPanel: View {
                 }
                 .accessibilityIdentifier("ks.menuBar.pendingApprovals")
             }
-            Text(
-                agent.status.running
-                    ? "Serving agents · \(agent.status.activeLeases) active lease(s)"
-                    : "Not serving agents"
-            )
+            if model.agentFill.unseen > 0 {
+                Button("\(model.agentFill.unseen) agent-fill notice(s) — review") {
+                    model.showAgentFillNotices()
+                }
+                .accessibilityIdentifier("ks.menuBar.agentFillNotices")
+            }
+            (agent.status.running
+                ? Text("Serving agents · \(agent.status.activeLeases) active lease(s)")
+                : Text("Not serving agents"))
             .accessibilityIdentifier("ks.menuBar.agentState")
-            Text(
-                ext.status.running
-                    ? "Serving browsers · \(ext.status.fillLeases) fill lease(s)"
-                    : "Not serving browsers"
-            )
+            (ext.status.running
+                ? Text("Serving browsers · \(ext.status.fillLeases) fill lease(s)")
+                : Text("Not serving browsers"))
             .accessibilityIdentifier("ks.menuBar.browserState")
+            unattendedEntries
             Divider()
             Button("Revoke All Leases") { agent.revokeAll(); ext.revokeAll() }
                 .disabled(agent.status.activeLeases == 0 && ext.status.fillLeases == 0)
@@ -104,6 +146,29 @@ struct MenuBarPanel: View {
             Divider()
             Button("Quit Kagisecure") { NSApp.terminate(nil) }
                 .accessibilityIdentifier("ks.menuBar.quit")
+        }
+    }
+}
+
+extension MenuBarPanel {
+    /// Unattended jobs (ADR-0042 §9): whether they are armed, what happened since the last look,
+    /// and Pause — which asks for nothing and works while the vault is locked.
+    @ViewBuilder
+    fileprivate var unattendedEntries: some View {
+        if unattended.status.armed {
+            (unattended.status.runs.isEmpty
+                ? Text("Unattended jobs armed")
+                : Text("Unattended jobs armed · \(unattended.status.runs.count) running"))
+            .accessibilityIdentifier("ks.menuBar.unattendedState")
+            if unattended.attention > 0 {
+                Button("\(unattended.attention) unattended event(s) — review") {
+                    model.showUnattended()
+                }
+                .disabled(model.store == nil)
+                .accessibilityIdentifier("ks.menuBar.unattendedEvents")
+            }
+            Button("Pause Unattended Jobs") { unattended.pause(session: model.store?.session) }
+                .accessibilityIdentifier("ks.menuBar.unattendedPause")
         }
     }
 }
@@ -149,9 +214,22 @@ struct KagisecureCommands: Commands {
             Button("Edit Item") { model.beginEditingSelection() }
                 .keyboardShortcut("e", modifiers: .command)
                 .disabled(model.store?.selectedItem == nil)
-            Button("Copy Username") { model.copyPrimaryField() }
-                .keyboardShortcut("c", modifiers: [.command, .shift, .option])
+            // ui-spec.md §11. Advertised in the reveal button's tooltip long before it was bound
+            // to anything; now it asks for presence like the button does (ADR-0038).
+            Button("Reveal or Conceal Field") { model.store?.toggleRevealForShortcut() }
+                .keyboardShortcut("r", modifiers: .command)
                 .disabled(model.store?.selectedItem == nil)
+            // ⇧⌥⌘C, not the ⌘C 1Password uses: a menu item bound to plain ⌘C would take the
+            // shortcut from Edit ▸ Copy, so ⌘C in the search field, the edit sheet or a selected
+            // public value would copy the username instead (ui-spec.md §11 says why).
+            Button("Copy Username") { model.copyUsername() }
+                .keyboardShortcut("c", modifiers: [.command, .shift, .option])
+                .disabled(model.store?.selectedItem?.username == nil)
+            // ui-spec.md §11, 1Password parity. Asks for presence unless the password is already
+            // shown (ADR-0038); "password" is `ItemView.passwordField`, designated by id.
+            Button("Copy Password") { model.store?.copyPasswordForShortcut() }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(model.store?.selectedItem?.passwordField == nil)
             Divider()
             Button("Quick Access") { model.toggleQuickAccess() }
                 .keyboardShortcut(.space, modifiers: [.command, .shift])

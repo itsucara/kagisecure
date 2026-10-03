@@ -1,0 +1,57 @@
+[package]
+name = "kagisecure-shared"
+description = "Shared vaults for kagisecure: signed, encrypted records exchanged as files (ADR-0035)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+# Explicit, the same posture as the import crate: this crate holds device keys and epoch keys, so
+# it asks for the feature by name rather than inheriting it (ADR-0002 §3). That is also why
+# `kagisecure-mcp` and `kagisecure-ipc` must never depend on it (`tests/dependency_guard.rs`).
+kagisecure-core = { workspace = true, features = ["secret-material"] }
+# Wrapping an epoch key to a device (ADR-0035 addendum, decision 1): RFC 9180 Base mode,
+# DHKEM(X25519, HKDF-SHA256) / HKDF-SHA256 / ChaCha20-Poly1305, and nothing else. No default
+# features: `getrandom` would be a second path to the operating system's generator beside the
+# core's own, and `mlkem` would add a KEM the suite does not use. Pinned exactly: how much
+# randomness a wrap draws, and so the prefilled generator's size, was read from 0.14.1's source
+# (`hpke_wrap.rs`, decision 35), and an update is a change to review, not a lockfile refresh.
+hpke = { version = "=0.14.1", default-features = false, features = ["alloc", "x25519", "chacha"] }
+# Signing records (RFC 8032), verified strictly. No default features beyond the two named: `fast`
+# (precomputed tables) and `zeroize` (signing keys wiped on drop).
+ed25519-dalek = { version = "3.0.0", default-features = false, features = ["fast", "zeroize"] }
+# Already in the graph beneath `hpke`, with exactly these features, so naming it adds no package:
+# deriving a device's X25519 public key from its stored secret, and refusing a peer's X25519
+# public key of small order before anything is wrapped to it (`device.rs`).
+x25519-dalek = { version = "3.0.0", default-features = false, features = ["static_secrets", "zeroize"] }
+# Already in the graph through `kagisecure-core`: record ids, fingerprints and the key schedule.
+sha2 = "0.11"
+hkdf = "0.13"
+serde = { version = "1", features = ["derive"] }
+serde_bytes = "0.11"
+ciborium = "0.2"
+thiserror = "2"
+zeroize = { version = "1.9", features = ["derive"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[features]
+# For the `cargo-fuzz` targets in the repository root's `fuzz/` crate, and nothing else: exposes
+# `kagisecure_shared::fuzzing`, the record body decoder that is otherwise reached only after a
+# signature verifies, so a fuzzer can reach it. No workspace crate enables it.
+fuzzing = []
+
+[target.'cfg(unix)'.dependencies]
+# Already in the graph (beneath `kagisecure-ipc`, `kagisecure-childproc` and the standard
+# library's own users): the `O_NOFOLLOW` and `O_NONBLOCK` flags an exchange import opens a file
+# with, so that a symbolic link or a FIFO planted under a record's name is refused rather than
+# followed or waited on (`exchange.rs`).
+libc = "0.2"
+
+[dev-dependencies]
+proptest = "1"
+tempfile = "3"
+# `tests/dependency_guard.rs` reads `cargo metadata`'s JSON.
+serde_json = "1"

@@ -1,0 +1,31 @@
+[package]
+name = "kagisecure-childproc"
+description = "The FFI kagisecure-core and kagisecure-agent cannot write themselves: killing a child process and anything it spawned, and identifying an open file."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+
+# Only for `kill(2)` against a process group id — sending a signal to a negative pid has no safe
+# wrapper in the standard library. See `src/lib.rs`'s unix `imp` module.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+# The Windows half of the same job: a job object is the closest equivalent to a Unix process
+# group, and there is no safe wrapper for creating one, assigning a process to it or terminating
+# it. Already in the lock file by way of `kagisecure-ipc`, and MIT OR Apache-2.0, so `cargo deny`
+# has nothing new to weigh.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+] }
+
+[dev-dependencies]

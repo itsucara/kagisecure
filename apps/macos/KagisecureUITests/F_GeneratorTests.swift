@@ -67,14 +67,26 @@ final class F_GeneratorTests: UITestCase {
             capture("generator-regenerated", "A second candidate, after Regenerate")
         }
 
-        step("the length slider reaches the documented ceiling of 128") {
-            let path = driveLengthSliderToMaximum()
-            record(
-                "generator-length-slider-path", path,
-                "How the scenario got the length slider to its maximum")
+        step("the length field takes the documented ceiling of 128, and nothing past it") {
+            // Through the field beside the slider (`ExactNumberField`), which is the keyboard's
+            // way to the length and an exact one — see `UITestCase.setNumber`. 500 is typed on
+            // purpose: out of range is a request for the nearest length that exists.
+            setNumber("500", in: "ks.generator.length")
+            XCTAssertTrue(
+                waitForValue("ks.generator.lengthField", equals: "128"),
+                "ui-spec §8 records the as-built upper bound as 128 characters, and a length "
+                    + "typed past it is taken as 128; the field reads "
+                    + "\(String(describing: element("ks.generator.lengthField").value))")
+            nudge("ks.generator.length", up: false)
+            XCTAssertTrue(
+                waitForValue("ks.generator.lengthField", equals: "127"),
+                "the stepper moves the length by exactly one")
+            nudge("ks.generator.length", up: true)
+            XCTAssertTrue(waitForValue("ks.generator.lengthField", equals: "128"))
+            nudge("ks.generator.length", up: true)
             XCTAssertEqual(
-                textOf("ks.generator.lengthValue"), "128",
-                "ui-spec §8 records the as-built upper bound as 128 characters")
+                element("ks.generator.lengthField").value as? String, "128",
+                "the stepper stops at the ceiling too")
 
             click("ks.generator.regenerate")
             let long = waitForCandidate(where: { $0.count == 128 })
@@ -85,10 +97,30 @@ final class F_GeneratorTests: UITestCase {
             capture("generator-max-length", "The generator at its 128-character maximum")
         }
 
+        step("and the floor of 8") {
+            setNumber("1", in: "ks.generator.length")
+            XCTAssertTrue(
+                waitForValue("ks.generator.lengthField", equals: "8"),
+                "ui-spec §8's lower bound is 8 characters, and a length typed below it is taken "
+                    + "as 8; the field reads "
+                    + "\(String(describing: element("ks.generator.lengthField").value))")
+            nudge("ks.generator.length", up: false)
+            XCTAssertEqual(
+                element("ks.generator.lengthField").value as? String, "8",
+                "the stepper stops at the floor too")
+            let short = waitForCandidate(where: { $0.count == 8 })
+            XCTAssertEqual(
+                short.count, 8,
+                "an 8-character recipe must produce an 8-character password, got \(short.count)")
+        }
+
         step("turning digits and symbols off leaves letters and nothing else") {
             // Each toggle mutates the recipe, which regenerates on its own; the explicit
-            // Regenerate afterwards is what the assertion is actually about.
+            // Regenerate afterwards is what the assertion is actually about. The toggles sit low
+            // in the sheet's scroll area, so they are brought into view first.
+            scrollIntoView("ks.generator.toggle.symbols")
             click("ks.generator.toggle.symbols")
+            scrollIntoView("ks.generator.toggle.digits")
             click("ks.generator.toggle.digits")
             click("ks.generator.regenerate")
 
@@ -112,7 +144,7 @@ final class F_GeneratorTests: UITestCase {
                 "the default separator is a hyphen (ui-spec §8), so the passphrase should read "
                     + "like correct-horse-battery; it was \"\(phrase)\"")
             XCTAssertEqual(
-                textOf("ks.generator.wordsValue"), "4",
+                element("ks.generator.wordsField").value as? String, "4",
                 "words mode defaults to four words (ui-spec §8)")
             capture("generator-words-mode", "Memorable words mode, at its four-word default")
         }
@@ -135,13 +167,17 @@ final class F_GeneratorTests: UITestCase {
 
     func testTheGeneratorFillsAPasswordFieldFromEditMode() throws {
         try Harness.seedVault(at: vaultPath)
-        launch()
+        // The final reveal is a presence-gated release (ADR-0038); the scripted gate says yes.
+        launch(biometrics: "allow")
         unlock()
         selectItem("GitHub")
 
         step("edit mode offers to generate the password field's value") {
             app.typeKey("e", modifierFlags: .command)
             waitFor("ks.edit.fieldValue.password")
+            // The stored value is masked and kept until "Change" (ui-spec.md §4.3); generating a
+            // new one replaces it without ever showing the old one.
+            click("ks.edit.fieldChange.password")
             click("ks.edit.fieldGenerate.password")
             waitFor("ks.generator.candidate")
             capture("generator-from-field", "The generator, opened from the password field")
@@ -168,6 +204,7 @@ final class F_GeneratorTests: UITestCase {
             click("ks.edit.save")
             waitFor("ks.item.fieldReveal.password")
             click("ks.item.fieldReveal.password")
+            waitForValue("ks.item.fieldValue.password", equals: generated)
 
             let shown = waitFor("ks.item.fieldValue.password")
             XCTAssertEqual(
@@ -236,38 +273,6 @@ final class F_GeneratorTests: UITestCase {
 
     private func waitForCandidateToChange(from previous: String) -> String {
         waitForCandidate(where: { $0 != previous && !$0.isEmpty })
-    }
-
-    /// Push the length slider to 128, and say which way it got there.
-    ///
-    /// `adjust(toNormalizedSliderPosition:)` is the direct route, but it only applies to an element
-    /// AppKit actually exposed as a slider, and it raises rather than returns when it does not — so
-    /// the element type is checked first instead of the call being attempted and caught. The
-    /// arrow-key route works either way: a focused `Slider` steps by the recipe's step of 1.
-    private func driveLengthSliderToMaximum() -> String {
-        let slider = waitFor("ks.generator.length")
-        var path: String
-
-        if slider.elementType == .slider {
-            slider.adjust(toNormalizedSliderPosition: 1.0)
-            path = "adjust(toNormalizedSliderPosition: 1.0)"
-        } else {
-            path = "element type \(slider.elementType.rawValue) is not a slider"
-        }
-
-        if textOf("ks.generator.lengthValue") != "128" {
-            path += " + right-arrow steps"
-            slider.click()
-            // 8…128 is 120 steps; the batches keep this to a handful of accessibility reads rather
-            // than one per key press.
-            for _ in 0..<9 {
-                if textOf("ks.generator.lengthValue") == "128" { break }
-                for _ in 0..<20 {
-                    app.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: [])
-                }
-            }
-        }
-        return path
     }
 
     /// Click one segment of a segmented `Picker` by its title.

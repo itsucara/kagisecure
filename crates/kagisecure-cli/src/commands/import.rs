@@ -14,9 +14,12 @@ use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use kagisecure_core::Vault;
-use kagisecure_import::{DuplicatePolicy, ImportReport, ItemAction, SourceKind, TargetVault};
+use kagisecure_import::{
+    DuplicatePolicy, ImportError, ImportReport, ItemAction, SourceKind, TargetVault,
+};
 
 use crate::cli::{ImportArgs, UsageError};
+use crate::commands::transact_patiently;
 use crate::prompt::SecretInput;
 
 /// A source of more than this many items asks for confirmation before it is committed.
@@ -65,8 +68,9 @@ fn parse_policy(name: &str) -> Result<DuplicatePolicy> {
 ///
 /// If the vault cannot be opened, `--format` or `--on-duplicate` name something this build does
 /// not know, the source cannot be read or parsed ([`kagisecure_import::ImportError`], mapped to
-/// exit 7 in `main::exit_code_for`), the confirmation for a large import is declined, or the save
-/// fails.
+/// exit 7 in `main::exit_code_for`), the confirmation for a large import is declined, another
+/// kagisecure process holds the lock past the wait budget ([`crate::cli::EXIT_VAULT_BUSY`]), or
+/// the transaction that applies the plan fails.
 pub fn import(path: &Path, args: &ImportArgs, input: &mut SecretInput) -> Result<()> {
     // Validated before the vault is even opened, so a typo in a flag does not also cost the user
     // a master-password prompt.
@@ -121,8 +125,32 @@ pub fn import(path: &Path, args: &ImportArgs, input: &mut SecretInput) -> Result
         confirm_large_import(&args.source, plan.len())?;
     }
 
-    let outcome = kagisecure_import::commit(&mut vault, plan, policy)?;
-    vault.save()?;
+    // `commit` re-evaluates the plan's dedupe decisions and its logical-vault lookups against
+    // whatever `tx` holds — the file as it is right now, under the lock — not against the vault
+    // this process opened before the report above was printed or the confirmation above was
+    // answered. `commit` borrows the plan and copies what it stores, so the closure stays
+    // reusable for `transact_patiently`'s own retry and a write that fails spends nothing.
+    //
+    // `commit` returns `kagisecure_import::ImportError`, not `kagisecure_core::Error`, so it is
+    // stashed in `failure` and a placeholder `Error` is returned in its place: `Vault::transact`
+    // only needs *an* `Error` to know to roll back, and the placeholder is discarded in favour of
+    // the real `ImportError` — with its own exit code (`cli::EXIT_IMPORT_FAILED`) — the moment the
+    // transaction has unwound.
+    let mut failure: Option<ImportError> = None;
+    let committed = transact_patiently(&mut vault, |tx| {
+        kagisecure_import::commit(tx, &plan, policy).map_err(|err| {
+            let placeholder = kagisecure_core::Error::Io(std::io::Error::other(err.to_string()));
+            failure = Some(err);
+            placeholder
+        })
+    });
+    let outcome = match committed {
+        Ok(outcome) => outcome,
+        Err(_) if failure.is_some() => {
+            return Err(failure.expect("checked by the guard above").into());
+        }
+        Err(core_err) => return Err(core_err.into()),
+    };
 
     if args.json {
         // The JSON stream is the report printed above and nothing else; a plain-text line after
@@ -230,17 +258,30 @@ fn confirm_large_import(source: &Path, count: usize) -> Result<()> {
 ///
 /// The report holds no values (`ImportReport` cannot), but it is still a complete inventory of
 /// which accounts a person has, which is worth protecting in its own right.
+///
+/// On Windows, where `OpenOptionsExt::mode` has no meaning, the same protection is an
+/// owner-only DACL from `kagisecure_core::windows_acl` (owner = the user, protected from
+/// inheritance, one entry for the user's SID) — and in a stricter order than the Unix path: a
+/// new report gets the descriptor as part of its creation, and an existing file at `path` has
+/// its DACL replaced *before* it is emptied and written, so the inventory never lands in a file
+/// carrying the output directory's inherited ACL. If that DACL cannot be replaced (the file is
+/// someone else's), nothing is written. As with `fchmod`, a handle another process already had
+/// open on an existing file is not revoked. A second local account being refused is not tested.
 fn write_report(path: &Path, markdown: &str) -> Result<()> {
+    #[cfg(not(windows))]
     let mut opts = std::fs::OpenOptions::new();
+    #[cfg(not(windows))]
     opts.write(true).create(true).truncate(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
         opts.mode(0o600);
     }
-    let mut file = opts
-        .open(path)
-        .with_context(|| format!("writing the report to {}", path.display()))?;
+    #[cfg(not(windows))]
+    let opened = opts.open(path);
+    #[cfg(windows)]
+    let opened = kagisecure_core::windows_acl::create_or_truncate_file(path);
+    let mut file = opened.with_context(|| format!("writing the report to {}", path.display()))?;
     file.write_all(markdown.as_bytes())?;
     file.sync_all()?;
     #[cfg(unix)]
@@ -301,6 +342,35 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             let mode = std::fs::metadata(&path).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600, "mode was {:o}", mode & 0o777);
+        }
+        // Windows: owner-only DACL on a new report, and on a report written over an existing
+        // file that had the temp directory's inherited ACL — where the owner is left as it was
+        // and only the DACL is replaced, so the owner is not part of that second check.
+        #[cfg(windows)]
+        {
+            use kagisecure_core::windows_acl::{self, ObjectKind};
+            let me = windows_acl::current_user_sid().unwrap();
+            let security = windows_acl::path_security(&path).unwrap();
+            assert!(
+                windows_acl::is_owner_only(&security, &me, ObjectKind::File, true),
+                "{security:?}"
+            );
+
+            let existing = dir.path().join("existing.md");
+            std::fs::write(&existing, b"stale inventory that must not survive").unwrap();
+            assert!(
+                !windows_acl::path_security(&existing)
+                    .unwrap()
+                    .dacl_protected
+            );
+            write_report(&existing, &report.to_markdown()).unwrap();
+            let contents = std::fs::read_to_string(&existing).unwrap();
+            assert!(contents.contains("Acme") && !contents.contains("stale"));
+            let security = windows_acl::path_security(&existing).unwrap();
+            assert!(
+                windows_acl::is_owner_only(&security, &me, ObjectKind::File, false),
+                "{security:?}"
+            );
         }
     }
 

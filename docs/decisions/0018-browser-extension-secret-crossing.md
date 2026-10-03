@@ -66,7 +66,11 @@ Three properties, each asserted rather than argued:
 ### What is *not* granted
 
 - **No bulk read.** There is no message that returns more than one item's value, and no message
-  that returns a value without an item id the extension got from a prior `match`.
+  that returns a value without an item id the extension got from a prior `match`, or a grant the
+  app issued. *(The second half added by
+  [ADR-0036](0036-agent-requested-browser-fill.md): an agent-requested fill is redeemed with an
+  opaque, single-use grant id the app pushed to the extension after a human approved it — not a
+  new crossing, the same `Filled` reply built by the same code, with a new authorizer.)*
 - **No values at rest.** The extension makes no `chrome.storage` call at all — not for a value,
   not for a URL, not for a match result. The roadmap's criterion is "no secret value is held by the
   extension's own storage at rest"; having no storage is a shorter thing to check than having
@@ -74,7 +78,10 @@ Three properties, each asserted rather than argued:
 - **No URL disclosure.** `match` returns titles and usernames. Returning the item's saved websites
   would teach a compromised extension the user's site list one page at a time.
 - **No value without a human.** First fill per (origin, item) per unlock session: sheet plus
-  biometric. A lease excuses the biometric and nothing else.
+  biometric. A lease excuses the biometric and nothing else. *(Corrected by
+  [ADR-0037](0037-every-fill-needs-a-fresh-presence-proof.md): a lease excuses the sheet and
+  never the biometric. As written, a lease let a value cross with no human at all whenever an
+  automation agent clicked in the page.)*
 
 ### `agent_visible` is not consulted, on purpose
 

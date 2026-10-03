@@ -47,8 +47,12 @@ fn round_trips_items_through_a_save_and_reopen() {
     let (mut vault, _code, path) = new_vault(dir.path());
     let item = sample_item(&vault);
     let id = item.id;
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
     drop(vault);
 
     let reopened = Vault::open_with_password(&path, PASSWORD).unwrap();
@@ -71,7 +75,12 @@ fn items_resolve_by_id_prefix_and_by_title() {
     let (mut vault, _code, _path) = new_vault(dir.path());
     let item = sample_item(&vault);
     let id = item.id.to_string();
-    vault.add_item(item);
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
 
     assert!(vault.find_item(&id).is_ok());
     assert!(vault.find_item(&id[..8]).is_ok());
@@ -82,13 +91,72 @@ fn items_resolve_by_id_prefix_and_by_title() {
     ));
 }
 
+/// The lookup every secret-release channel uses: the exact id, in its canonical spelling, and
+/// nothing a person might type instead — so a title collision or a trashed namesake can neither
+/// block it nor be told apart through it.
+#[test]
+fn item_by_id_accepts_the_canonical_id_and_nothing_else() {
+    let dir = tempfile::tempdir().unwrap();
+    let (mut vault, _code, _path) = new_vault(dir.path());
+    let item = sample_item(&vault);
+    let item_id = item.id;
+    let id = item_id.to_string();
+    let vid = vault.default_vault_id().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            // A trashed namesake: `find_item` now calls the title ambiguous.
+            let mut namesake = Item::new(vid, Category::Login, "Acme staging");
+            namesake.trashed_at = Some(1);
+            tx.add_item(namesake);
+            Ok(())
+        })
+        .unwrap();
+
+    assert_eq!(vault.item_by_id(&item_id).map(|i| i.id), Some(item_id));
+    assert_eq!(vault.item_by_id_str(&id).map(|i| i.id), Some(item_id));
+    for not_an_id in [
+        "Acme staging".to_owned(),
+        id[..8].to_owned(),
+        id.to_uppercase(),
+        id.replace('-', ""),
+        format!("{{{id}}}"),
+        format!("urn:uuid:{id}"),
+        String::new(),
+    ] {
+        assert!(
+            vault.item_by_id_str(&not_an_id).is_none(),
+            "{not_an_id:?} is not an item id"
+        );
+    }
+    assert!(matches!(
+        vault.find_item("Acme staging"),
+        Err(Error::AmbiguousItem(_))
+    ));
+
+    vault
+        .transact(|tx| {
+            tx.item_by_id_mut(&item_id).unwrap().title = "Renamed".to_owned();
+            assert!(tx.remove_item_by_id(&item_id).is_some());
+            assert!(tx.remove_item_by_id(&item_id).is_none());
+            Ok(())
+        })
+        .unwrap();
+    assert!(vault.item_by_id(&item_id).is_none());
+}
+
 #[test]
 fn ambiguous_titles_are_refused_rather_than_guessed() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, _code, _path) = new_vault(dir.path());
     let vid = vault.default_vault_id().unwrap();
-    vault.add_item(Item::new(vid, Category::Login, "duplicate"));
-    vault.add_item(Item::new(vid, Category::Login, "duplicate"));
+    vault
+        .transact(|tx| {
+            tx.add_item(Item::new(vid, Category::Login, "duplicate"));
+            tx.add_item(Item::new(vid, Category::Login, "duplicate"));
+            Ok(())
+        })
+        .unwrap();
     assert!(matches!(
         vault.find_item("duplicate"),
         Err(Error::AmbiguousItem(_))
@@ -100,9 +168,13 @@ fn removing_an_item_removes_it() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, _code, path) = new_vault(dir.path());
     let item = sample_item(&vault);
-    vault.add_item(item);
-    vault.remove_item("Acme staging").unwrap();
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            tx.remove_item("Acme staging").unwrap();
+            Ok(())
+        })
+        .unwrap();
     assert!(
         Vault::open_with_password(&path, PASSWORD)
             .unwrap()
@@ -116,8 +188,12 @@ fn a_wrong_password_fails_and_yields_nothing() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, _code, path) = new_vault(dir.path());
     let item = sample_item(&vault);
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
     drop(vault);
 
     match Vault::open_with_password(&path, b"wrong password") {
@@ -143,8 +219,12 @@ fn tampering_with_any_header_byte_breaks_the_body() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, _code, path) = new_vault(dir.path());
     let item = sample_item(&vault);
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
     drop(vault);
 
     let original = std::fs::read(&path).unwrap();
@@ -175,7 +255,6 @@ fn downgrading_the_kdf_cost_in_the_header_breaks_the_body() {
     let mut options = cheap_options();
     options.kdf = KdfParams::new(1024, 2, 1).unwrap();
     let (vault, _code) = Vault::create(&path, PASSWORD, &options).unwrap();
-    vault.save().unwrap();
     drop(vault);
 
     let original = std::fs::read(&path).unwrap();
@@ -201,8 +280,12 @@ fn tampering_with_the_body_fails_the_aead() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, _code, path) = new_vault(dir.path());
     let item = sample_item(&vault);
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
     drop(vault);
 
     let original = std::fs::read(&path).unwrap();
@@ -222,7 +305,6 @@ fn tampering_with_the_body_fails_the_aead() {
 fn truncation_is_detected() {
     let dir = tempfile::tempdir().unwrap();
     let (vault, _code, path) = new_vault(dir.path());
-    vault.save().unwrap();
     drop(vault);
 
     let original = std::fs::read(&path).unwrap();
@@ -235,8 +317,12 @@ fn the_recovery_code_unlocks_independently_of_the_password() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, code, path) = new_vault(dir.path());
     let item = sample_item(&vault);
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
     drop(vault);
 
     // The code survives a trip through its printable form, which is the only form the user has.
@@ -248,10 +334,12 @@ fn the_recovery_code_unlocks_independently_of_the_password() {
     assert_eq!(recovered.items().len(), 1);
 
     // ... and the user can then set a new master password.
-    recovered
-        .change_master_password(b"a whole new password")
+    let prepared = recovered
+        .prepare_master_password(b"a whole new password")
         .unwrap();
-    recovered.save().unwrap();
+    recovered
+        .transact(|tx| tx.install_master_password(prepared))
+        .unwrap();
     drop(recovered);
 
     let reopened = Vault::open_with_password(&path, b"a whole new password").unwrap();
@@ -269,9 +357,11 @@ fn a_password_change_does_not_invalidate_the_recovery_code() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, code, path) = new_vault(dir.path());
     let salt_before = vault.header().kdf.salt.clone();
-    vault.change_master_password(b"second password").unwrap();
+    let prepared = vault.prepare_master_password(b"second password").unwrap();
+    vault
+        .transact(|tx| tx.install_master_password(prepared))
+        .unwrap();
     assert_ne!(vault.header().kdf.salt, salt_before);
-    vault.save().unwrap();
     drop(vault);
 
     assert!(Vault::open_with_recovery_code(&path, &code).is_ok());
@@ -282,7 +372,6 @@ fn a_password_change_does_not_invalidate_the_recovery_code() {
 fn a_wrong_recovery_code_fails() {
     let dir = tempfile::tempdir().unwrap();
     let (vault, _code, path) = new_vault(dir.path());
-    vault.save().unwrap();
     drop(vault);
     let other = RecoveryCode::generate().unwrap();
     assert!(matches!(
@@ -295,8 +384,10 @@ fn a_wrong_recovery_code_fails() {
 fn reissuing_a_recovery_code_retires_the_old_one() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, old, path) = new_vault(dir.path());
-    let new = vault.reissue_recovery_code().unwrap();
-    vault.save().unwrap();
+    let (new, prepared) = vault.prepare_recovery_code().unwrap();
+    vault
+        .transact(|tx| tx.install_recovery_code(prepared))
+        .unwrap();
     drop(vault);
 
     assert!(Vault::open_with_recovery_code(&path, &new).is_ok());
@@ -327,18 +418,24 @@ fn non_default_kdf_parameters_are_read_from_the_header() {
     );
 }
 
-/// Vault-format §9 rule 3: a KDF parameter upgrade is a re-wrap, not a re-encrypt.
+/// Vault-format §9 rule 4: a KDF parameter upgrade is a re-wrap, not a re-encrypt.
 #[test]
 fn kdf_parameters_can_be_upgraded_in_place() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, code, path) = new_vault(dir.path());
     let item = sample_item(&vault);
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
 
     let stronger = KdfParams::new(256, 2, 1).unwrap();
-    vault.upgrade_kdf(PASSWORD, &stronger).unwrap();
-    vault.save().unwrap();
+    let prepared = vault.prepare_kdf_upgrade(PASSWORD, &stronger).unwrap();
+    vault
+        .transact(|tx| tx.install_master_password(prepared))
+        .unwrap();
     drop(vault);
 
     let opened = Vault::open_with_password(&path, PASSWORD).unwrap();
@@ -365,13 +462,12 @@ fn kdf_parameters_can_be_upgraded_in_place() {
 #[test]
 fn upgrading_with_the_wrong_password_changes_nothing() {
     let dir = tempfile::tempdir().unwrap();
-    let (mut vault, _code, path) = new_vault(dir.path());
+    let (vault, _code, path) = new_vault(dir.path());
     let stronger = KdfParams::new(256, 2, 1).unwrap();
     assert!(matches!(
-        vault.upgrade_kdf(b"not the password", &stronger),
+        vault.prepare_kdf_upgrade(b"not the password", &stronger),
         Err(Error::Decrypt)
     ));
-    vault.save().unwrap();
     drop(vault);
     assert_eq!(
         Vault::open_with_password(&path, PASSWORD)
@@ -431,14 +527,29 @@ fn the_vault_file_is_owner_only_and_written_atomically() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, _code, path) = new_vault(dir.path());
     let item = sample_item(&vault);
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
 
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "vault file must be owner read/write only");
+    }
+    // Windows: the `0600` counterpart, read back from the file the rename left in place.
+    #[cfg(windows)]
+    {
+        use kagisecure_core::windows_acl::{self, ObjectKind};
+        let me = windows_acl::current_user_sid().unwrap();
+        let security = windows_acl::path_security(&path).unwrap();
+        assert!(
+            windows_acl::is_owner_only(&security, &me, ObjectKind::File, true),
+            "vault file must be owner-only with a protected DACL: {security:?}"
+        );
     }
 
     // No temporary files are left behind by a successful save.
@@ -497,13 +608,16 @@ fn a_platform_slot_round_trips_through_an_unwrapped_vault_key() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, _code, path) = new_vault(dir.path());
     let item = sample_item(&vault);
-    vault.add_item(item);
-
     let exported = vault.export_vault_key_for_platform_wrapping();
     assert_eq!(exported.len(), 32, "the vault key is 32 bytes");
-    // A real keystore would encrypt these; the test keeps them as they are.
-    vault.install_platform_slot("macos-se-test", "Touch ID", exported.to_vec());
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            // A real keystore would encrypt these; the test keeps them as they are.
+            tx.install_platform_slot("macos-se-test", "Touch ID", exported.to_vec());
+            Ok(())
+        })
+        .unwrap();
 
     let reopened = Vault::open_with_vault_key(&path, &exported).unwrap();
     assert_eq!(reopened.unlocked_by(), UnlockedBy::PlatformKey);
@@ -532,8 +646,13 @@ fn a_wrong_vault_key_is_refused_the_same_way_a_wrong_password_is() {
 fn enrolling_twice_replaces_the_slot_rather_than_accumulating() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, _code, _path) = new_vault(dir.path());
-    vault.install_platform_slot("device-a", "Touch ID", vec![1, 2, 3]);
-    vault.install_platform_slot("device-b", "Touch ID", vec![4, 5, 6]);
+    vault
+        .transact(|tx| {
+            tx.install_platform_slot("device-a", "Touch ID", vec![1, 2, 3]);
+            tx.install_platform_slot("device-b", "Touch ID", vec![4, 5, 6]);
+            Ok(())
+        })
+        .unwrap();
     let platform: Vec<_> = vault
         .header()
         .wrapped_keys
@@ -548,12 +667,18 @@ fn enrolling_twice_replaces_the_slot_rather_than_accumulating() {
 fn removing_the_platform_slot_leaves_the_password_and_recovery_slots_alone() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, code, path) = new_vault(dir.path());
-    vault.install_platform_slot("device-a", "Touch ID", vec![1, 2, 3]);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.install_platform_slot("device-a", "Touch ID", vec![1, 2, 3]);
+            Ok(())
+        })
+        .unwrap();
 
-    assert!(vault.remove_platform_slot());
-    assert!(!vault.remove_platform_slot(), "removing twice is a no-op");
-    vault.save().unwrap();
+    let (first, second) = vault
+        .transact(|tx| Ok((tx.remove_platform_slot(), tx.remove_platform_slot())))
+        .unwrap();
+    assert!(first);
+    assert!(!second, "removing twice is a no-op");
     drop(vault);
 
     assert!(Vault::open_with_password(&path, PASSWORD).is_ok());
@@ -569,11 +694,15 @@ fn a_platform_slot_survives_a_master_password_change() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, _code, path) = new_vault(dir.path());
     let vk = vault.export_vault_key_for_platform_wrapping();
-    vault.install_platform_slot("device-a", "Touch ID", vk.to_vec());
-    vault
-        .change_master_password(b"a whole new password")
+    let prepared = vault
+        .prepare_master_password(b"a whole new password")
         .unwrap();
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.install_platform_slot("device-a", "Touch ID", vk.to_vec());
+            tx.install_master_password(prepared)
+        })
+        .unwrap();
     drop(vault);
 
     assert!(Vault::open_with_vault_key(&path, &vk).is_ok());
@@ -627,8 +756,12 @@ fn a_legacy_website_field_is_folded_into_urls_on_open() {
     website.kind = FieldKind::Url;
     item.fields.push(website);
     let item_id = item.id;
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
     drop(vault);
 
     let reopened = Vault::open_with_password(&path, PASSWORD).unwrap();
@@ -655,8 +788,12 @@ fn a_legacy_website_field_does_not_duplicate_an_existing_url() {
     website.kind = FieldKind::Url;
     item.fields.push(website);
     let item_id = item.id;
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
     drop(vault);
 
     let reopened = Vault::open_with_password(&path, PASSWORD).unwrap();
@@ -669,10 +806,14 @@ fn trashing_an_item_is_a_soft_delete_that_survives_a_reopen() {
     let dir = tempfile::tempdir().unwrap();
     let (mut vault, _code, path) = new_vault(dir.path());
     let item = sample_item(&vault);
-    vault.add_item(item);
     let now = kagisecure_core::unix_now();
-    vault.find_item_mut("Acme staging").unwrap().trashed_at = Some(now);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            tx.find_item_mut("Acme staging").unwrap().trashed_at = Some(now);
+            Ok(())
+        })
+        .unwrap();
     drop(vault);
 
     let reopened = Vault::open_with_password(&path, PASSWORD).unwrap();
@@ -690,15 +831,18 @@ fn a_logical_vault_can_be_added_and_survives_a_reopen() {
     let (mut vault, _code, path) = new_vault(dir.path());
     let default_id = vault.default_vault_id().unwrap();
 
-    let id = vault.add_logical_vault(VaultMeta::new("Imported"));
+    let id = vault
+        .transact(|tx| {
+            let id = tx.add_logical_vault(VaultMeta::new("Imported"));
+            let mut item = Item::new(id, Category::Login, "In the new vault");
+            item.fields.push(Field::public("username", "deploy"));
+            tx.add_item(item);
+            Ok(id)
+        })
+        .unwrap();
     assert_ne!(id, default_id);
     // The first logical vault stays the default; adding one never re-points existing items.
     assert_eq!(vault.default_vault_id().unwrap(), default_id);
-
-    let mut item = Item::new(id, Category::Login, "In the new vault");
-    item.fields.push(Field::public("username", "deploy"));
-    vault.add_item(item);
-    vault.save().unwrap();
     drop(vault);
 
     let reopened = Vault::open_with_password(&path, PASSWORD).unwrap();
@@ -723,8 +867,12 @@ fn field_extra_round_trips_and_is_absent_when_empty() {
         "onepassword_designation".to_owned(),
         ciborium::Value::Text("username".to_owned()),
     );
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
     drop(vault);
 
     let reopened = Vault::open_with_password(&path, PASSWORD).unwrap();
@@ -776,8 +924,12 @@ fn password_history_round_trips_and_stays_out_of_the_summary() {
         Secret::from_string("retired-value-2019".to_owned()),
         1_560_000_000,
     ));
-    vault.add_item(item);
-    vault.save().unwrap();
+    vault
+        .transact(|tx| {
+            tx.add_item(item);
+            Ok(())
+        })
+        .unwrap();
     drop(vault);
 
     let reopened = Vault::open_with_password(&path, PASSWORD).unwrap();
@@ -808,4 +960,181 @@ fn password_history_round_trips_and_stays_out_of_the_summary() {
     assert!(!rendered.contains("history"), "{rendered}");
     assert!(!rendered.contains("retired"), "{rendered}");
     assert!(!format!("{item:?}").contains("retired-value-2019"));
+}
+
+/// The `format_ver` 2 golden vector: a vault holding one shared-vault device key (ADR-0035 §5,
+/// §16). Its key material is public test data (RFC 7748 §6.1 Alice's X25519 key, RFC 8032 §7.1
+/// TEST 1's Ed25519 seed); see `examples/make_golden_vector.rs`. Never regenerated.
+#[test]
+fn the_version_2_device_key_golden_vector_still_opens() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/vectors/v2-devices-argon2id-64k.kagivault");
+    let dir = tempfile::tempdir().unwrap();
+    let working = dir.path().join("golden-v2.kagivault");
+    std::fs::copy(&path, &working).unwrap();
+
+    let vault = Vault::open_with_password(&working, b"golden vector password").unwrap();
+    assert_eq!(vault.format_ver(), 2);
+    assert_eq!(vault.header().kdf.m_kib, 64);
+    assert_eq!(vault.items().len(), 1);
+    assert!(vault.find_item("Golden vector").is_ok());
+
+    let keys = vault.device_keys();
+    assert_eq!(keys.len(), 1);
+    let key = &keys[0];
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    assert_eq!(
+        hex(key.id()),
+        "1ccbda9a1b81bbf470d5ab39998783822db70612b841fca593e81d9222b05b8f"
+    );
+    assert_eq!(key.suite(), "x25519-ed25519-v1");
+    assert_eq!(key.label(), "Golden vector device");
+    assert_eq!(key.created_at(), 1_790_000_000);
+    assert_eq!(
+        hex(key.secret_keys().expose()),
+        "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a\
+         9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60"
+    );
+    assert!(key.unknown().is_empty());
+    vault.verify_audit().unwrap();
+}
+
+/// A transaction on the version 2 vector writes version 2 and keeps its device key.
+#[test]
+fn a_transaction_on_the_version_2_golden_vector_keeps_its_version_and_device_key() {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/vectors/v2-devices-argon2id-64k.kagivault");
+    let dir = tempfile::tempdir().unwrap();
+    let working = dir.path().join("golden-v2.kagivault");
+    std::fs::copy(&path, &working).unwrap();
+
+    let mut vault = Vault::open_with_password(&working, b"golden vector password").unwrap();
+    vault
+        .transact(|tx| {
+            let vault_id = tx.default_vault_id()?;
+            tx.add_item(Item::new(vault_id, Category::Login, "added"));
+            Ok(())
+        })
+        .unwrap();
+    assert!(
+        vault.format_upgrade_backup().is_none(),
+        "nothing was raised"
+    );
+    drop(vault);
+
+    let bytes = std::fs::read(&working).unwrap();
+    assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), 2);
+    let reopened = Vault::open_with_password(&working, b"golden vector password").unwrap();
+    assert_eq!(reopened.device_keys().len(), 1);
+    assert_eq!(reopened.items().len(), 2);
+}
+
+/// The `format_ver` 3 golden vectors (ADR-0042 §2): a personal vault holding a machine vault key,
+/// and the machine vault it opens. The key is public test data; see
+/// `examples/make_golden_vector.rs`. Never regenerated.
+#[test]
+fn the_version_3_machine_vault_golden_vectors_still_open() {
+    use kagisecure_core::vault::machine::{ExecutablePin, LoginField, PresencePath, ScheduleTime};
+
+    let vectors = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/vectors");
+    let dir = tempfile::tempdir().unwrap();
+    let personal_path = dir.path().join("golden-v3.kagivault");
+    let machine_path = dir.path().join("golden-v3.machine.kagivault");
+    std::fs::copy(
+        vectors.join("v3-machine-key-argon2id-64k.kagivault"),
+        &personal_path,
+    )
+    .unwrap();
+    std::fs::copy(vectors.join("v3-machine-vault.kagivault"), &machine_path).unwrap();
+
+    let personal = Vault::open_with_password(&personal_path, b"golden vector password").unwrap();
+    assert_eq!(personal.format_ver(), 3);
+    assert!(!personal.is_machine());
+    let key = personal.machine_vault_key().unwrap();
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    assert_eq!(
+        hex(&key.to_keychain_bytes()),
+        "6d616368696e652d7661756c742d6964\
+         000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"
+    );
+    personal.verify_audit().unwrap();
+
+    let machine = Vault::open_machine(&machine_path, key).unwrap();
+    assert_eq!(machine.format_ver(), 3);
+    assert!(machine.header().wrapped_keys.is_empty());
+    let login = machine.find_item("Golden service bot").unwrap();
+    assert_eq!(login.urls, ["https://service.example"]);
+    assert!(login.totp_field().is_some());
+    let injected = machine.resolve_environment("golden deploy", None).unwrap();
+    assert_eq!(injected[0].value.expose(), b"golden-deploy-token");
+
+    let section = machine.machine().unwrap();
+    assert_eq!(section.jobs.len(), 2);
+    assert_eq!(section.jobs[0].schedule.len(), 2);
+    assert!(matches!(
+        section.jobs[0].schedule[0],
+        ScheduleTime::Daily {
+            hour: 2,
+            minute: 30
+        }
+    ));
+    assert!(matches!(
+        section.jobs[1].run_browser.as_ref().unwrap().pin,
+        ExecutablePin::CodeSigning { .. }
+    ));
+    let command = &section.command_grants[0];
+    assert_eq!(command.variables, ["DEPLOY_TOKEN"]);
+    assert_eq!(command.uses, 4);
+    assert_eq!(command.limits.expires_at, 1_790_000_000 + 30 * 24 * 60 * 60);
+    let grant = &section.login_grants[0];
+    assert_eq!(grant.origin, "https://service.example");
+    assert!(grant.one_time_codes);
+    assert!(grant.fields.contains(&LoginField::OneTimeCode));
+    assert_eq!(grant.presence, PresencePath::ConfirmedMasterPassword);
+    assert_eq!(section.arm.as_ref().unwrap().armed_at, 1_790_000_000);
+    assert!(section.unknown.is_empty());
+}
+
+/// A transaction on each version 3 vector keeps its version and what makes it what it is.
+#[test]
+fn a_transaction_on_the_version_3_golden_vectors_keeps_their_version() {
+    let vectors = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/vectors");
+    let dir = tempfile::tempdir().unwrap();
+    let personal_path = dir.path().join("golden-v3.kagivault");
+    let machine_path = dir.path().join("golden-v3.machine.kagivault");
+    std::fs::copy(
+        vectors.join("v3-machine-key-argon2id-64k.kagivault"),
+        &personal_path,
+    )
+    .unwrap();
+    std::fs::copy(vectors.join("v3-machine-vault.kagivault"), &machine_path).unwrap();
+
+    let mut personal =
+        Vault::open_with_password(&personal_path, b"golden vector password").unwrap();
+    personal
+        .transact(|tx| {
+            let vault_id = tx.default_vault_id()?;
+            tx.add_item(Item::new(vault_id, Category::Login, "added"));
+            Ok(())
+        })
+        .unwrap();
+    assert!(personal.format_upgrade_backup().is_none());
+    let mut machine =
+        Vault::open_machine(&machine_path, personal.machine_vault_key().unwrap()).unwrap();
+    machine
+        .transact(|tx| {
+            tx.machine_mut()?.arm = None;
+            Ok(())
+        })
+        .unwrap();
+    drop(machine);
+
+    for path in [&personal_path, &machine_path] {
+        let bytes = std::fs::read(path).unwrap();
+        assert_eq!(u16::from_le_bytes([bytes[8], bytes[9]]), 3);
+    }
+    let reopened =
+        Vault::open_machine(&machine_path, personal.machine_vault_key().unwrap()).unwrap();
+    assert!(reopened.machine().unwrap().arm.is_none());
+    assert_eq!(reopened.machine().unwrap().login_grants.len(), 1);
 }

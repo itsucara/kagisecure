@@ -6,9 +6,10 @@
 //! untouched and nothing on disk changed. By the time `commit` runs there is nothing left that
 //! can fail on the source's account.
 //!
-//! `commit` mutates only the in-memory [`kagisecure_core::vault::Body`]. The caller then calls
-//! [`kagisecure_core::Vault::save`], which is atomic and `0600` already. `--dry-run` is simply a
-//! run that never calls it.
+//! `commit` runs inside the caller's [`kagisecure_core::vault::Vault::transact`], as its closure —
+//! `Vault`'s mutators live only on [`kagisecure_core::vault::Tx`] (ADR-0039 step 6), so there is no
+//! other way to call it. The transaction's own write, atomic and `0600` already, is what reaches
+//! disk. `--dry-run` is simply a run that never opens one.
 //!
 //! Two invariants this module is responsible for:
 //!
@@ -24,9 +25,10 @@ use std::collections::{BTreeMap, HashSet};
 use kagisecure_core::Vault;
 use kagisecure_core::audit::AuditDraft;
 use kagisecure_core::model::{
-    Field, FieldRevision, FieldValue, Item, ItemId, Secret, VaultId, VaultMeta,
+    Field, FieldRevision, FieldValue, Item, ItemId, Secret, SecretText, VaultId, VaultMeta,
 };
 use kagisecure_core::proto::Outcome;
+use kagisecure_core::vault::Tx;
 use serde::Serialize;
 
 use crate::dedupe::{DuplicatePolicy, ItemAction, imported_revision_key, resolve, revision_key};
@@ -81,19 +83,24 @@ impl ImportOutcome {
     }
 }
 
-/// Apply `plan` to `vault`.
+/// Apply `plan` inside the transaction `tx`.
 ///
 /// Creates any logical vault the plan names and the file does not have, resolves every item
 /// against [`crate::dedupe`], and appends exactly one audit entry for the run. Nothing here
-/// touches the disk; call [`kagisecure_core::Vault::save`] afterwards.
+/// touches the disk itself: the caller's [`Vault::transact`] writes it when its closure returns
+/// `Ok`, and every read in `resolve` and `plan.report_against` is evaluated against the fresh
+/// state the transaction is holding the lock over, not whatever `plan` was built against.
+///
+/// [`Vault`]'s mutators live only on [`Tx`] (ADR-0039 step 6), so this is the one shape `commit`
+/// can take now — a bare `&mut Vault` caller wraps it in `vault.transact(|tx| commit(tx, ...))`.
 ///
 /// # Errors
 ///
 /// [`crate::error::ImportError::Vault`] if the vault refuses a change — in practice only if the
 /// body somehow has no logical vault to default to.
 pub fn commit(
-    vault: &mut Vault,
-    plan: ImportPlan,
+    vault: &mut Tx<'_>,
+    plan: &ImportPlan,
     policy: DuplicatePolicy,
 ) -> Result<ImportOutcome> {
     let report = plan.report_against(vault, policy);
@@ -127,12 +134,12 @@ pub fn commit(
         report,
     };
 
-    for imported in plan.items {
+    for imported in &plan.items {
         let target = match &imported.target_vault {
             TargetVault::Default => default_vault_id,
             TargetVault::Named(name) => vault_ids.get(name).copied().unwrap_or(default_vault_id),
         };
-        let (action, existing) = resolve(vault, &imported, policy);
+        let (action, existing) = resolve(vault, imported, policy);
         match action {
             ItemAction::Skip => outcome.skipped += 1,
             ItemAction::Create => {
@@ -192,7 +199,9 @@ fn existing_vault_named(vault: &Vault, name: &str) -> Option<VaultId> {
 }
 
 /// Turn an imported item into a stored one.
-fn build_item(imported: ImportedItem, vault_id: VaultId, now: u64) -> Item {
+/// Build a stored item from an imported one — copying, so the plan survives a failed write
+/// ([`ImportedValue::to_field_value`](crate::ir::ImportedValue::to_field_value)).
+fn build_item(imported: &ImportedItem, vault_id: VaultId, now: u64) -> Item {
     let ImportedItem {
         foreign_id,
         category,
@@ -207,36 +216,41 @@ fn build_item(imported: ImportedItem, vault_id: VaultId, now: u64) -> Item {
         trashed_at,
         created_at,
         updated_at,
-        mut extra,
+        extra,
         ..
     } = imported;
 
-    let mut item = Item::new(vault_id, category, title);
+    let mut item = Item::new(vault_id, category.clone(), title.clone());
     item.created_at = created_at.unwrap_or(now);
-    item.updated_at = updated_at.or(created_at).unwrap_or(now);
-    item.tags = tags;
-    item.urls = urls;
-    item.notes = notes;
-    item.favorite = favorite;
-    item.archived = archived;
-    item.trashed_at = trashed_at;
+    item.updated_at = updated_at.or(*created_at).unwrap_or(now);
+    item.tags = tags.clone();
+    item.urls = urls.clone();
+    item.notes = copy_notes(notes.as_ref());
+    item.favorite = *favorite;
+    item.archived = *archived;
+    item.trashed_at = *trashed_at;
     // Never, whatever the source said (threat-model M-9).
     item.agent_visible = false;
 
+    let mut extra = extra.clone();
     if let Some(foreign) = foreign_id {
-        extra.insert(foreign.key, ciborium::Value::Text(foreign.value));
+        extra.insert(
+            foreign.key.clone(),
+            ciborium::Value::Text(foreign.value.clone()),
+        );
     }
     item.extra = extra;
 
     for field in fields {
         let mut stored = Field {
             id: kagisecure_core::model::FieldId::new(),
-            label: field.label,
+            label: field.label.clone(),
             kind: field.kind,
-            value: field.value.into_field_value(),
-            section: field.section,
+            value: field.value.to_field_value(),
+            section: field.section.clone(),
             agent_visible: false,
-            extra: field.extra,
+            extra: field.extra.clone(),
+            unknown: BTreeMap::new(),
         };
         // A section is metadata the source gave us; nothing else about the field is inferred.
         stored.section = stored.section.filter(|s| !s.is_empty());
@@ -247,15 +261,26 @@ fn build_item(imported: ImportedItem, vault_id: VaultId, now: u64) -> Item {
         let retired_at = revision.retired_at.unwrap_or(item.updated_at);
         item.history.push(FieldRevision {
             field_id: None,
-            label: revision.label.unwrap_or_else(|| "password".to_owned()),
+            label: revision
+                .label
+                .clone()
+                .unwrap_or_else(|| "password".to_owned()),
             kind: kagisecure_core::model::FieldKind::Concealed,
-            value: revision.value.into_field_value(),
+            value: revision.value.to_field_value(),
             retired_at,
+            unknown: BTreeMap::new(),
         });
     }
     item.history.sort_by_key(|r| r.retired_at);
+    // The first secret the source listed, as a template's would be: an imported login's password.
+    item.pin_primary_secret();
 
     item
+}
+
+/// A copy of imported notes, secret like the original.
+fn copy_notes(notes: Option<&SecretText>) -> Option<SecretText> {
+    notes.map(|n| SecretText::new(n.expose().to_owned()))
 }
 
 /// Overwrite the parts of an existing item that the source carries, and keep the rest.
@@ -282,37 +307,47 @@ fn build_item(imported: ImportedItem, vault_id: VaultId, now: u64) -> Item {
 ///
 /// Returns how many history entries were added, from both sources: a field's own rotation and the
 /// source's own `passwordHistory`-style entries.
-fn apply_update(vault: &mut Vault, id: ItemId, imported: ImportedItem, now: u64) -> Result<usize> {
-    let reference = id.to_string();
-    let item = vault.find_item_mut(&reference)?;
+fn apply_update(
+    vault: &mut Tx<'_>,
+    id: ItemId,
+    imported: &ImportedItem,
+    now: u64,
+) -> Result<usize> {
+    // By id only: `find_item_mut` would also match another item whose *title* happens to be this
+    // id's text, and call the pair ambiguous.
+    let item = vault
+        .item_by_id_mut(&id)
+        .ok_or_else(|| kagisecure_core::Error::ItemNotFound(id.to_string()))?;
 
     if !imported.category_was_guessed {
-        item.category = imported.category;
+        item.category = imported.category.clone();
     }
-    item.title = imported.title;
+    item.title = imported.title.clone();
     if imported.notes.is_some() {
-        item.notes = imported.notes;
+        item.notes = copy_notes(imported.notes.as_ref());
     }
     item.favorite = imported.favorite;
     item.archived = imported.archived;
     item.updated_at = imported.updated_at.unwrap_or(now);
 
-    for tag in imported.tags {
-        if !item.tags.contains(&tag) {
-            item.tags.push(tag);
+    for tag in &imported.tags {
+        if !item.tags.contains(tag) {
+            item.tags.push(tag.clone());
         }
     }
-    for url in imported.urls {
-        if !item.urls.contains(&url) {
-            item.urls.push(url);
+    for url in &imported.urls {
+        if !item.urls.contains(url) {
+            item.urls.push(url.clone());
         }
     }
-    for (key, value) in imported.extra {
-        item.extra.insert(key, value);
+    for (key, value) in &imported.extra {
+        item.extra.insert(key.clone(), value.clone());
     }
-    if let Some(foreign) = imported.foreign_id {
-        item.extra
-            .insert(foreign.key, ciborium::Value::Text(foreign.value));
+    if let Some(foreign) = &imported.foreign_id {
+        item.extra.insert(
+            foreign.key.clone(),
+            ciborium::Value::Text(foreign.value.clone()),
+        );
     }
 
     // Built before the field loop below so a rotated field's old value can be deduped against
@@ -324,14 +359,14 @@ fn apply_update(vault: &mut Vault, id: ItemId, imported: ImportedItem, now: u64)
         .collect();
     let mut added = 0;
 
-    for field in imported.fields {
+    for field in &imported.fields {
         let existing = item
             .fields
             .iter_mut()
             .find(|f| f.label.eq_ignore_ascii_case(&field.label) && f.section == field.section);
         match existing {
             Some(slot) => {
-                let new_value = field.value.into_field_value();
+                let new_value = field.value.to_field_value();
                 if let FieldValue::Secret(old_secret) = &slot.value {
                     let changed = old_secret.expose() != field_value_bytes(&new_value);
                     if changed {
@@ -346,6 +381,7 @@ fn apply_update(vault: &mut Vault, id: ItemId, imported: ImportedItem, now: u64)
                                     old_secret.expose().to_vec(),
                                 )),
                                 retired_at,
+                                unknown: BTreeMap::new(),
                             });
                             added += 1;
                         }
@@ -353,26 +389,27 @@ fn apply_update(vault: &mut Vault, id: ItemId, imported: ImportedItem, now: u64)
                 }
                 slot.kind = field.kind;
                 slot.value = new_value;
-                for (key, value) in field.extra {
-                    slot.extra.insert(key, value);
+                for (key, value) in &field.extra {
+                    slot.extra.insert(key.clone(), value.clone());
                 }
                 // `slot.id` and `slot.agent_visible` are untouched on purpose.
             }
             None => {
                 item.fields.push(Field {
                     id: kagisecure_core::model::FieldId::new(),
-                    label: field.label,
+                    label: field.label.clone(),
                     kind: field.kind,
-                    value: field.value.into_field_value(),
-                    section: field.section.filter(|s| !s.is_empty()),
+                    value: field.value.to_field_value(),
+                    section: field.section.clone().filter(|s| !s.is_empty()),
                     agent_visible: false,
-                    extra: field.extra,
+                    extra: field.extra.clone(),
+                    unknown: BTreeMap::new(),
                 });
             }
         }
     }
 
-    for revision in imported.history {
+    for revision in &imported.history {
         let retired_at = revision.retired_at.unwrap_or(item.updated_at);
         let Some(key) = imported_revision_key(&revision.value, retired_at) else {
             continue;
@@ -382,10 +419,14 @@ fn apply_update(vault: &mut Vault, id: ItemId, imported: ImportedItem, now: u64)
         }
         item.history.push(FieldRevision {
             field_id: None,
-            label: revision.label.unwrap_or_else(|| "password".to_owned()),
+            label: revision
+                .label
+                .clone()
+                .unwrap_or_else(|| "password".to_owned()),
             kind: kagisecure_core::model::FieldKind::Concealed,
-            value: revision.value.into_field_value(),
+            value: revision.value.to_field_value(),
             retired_at,
+            unknown: BTreeMap::new(),
         });
         added += 1;
     }

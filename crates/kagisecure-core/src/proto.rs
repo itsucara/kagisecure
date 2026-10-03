@@ -23,6 +23,16 @@ macro_rules! id_newtype {
             pub fn new() -> Self {
                 Self(Uuid::new_v4())
             }
+
+            /// Parse `s` only if it is this id's canonical spelling — the lower-case, hyphenated
+            /// form `Display` writes. `FromStr` is more forgiving (upper case, braces, a URN, no
+            /// hyphens), which is right for a person typing an id and wrong for a program naming
+            /// one: there, the string it sent and the id a log records must be the same text.
+            #[must_use]
+            pub fn parse_canonical(s: &str) -> Option<Self> {
+                let id: Self = s.parse().ok()?;
+                (id.to_string() == s).then_some(id)
+            }
         }
 
         impl Default for $name {
@@ -154,8 +164,9 @@ impl FieldTemplate {
         }
     }
 
-    /// A field that holds secret material but is not rendered as a masked password — today, only
-    /// a TOTP seed, whose `otpauth://` URI is secret while its *display* is a live code.
+    /// A field that holds secret material under a kind of its own rather than `Concealed`: a TOTP
+    /// seed, whose `otpauth://` URI is secret while its *display* is a live code, and a card
+    /// number.
     fn secret(label: &str, kind: FieldKind) -> Self {
         Self {
             label: label.to_owned(),
@@ -250,9 +261,13 @@ impl Category {
             ],
             Self::Password => vec![FieldTemplate::concealed("password")],
             Self::SecureNote => Vec::new(),
+            // The number is a `CreditCardNumber` field, not a generic `Concealed` one: its kind
+            // is what the item list's "•••• 1234" subtitle is taken from, and a kind — unlike a
+            // label — cannot be changed on a stored secret without its value (the app's
+            // `save_item`), so a PIN relabelled "number" never becomes the subtitle.
             Self::CreditCard => vec![
                 FieldTemplate::public("cardholder name", K::Text),
-                FieldTemplate::concealed("number"),
+                FieldTemplate::secret("number", K::CreditCardNumber),
                 FieldTemplate::public("expiry", K::MonthYear),
                 FieldTemplate::concealed("CVV"),
                 FieldTemplate::concealed("PIN"),
@@ -452,6 +467,11 @@ pub struct VaultSummary {
     pub environment_count: usize,
     /// Whether agents may see it at all.
     pub agent_visible: bool,
+    /// Whether it is a shared vault (ADR-0035): a separate file of records other people's
+    /// computers write too, rather than a logical vault inside the personal vault file. Absent
+    /// on the wire from a build that predates shared vaults, and read as `false`.
+    #[serde(default)]
+    pub shared: bool,
 }
 
 /// Where an environment variable's value comes from (vault-format §5.2).
@@ -483,6 +503,88 @@ impl VarSourceKind {
 impl std::fmt::Display for VarSourceKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.pad(self.as_str())
+    }
+}
+
+/// An environment variable name that is safe to put anywhere a name goes: `^[A-Za-z_][A-Za-z0-9_]*$`,
+/// at most [`VarName::MAX_LEN`] bytes (mcp-server.md §2.6).
+///
+/// The only constructor validates, so holding a `VarName` *is* the proof. That matters because a
+/// name is rendered verbatim — `NAME=value` in a `.env` file, a `NAME` key in a child's
+/// environment block — and a name carrying `=` or a newline would write lines of its author's
+/// choosing into the file (`PATH=/tmp/evil`) or hand the child an entry it never asked for. The
+/// rendering side takes this type, not a `String`, so a name that skipped validation cannot reach
+/// it; a name read back from a vault an older build wrote is validated on the way out
+/// (`Vault::resolve_environment`) for the same reason.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct VarName(String);
+
+impl VarName {
+    /// The documented pattern, for messages and schemas.
+    pub const PATTERN: &'static str = "^[A-Za-z_][A-Za-z0-9_]*$";
+
+    /// The longest name accepted, in bytes (every accepted byte is ASCII, so also in characters).
+    pub const MAX_LEN: usize = 128;
+
+    /// Validate `name`.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::error::Error::InvalidVarName`] for anything that does not match [`Self::PATTERN`]
+    /// or is longer than [`Self::MAX_LEN`].
+    pub fn new(name: impl Into<String>) -> crate::error::Result<Self> {
+        let name = name.into();
+        if Self::is_valid(&name) {
+            Ok(Self(name))
+        } else {
+            Err(crate::error::Error::InvalidVarName(name))
+        }
+    }
+
+    /// Whether `name` would be accepted by [`Self::new`].
+    #[must_use]
+    pub fn is_valid(name: &str) -> bool {
+        let bytes = name.as_bytes();
+        match bytes.split_first() {
+            None => false,
+            Some((first, rest)) => {
+                bytes.len() <= Self::MAX_LEN
+                    && (first.is_ascii_alphabetic() || *first == b'_')
+                    && rest.iter().all(|b| b.is_ascii_alphanumeric() || *b == b'_')
+            }
+        }
+    }
+
+    /// The name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Display for VarName {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.pad(&self.0)
+    }
+}
+
+impl AsRef<str> for VarName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<VarName> for String {
+    fn from(name: VarName) -> Self {
+        name.0
+    }
+}
+
+impl std::str::FromStr for VarName {
+    type Err = crate::error::Error;
+
+    fn from_str(s: &str) -> crate::error::Result<Self> {
+        Self::new(s)
     }
 }
 
@@ -615,6 +717,30 @@ pub struct LeaseSummary {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_variable_name_is_an_identifier_and_nothing_else() {
+        for good in ["_", "A", "a1", "_x_", "STRIPE_SECRET_KEY"] {
+            assert!(VarName::new(good).is_ok(), "{good:?}");
+        }
+        for bad in [
+            "",
+            "1A",
+            "A=B",
+            "A\nB",
+            "A\rB",
+            "A B",
+            "A-B",
+            "A.B",
+            "A\0",
+            "É",
+            "A\u{202e}",
+        ] {
+            assert!(VarName::new(bad).is_err(), "{bad:?}");
+        }
+        assert!(VarName::new("A".repeat(VarName::MAX_LEN)).is_ok());
+        assert!(VarName::new("A".repeat(VarName::MAX_LEN + 1)).is_err());
+    }
 
     #[test]
     fn display_honours_field_width_so_tables_line_up() {

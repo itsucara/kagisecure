@@ -18,7 +18,13 @@
 //! Exactly one field of exactly one message: [`protocol::Response::Filled`]'s `password`, plus
 //! [`protocol::Response::TotpCode`]'s `code`, both typed [`protocol::FillValue`]. That type has
 //! no `Display`, redacts itself in `Debug`, and zeroizes on drop. Everything else on the wire is
-//! titles, usernames, origins, item ids and error codes.
+//! titles, usernames, origins, item ids, tab and document ids, which fields a page has, and error
+//! codes.
+//!
+//! That stays true of agent-requested fills (ADR-0036). The app may now speak first, with a
+//! [`protocol::Push`], but a push is a doorbell carrying two opaque ids and nothing else; the value
+//! an approved agent fill releases goes back in the same `Filled` or `TotpCode` reply, to a
+//! request the extension made, built by the same constructor as a human fill's.
 //!
 //! `kagisecure-core` is depended on with `proto` only, so this crate — and therefore
 //! `kagisecure-nmhost`, which links it — cannot name `Secret`, cannot open a vault, and has no
@@ -26,20 +32,30 @@
 //!
 //! # Shape
 //!
-//! * [`protocol`] — the messages, the error codes, and `FillValue`.
+//! * [`protocol`] — the messages, the error codes, and `FillValue`: requests, replies, and the
+//!   app's value-free pushes.
 //! * [`nm`] — Chrome native-messaging framing: 4-byte **native-endian** length, then JSON.
 //! * [`frame`] — the app-socket framing: 4-byte **big-endian** length, then JSON.
-//! * [`origin`] — origin parsing and the eTLD+1 matching rule.
+//! * [`origin`] — origin parsing and the eTLD+1 matching rule, plus what the agent-fill sheet
+//!   needs from it: which saved website covered a page, a look-alike-revealing rendering, and the
+//!   extension's same-site rule for a two-page sign-in.
 //! * [`endpoint`] — where the extension socket lives, beside the agent socket.
-//! * [`client`] — the native host's half.
-//! * [`listener`] — the app's half, plus what can be established about the host that connected.
+//! * [`client`] — the native host's half, lock-step or duplex (replies and pushes interleaved).
+//! * [`listener`] — the app's half, plus what can be established about the host that connected,
+//!   and a handle to push through.
+//! * [`sever`] — ending a connected host's session from another thread, so that a stopped
+//!   listener really releases its endpoint. A re-export of `kagisecure_ipc::sever`, which both
+//!   channels now share.
 //!
-//! # Why `deny(unsafe_code)` and not `forbid`
+//! # `forbid(unsafe_code)`
 //!
-//! There is no `unsafe` in this crate at all; `deny` is used for symmetry with `kagisecure-ipc`,
-//! whose peer-identification module this one borrows rather than duplicates.
+//! This crate used to be `deny` with one exception, `sever`'s `DisconnectNamedPipe`, and the
+//! client's busy-pipe wait went through `interprocess`'s safe API. Both now live in
+//! `kagisecure-ipc` (`sever`, and `connect`, which also opens the client end with
+//! identification-only impersonation), shared by the two channels rather than written twice, so
+//! nothing here needs `unsafe` and the lint is the one that cannot be overridden.
 
-#![deny(unsafe_code)]
+#![forbid(unsafe_code)]
 #![warn(missing_docs)]
 
 pub mod client;
@@ -50,17 +66,24 @@ pub mod nm;
 pub mod origin;
 pub mod peer;
 pub mod protocol;
+pub mod sever;
 
-pub use client::{Client, ClientError};
+pub use client::{Client, ClientError, DuplexClient};
 pub use endpoint::{EXTENSION_SOCKET_ENV, EXTENSION_SOCKET_FILE, extension_endpoint};
-pub use listener::{HostConnection, Listener};
-pub use origin::{MatchFailure, Origin, OriginError, item_match};
+pub use listener::{HostConnection, Listener, PushSender};
+pub use origin::{
+    AgentOriginRendering, MatchFailure, Origin, OriginError, continues_same_site, covering_website,
+    item_match,
+};
 pub use peer::{
     HostIdentity, HostKind, KnownBrowser, SAFARI_EXTENSION_BUNDLE_ID, SAFARI_EXTENSION_EXECUTABLE,
 };
 pub use protocol::{
-    ErrorCode, FillField, FillValue, MatchItem, PROTOCOL_VERSION, PageContext, Request, Response,
+    AgentFillFailure, AgentFillField, Capability, ErrorCode, FillField, FillValue, FoundFields,
+    HostBound, MatchItem, PROTOCOL_VERSION, PageContext, Push, PushEnvelope, Request, Response,
+    TabFacts,
 };
+pub use sever::Severer;
 
 /// The Chrome native-messaging host name.
 ///
@@ -71,11 +94,25 @@ pub const NATIVE_HOST_NAME: &str = "com.kagisecure.nmhost";
 
 /// The extension ids the app will serve.
 ///
-/// The id is pinned by committing the extension's public `key` in its `manifest.json`, which
-/// fixes the id whether the extension is loaded unpacked or installed from the Web Store
-/// (ADR-0021). An extension that is not on this list is refused at `Hello` — it never reaches an
-/// approval sheet, because the human has nothing useful to weigh about a stranger's extension id.
-pub const PINNED_EXTENSION_IDS: &[&str] = &["nlijibjnmanccalmafnfbobkcfjiibmd"];
+/// The first is the id the committed public `key` in `extensions/shared/manifest.json` pins: the
+/// one every unpacked load gets, on any machine, from any directory (ADR-0021). It stays first —
+/// the setup screen shows `PINNED_EXTENSION_IDS[0]`, and a test in `extensions/chrome` checks it is
+/// the id the committed key derives.
+///
+/// A Chrome Web Store install has a **different** id: the store refuses a new item whose manifest
+/// carries a `key`, so the store package has none, and the store assigns the item's id at the first
+/// upload (ADR-0021, amendment of 2026-10-03). Once that id is known it is added here, as a second
+/// entry — and nowhere else: the native messaging manifests the setup screen writes take their
+/// `allowed_origins` from this list. `docs/chrome-web-store.md` has the steps.
+///
+/// An extension that is not on this list is refused at `Hello` — it never reaches an approval
+/// sheet, because the human has nothing useful to weigh about a stranger's extension id.
+pub const PINNED_EXTENSION_IDS: &[&str] = &[
+    // Unpacked, pinned by the committed `key` (ADR-0021). Keep first.
+    "nlijibjnmanccalmafnfbobkcfjiibmd",
+    // The Chrome Web Store item (assigned at the first upload, 2026-10-03).
+    "aacppfmljihmjacphgpkbmanhbhphjgl",
+];
 
 /// Whether `id` is an extension this app serves.
 #[must_use]

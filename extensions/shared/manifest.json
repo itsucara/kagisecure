@@ -1,13 +1,12 @@
 {
   "manifest_version": 3,
   "name": "Kagisecure",
-  "version": "0.1.0",
-  "description": "Fill logins from your Kagisecure vault. Values never leave the app until you approve a fill.",
+  "version": "0.1.2",
+  "description": "Fill saved logins from the Kagisecure Mac app into web pages. Requires the Kagisecure app for macOS; does nothing on its own.",
   "minimum_chrome_version": "116",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAp7KKom4ywUXzpuW55TKkN8X5f4YwIImI01amFsqcGVyUzaFS3kIzgbQRVhLRp/OOI50ZVMjE7VvPleHZD0Ggh0nTnHdRORnYY6GEzLCxvp/L8KOxfsgAt2wu9R7mEjydat85SCp4P0IqxB0XqnWBGCYCjdg6F+9wYpYuxLEEl9BCIsEFjBcMuI3xccHeBsAZ53VigG4JMfTMoWfDYfSQJJwgs4pScXmesOAh16Gdzn54M6alIJD1lzudxXJRQX4Z07WSbnQBbTdpA2o/X5ofME4HlZViwLkQroas2U5IKKu7ACYQLSoU9JoHVnvda1E608+hpJtdelkrlqk8Ga5Q+wIDAQAB",
   "permissions": [
-    "nativeMessaging",
-    "activeTab"
+    "nativeMessaging"
   ],
   "background": {
     "service_worker": "background.js"
@@ -27,8 +26,18 @@
       ]
     }
   ],
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Kagisecure"
+    "default_title": "Kagisecure",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
   }
 }

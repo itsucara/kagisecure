@@ -19,7 +19,9 @@ final class G_TotpTests: UITestCase {
 
     func testAOneTimePasswordIsAddedThroughTheSetupSheetAndRunsLive() throws {
         try Harness.seedVault(at: vaultPath)
-        launch()
+        // Showing and copying a code are presence-gated releases (ADR-0038); the scripted gate
+        // says yes.
+        launch(biometrics: "allow")
         unlock()
         selectItem("GitHub")
 
@@ -63,10 +65,20 @@ final class G_TotpTests: UITestCase {
             capture("totp-setup-preview", "The live preview, confirming the secret before it is saved")
         }
 
-        step("saving the sheet and the item puts a running code on the detail pane") {
+        step("saving the sheet and the item puts a masked code on the detail pane; Show runs it") {
             click("ks.totpSetup.save")
             waitForDisappearance("ks.totpSetup.mode")
             click("ks.edit.save")
+
+            // Masked until touched (ADR-0038 user decision 2), and saying so. The announcement is
+            // the mask's accessibility *value*: on macOS a `Text`'s `.accessibilityLabel` replaces
+            // its string there and leaves `label` empty (`UITestCase.text(of:)`).
+            let masked = waitFor("ks.totp.masked")
+            XCTAssertEqual(
+                masked.value as? String,
+                Self.concealedAnnouncement("one-time password", action: "Show"))
+            XCTAssertFalse(element("ks.totp.code").exists, "no code before the touch")
+            click("ks.totp.show")
 
             waitFor("ks.totp.code")
             let code = textOf("ks.totp.code")
@@ -144,12 +156,14 @@ final class G_TotpTests: UITestCase {
             ],
             vault: vaultPath, stdin: [Self.fixtureUri])
 
-        launch()
+        launch(biometrics: "allow")
         unlock()
         selectItem("TOTP fixture")
 
         var first = ""
-        step("the field arrives already running") {
+        step("the field arrives masked, and one touch starts it running") {
+            waitFor("ks.totp.masked")
+            click("ks.totp.show")
             waitFor("ks.totp.code")
             first = textOf("ks.totp.code")
             XCTAssertTrue(

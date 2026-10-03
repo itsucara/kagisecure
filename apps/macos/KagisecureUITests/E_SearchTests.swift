@@ -234,18 +234,4 @@ final class E_SearchTests: UITestCase {
     private func emptyStateMessages() -> [String] {
         elements("ks.emptyState.message").allElementsBoundByIndex.map { text(of: $0) }
     }
-
-    /// Wait until `condition` holds. `waitFor` covers "this identifier appears"; this covers the
-    /// conditions computed across several elements at once, which no identifier can express.
-    /// Predicate-driven rather than a sleep loop, so it returns the moment the list settles.
-    private func waitUntil(
-        _ description: String, timeout: TimeInterval = UITestCase.shortTimeout,
-        _ condition: @escaping () -> Bool
-    ) -> Bool {
-        if condition() { return true }
-        let expectation = XCTNSPredicateExpectation(
-            predicate: NSPredicate { _, _ in condition() }, object: nil)
-        expectation.expectationDescription = description
-        return XCTWaiter().wait(for: [expectation], timeout: timeout) == .completed
-    }
 }

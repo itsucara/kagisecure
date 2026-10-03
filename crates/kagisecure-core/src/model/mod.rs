@@ -7,7 +7,10 @@ pub mod env;
 mod secret;
 
 pub use env::{EnvVar, Environment, VarSource};
-pub use secret::Secret;
+/// The crate-private serde adapter for a [`Secret`], for the other body types that hold one (the
+/// vault's device keys).
+pub(crate) use secret::cbor as secret_cbor;
+pub use secret::{Secret, SecretText};
 
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -29,6 +32,9 @@ pub struct VaultMeta {
     /// Unix seconds.
     #[serde(default)]
     pub created_at: u64,
+    /// Top-level keys this build does not recognize, preserved verbatim (vault-format §9 rule 1).
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, ciborium::Value>,
 }
 
 impl VaultMeta {
@@ -40,6 +46,7 @@ impl VaultMeta {
             name: name.into(),
             agent_visible: false,
             created_at: crate::unix_now(),
+            unknown: BTreeMap::new(),
         }
     }
 
@@ -52,6 +59,7 @@ impl VaultMeta {
             item_count,
             environment_count,
             agent_visible: self.agent_visible,
+            shared: false,
         }
     }
 }
@@ -145,6 +153,15 @@ pub struct Field {
     /// (vault-format §9) and an older file reads back with no extras.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub extra: BTreeMap<String, ciborium::Value>,
+    /// Top-level `Field` keys this build does not recognize, preserved verbatim so an older build
+    /// opening a vault a newer one wrote never destroys them (vault-format §9 rule 1).
+    ///
+    /// Distinct from [`Field::extra`]: `extra` is a single named key an *importer* fills with
+    /// foreign metadata it has nowhere else to put; `unknown` is whatever top-level CBOR keys this
+    /// build's own decoder does not have a field for at all, which by construction is exactly what
+    /// `#[serde(flatten)]` captures and nothing else touches.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, ciborium::Value>,
 }
 
 impl Field {
@@ -159,6 +176,7 @@ impl Field {
             section: None,
             agent_visible: false,
             extra: BTreeMap::new(),
+            unknown: BTreeMap::new(),
         }
     }
 
@@ -173,6 +191,7 @@ impl Field {
             section: None,
             agent_visible: false,
             extra: BTreeMap::new(),
+            unknown: BTreeMap::new(),
         }
     }
 
@@ -191,7 +210,16 @@ impl Field {
             section: None,
             agent_visible: false,
             extra: BTreeMap::new(),
+            unknown: BTreeMap::new(),
         }
+    }
+
+    /// Whether this field could be an item's primary secret ([`Item::primary_secret_field`]):
+    /// secret material, and not a one-time-password seed — filling or copying an `otpauth://`
+    /// URI where a password belongs would be useless and a disclosure of the shared seed.
+    #[must_use]
+    pub fn is_primary_secret_candidate(&self) -> bool {
+        self.value.is_secret() && self.kind != FieldKind::Totp
     }
 
     /// Whether this field holds a one-time-password seed.
@@ -218,6 +246,22 @@ impl Field {
                 "that field has no one-time-password setup",
             ))?;
         crate::totp::Totp::parse_uri(uri)
+    }
+
+    /// Whether this is a one-time-password field whose setup would generate codes — what
+    /// [`Self::totp_generator`] would answer with `Ok` — decided without decoding the seed.
+    ///
+    /// For a caller that asks before anything is approved and must not leave a copy of the seed
+    /// behind for asking: it reads the URI where it lies, in this field's own zeroizing buffer
+    /// ([`crate::totp::Totp::check_uri`]).
+    #[must_use]
+    pub fn has_working_totp(&self) -> bool {
+        self.kind == FieldKind::Totp
+            && self
+                .value
+                .as_secret()
+                .and_then(Secret::expose_str)
+                .is_some_and(|uri| crate::totp::Totp::check_uri(uri).is_ok())
     }
 
     /// Metadata-only view.
@@ -260,6 +304,11 @@ pub struct FieldRevision {
     pub value: FieldValue,
     /// When the value stopped being current, in Unix seconds.
     pub retired_at: u64,
+    /// Keys this build does not recognize, preserved verbatim (vault-format §9 rule 1) — so an
+    /// older build rewriting an item does not strip what a newer one recorded about a retired
+    /// value.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, ciborium::Value>,
 }
 
 impl FieldRevision {
@@ -272,6 +321,7 @@ impl FieldRevision {
             kind: FieldKind::Concealed,
             value: FieldValue::Secret(value),
             retired_at,
+            unknown: BTreeMap::new(),
         }
     }
 }
@@ -295,9 +345,19 @@ pub struct Item {
     /// Associated URLs.
     #[serde(default)]
     pub urls: Vec<String>,
-    /// Free-form note.
-    #[serde(default)]
-    pub notes: Option<String>,
+    /// Free-form note — secret material, like a concealed field (ADR-0038 user decision 3).
+    ///
+    /// Secure Notes and free-text notes routinely hold recovery codes, PINs and security-question
+    /// answers, so a note is held as [`SecretText`] in memory: redacted in `Debug`, never cloned,
+    /// zeroized on drop, and absent from [`Item::summary`] and every other metadata view. It is
+    /// never searched or matched, by the agent or by the app (see `kagisecure-ffi`'s
+    /// `list_items`): a search over note text would be an oracle a UI-driving process could
+    /// query one guess at a time without ever passing the presence gate.
+    ///
+    /// On disk it is exactly what it was as `Option<String>` — a CBOR text string or `null` — so
+    /// this did not move `body.schema` (vault-format §5, §9).
+    #[serde(default, with = "secret::cbor_text_opt")]
+    pub notes: Option<SecretText>,
     /// Marked favourite in a UI.
     #[serde(default)]
     pub favorite: bool,
@@ -337,10 +397,33 @@ pub struct Item {
     /// (vault-format §9) — the same treatment [`Item::trashed_at`] got.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<FieldRevision>,
+    /// Which field is this item's **primary secret** — the value "Copy password" (⇧⌘C, Quick
+    /// Access ⏎), the detail pane's unfocused ⌘R, a browser fill and the presence prompt's
+    /// "password" all mean — by [`FieldId`].
+    ///
+    /// By id, never by label or position: a label and the field order can both be changed in the
+    /// edit sheet without a presence check, so a rule like "the field called *password*" or "the
+    /// first concealed field" lets anything that can drive the UI relabel a PIN "password", or
+    /// move it first, and have the next copy, fill or prompt pick it. The id cannot be moved that
+    /// way. [`Item::from_template`] sets it; [`Item::pin_primary_secret`] fixes it, from the item
+    /// as it stood before an edit, for an item written before this key existed. Read it through
+    /// [`Item::primary_secret_field`].
+    ///
+    /// Additive, `#[serde(default)]` and skipped when `None`, so an item without it is
+    /// byte-identical to one written before it existed and `body.schema` does not move
+    /// (vault-format §9); an older build keeps it in [`Item::unknown`] and writes it back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_secret: Option<FieldId>,
     /// Lossless passthrough for data a future or foreign version wrote and this build does not
     /// understand (vault-format §9 rule 1).
     #[serde(default)]
     pub extra: BTreeMap<String, ciborium::Value>,
+    /// Top-level `Item` keys this build does not recognize, preserved verbatim (vault-format §9
+    /// rule 1). See [`Field::unknown`] for why this is a field distinct from [`Item::extra`]:
+    /// `extra` is importer-authored metadata under one named key, `unknown` is whatever top-level
+    /// CBOR keys this build's decoder has no field for.
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, ciborium::Value>,
 }
 
 impl Item {
@@ -364,8 +447,64 @@ impl Item {
             created_at: now,
             updated_at: now,
             history: Vec::new(),
+            primary_secret: None,
             extra: BTreeMap::new(),
+            unknown: BTreeMap::new(),
         }
+    }
+
+    /// The item's primary secret ([`Item::primary_secret`]): the field "Copy password", a browser
+    /// fill and the presence prompt's "password" all mean. `None` when there is none.
+    ///
+    /// * With a designation, exactly that field, and only while it is still secret material and
+    ///   not a one-time-password seed. A designated field that was deleted is **not** replaced by
+    ///   whatever concealed field is left: that would hand the role to a field nobody chose for
+    ///   it.
+    /// * Without one — an item written before the key existed, and not edited since — the first
+    ///   field holding secret material that is not a one-time-password seed: what the app, the
+    ///   extension and this designation's own [`Item::pin_primary_secret`] all agree on for such
+    ///   an item. Never the label.
+    #[must_use]
+    pub fn primary_secret_field(&self) -> Option<&Field> {
+        match self.primary_secret {
+            Some(id) => self
+                .fields
+                .iter()
+                .find(|f| f.id == id)
+                .filter(|f| f.is_primary_secret_candidate()),
+            None => self.fields.iter().find(|f| f.is_primary_secret_candidate()),
+        }
+    }
+
+    /// Designate the primary secret of an item that has none recorded, from its fields as they
+    /// are now — before an edit is applied, so the edit cannot choose it. Does nothing to an item
+    /// that already has a designation, even a dangling one.
+    pub fn pin_primary_secret(&mut self) {
+        if self.primary_secret.is_none() {
+            self.primary_secret = self
+                .fields
+                .iter()
+                .find(|f| f.is_primary_secret_candidate())
+                .map(|f| f.id);
+        }
+    }
+
+    /// The item's username, if it has a public one: the field labelled `username`, or failing
+    /// that `email` (case-insensitive), with a non-empty public value.
+    ///
+    /// A label is enough here, unlike for [`Item::primary_secret_field`]: a username is public —
+    /// the list, the detail pane and a browser's `match` already show it — so a relabel can at
+    /// worst make a copy pick another public value, never a secret one.
+    #[must_use]
+    pub fn username(&self) -> Option<&str> {
+        let public = |label: &str| {
+            self.fields
+                .iter()
+                .find(|f| f.label.eq_ignore_ascii_case(label))
+                .and_then(|f| f.value.as_public())
+                .filter(|v| !v.is_empty())
+        };
+        public("username").or_else(|| public("email"))
     }
 
     /// Look up a field by its id, or failing that by an exact label match.
@@ -394,6 +533,13 @@ impl Item {
             agent_visible: self.agent_visible,
             trashed: self.trashed_at.is_some(),
         }
+    }
+
+    /// Whether the item has a note with anything in it. A boolean, deliberately not a length —
+    /// the same rule as [`FieldValue::has_value`].
+    #[must_use]
+    pub fn has_notes(&self) -> bool {
+        self.notes.as_ref().is_some_and(|n| !n.is_empty())
     }
 
     /// Whether the item is in the trash.
@@ -428,6 +574,129 @@ impl Item {
             field.kind = t.kind;
             item.fields.push(field);
         }
+        // The template's first secret that is not a one-time password is the one its category is
+        // about — a login's password, a card's number, an API credential's key — and recording it
+        // now means no later relabel or reorder can move the role.
+        item.pin_primary_secret();
         item
+    }
+}
+
+#[cfg(test)]
+mod primary_secret_tests {
+    use super::*;
+
+    fn concealed(label: &str, value: &str) -> Field {
+        Field::concealed(label, Secret::new(value.as_bytes().to_vec()))
+    }
+
+    #[test]
+    fn a_template_designates_its_primary_secret_by_id() {
+        let login = Item::from_template(VaultId::new(), Category::Login, "L");
+        let password = login.fields.iter().find(|f| f.label == "password").unwrap();
+        assert_eq!(login.primary_secret, Some(password.id));
+
+        let card = Item::from_template(VaultId::new(), Category::CreditCard, "C");
+        let number = card.fields.iter().find(|f| f.label == "number").unwrap();
+        assert_eq!(number.kind, FieldKind::CreditCardNumber);
+        assert!(number.value.is_secret());
+        assert_eq!(card.primary_secret, Some(number.id));
+
+        let note = Item::from_template(VaultId::new(), Category::SecureNote, "N");
+        assert_eq!(note.primary_secret, None);
+        assert!(note.primary_secret_field().is_none());
+    }
+
+    #[test]
+    fn relabelling_or_reordering_never_moves_the_primary_secret() {
+        let mut item = Item::new(VaultId::new(), Category::Login, "Bank");
+        item.fields.push(concealed("password", "the-password"));
+        item.fields.push(concealed("PIN", "4321"));
+        item.pin_primary_secret();
+        let password = item.fields[0].id;
+
+        // Relabel the PIN "password", the password something else, and move the PIN first.
+        item.fields[1].label = "password".to_owned();
+        item.fields[0].label = "old".to_owned();
+        item.fields.swap(0, 1);
+        assert_eq!(item.primary_secret_field().map(|f| f.id), Some(password));
+
+        // A deleted designation is not handed to whatever concealed field is left.
+        item.fields.retain(|f| f.id != password);
+        assert!(item.primary_secret_field().is_none());
+        item.pin_primary_secret();
+        assert!(
+            item.primary_secret_field().is_none(),
+            "pinning never overwrites a designation, even a dangling one"
+        );
+    }
+
+    #[test]
+    fn an_undesignated_item_falls_back_to_its_first_non_totp_secret_and_pins_it() {
+        let mut item = Item::new(VaultId::new(), Category::Login, "Legacy");
+        item.fields.push(Field::public("username", "ada"));
+        item.fields.push(Field::totp(
+            "one-time password",
+            Secret::new(b"otpauth://totp/x?secret=JBSWY3DPEHPK3PXP".to_vec()),
+        ));
+        item.fields.push(concealed("passphrase", "pp"));
+        item.fields.push(concealed("password", "pw"));
+        let first_secret = item.fields[2].id;
+        assert_eq!(
+            item.primary_secret_field().map(|f| f.id),
+            Some(first_secret),
+            "position, never the label, and never the TOTP seed"
+        );
+        item.pin_primary_secret();
+        assert_eq!(item.primary_secret, Some(first_secret));
+        item.fields.swap(2, 3);
+        assert_eq!(
+            item.primary_secret_field().map(|f| f.id),
+            Some(first_secret)
+        );
+    }
+
+    #[test]
+    fn a_designation_that_stopped_being_secret_is_no_primary_secret() {
+        let mut item = Item::new(VaultId::new(), Category::Login, "L");
+        item.fields.push(concealed("password", "pw"));
+        item.pin_primary_secret();
+        item.fields[0].value = FieldValue::Public("now public".to_owned());
+        assert!(item.primary_secret_field().is_none());
+    }
+
+    #[test]
+    fn the_username_is_a_public_username_or_email_field() {
+        let mut item = Item::new(VaultId::new(), Category::Login, "L");
+        assert_eq!(item.username(), None);
+        item.fields.push(concealed("username", "secret-name"));
+        assert_eq!(item.username(), None, "never a secret");
+        item.fields.push(Field::public("email", "ada@example.com"));
+        assert_eq!(item.username(), Some("ada@example.com"));
+        item.fields.insert(0, Field::public("Username", "ada"));
+        assert_eq!(item.username(), Some("ada"));
+    }
+
+    #[test]
+    fn the_designation_round_trips_and_is_absent_when_unset() {
+        let mut item = Item::new(VaultId::new(), Category::Login, "L");
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&item, &mut bytes).unwrap();
+        let map: ciborium::Value = ciborium::from_reader(bytes.as_slice()).unwrap();
+        let keys: Vec<String> = map
+            .as_map()
+            .unwrap()
+            .iter()
+            .filter_map(|(k, _)| k.as_text().map(str::to_owned))
+            .collect();
+        assert!(!keys.iter().any(|k| k == "primary_secret"), "{keys:?}");
+
+        item.fields.push(concealed("password", "pw"));
+        item.pin_primary_secret();
+        let mut bytes = Vec::new();
+        ciborium::into_writer(&item, &mut bytes).unwrap();
+        let back: Item = ciborium::from_reader(bytes.as_slice()).unwrap();
+        assert_eq!(back.primary_secret, item.primary_secret);
+        assert!(back.unknown.is_empty());
     }
 }

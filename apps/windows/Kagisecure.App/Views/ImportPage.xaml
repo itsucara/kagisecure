@@ -1,0 +1,224 @@
+<Page
+    x:Class="Kagisecure.App.Views.ImportPage"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:vm="using:Kagisecure.App.ViewModels"
+    xmlns:interop="using:Kagisecure.Interop"
+    xmlns:converters="using:Kagisecure.App.Converters">
+
+    <Page.Resources>
+        <converters:StringToBoolConverter x:Key="StringToBoolConverter" />
+        <converters:ObjectToVisibilityConverter x:Key="ObjectToVisibilityConverter" />
+        <converters:EnumEqualsVisibilityConverter x:Key="PhaseIs" />
+        <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter" />
+        <converters:ImportActionToDisplayNameConverter x:Key="ActionName" />
+        <converters:DropNotesToSummaryConverter x:Key="DroppedSummary" />
+    </Page.Resources>
+
+    <Grid RowDefinitions="Auto,*">
+        <StackPanel Grid.Row="0" Orientation="Horizontal" Padding="16,12" Spacing="8">
+            <Button Content="&#xE72B; Back to items" Click="OnBackClicked" AutomationProperties.AutomationId="ks.import.cancel" />
+            <TextBlock Text="Import" Style="{StaticResource TitleTextBlockStyle}" VerticalAlignment="Center" Margin="12,0,0,0" AutomationProperties.AutomationId="ks.import.sheet" />
+        </StackPanel>
+
+        <ScrollViewer Grid.Row="1" Padding="24">
+            <StackPanel Spacing="14" MaxWidth="720" HorizontalAlignment="Left">
+
+                <!-- Pick file -->
+                <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.Phase, Mode=OneWay, Converter={StaticResource PhaseIs}, ConverterParameter=PickFile}">
+                    <TextBlock Text="Choose a file exported from another password manager (1PUX or CSV — import.md)." TextWrapping="Wrap" />
+                    <Button Content="Choose file…" Click="OnPickFileClicked" AutomationProperties.AutomationId="ks.import.open" />
+                </StackPanel>
+
+                <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.Phase, Mode=OneWay, Converter={StaticResource PhaseIs}, ConverterParameter='Loading,Committing'}">
+                    <ProgressRing IsActive="True" HorizontalAlignment="Left" />
+                    <TextBlock Text="Working…" Opacity="0.7" />
+                </StackPanel>
+
+                <TextBlock Text="{x:Bind ViewModel.SourcePath, Mode=OneWay}" Opacity="0.6" FontSize="12" TextTrimming="CharacterEllipsis" AutomationProperties.AutomationId="ks.import.sourcePath" />
+
+                <!-- Format defaults to auto-detection (import.md §3); this picker lets the user override it when
+                     detection guessed wrong or a source has an ambiguous header. Changing it re-parses the same
+                     file under the chosen format. -->
+                <StackPanel
+                    Spacing="4"
+                    Visibility="{x:Bind ViewModel.SourcePath, Mode=OneWay, Converter={StaticResource ObjectToVisibilityConverter}}">
+                    <ComboBox
+                        x:Name="FormatCombo"
+                        Header="Format"
+                        ItemsSource="{x:Bind ViewModel.FormatOptions, Mode=OneWay}"
+                        DisplayMemberPath="DisplayName"
+                        SelectedItem="{x:Bind ViewModel.SelectedFormatOption, Mode=OneWay}"
+                        IsEnabled="{x:Bind ViewModel.CanChangeFormat, Mode=OneWay}"
+                        SelectionChanged="OnFormatSelectionChanged"
+                        AutomationProperties.AutomationId="ks.import.format" />
+                    <TextBlock
+                        Text="{x:Bind ViewModel.DetectedFormatText, Mode=OneWay}"
+                        Opacity="0.6"
+                        FontSize="12"
+                        Visibility="{x:Bind ViewModel.Report, Mode=OneWay, Converter={StaticResource ObjectToVisibilityConverter}}"
+                        AutomationProperties.AutomationId="ks.import.formatDetected" />
+                </StackPanel>
+
+                <!-- Preview -->
+                <StackPanel Spacing="10" Visibility="{x:Bind ViewModel.Phase, Mode=OneWay, Converter={StaticResource PhaseIs}, ConverterParameter=Previewing}">
+                    <TextBlock
+                        Text="{x:Bind ViewModel.Report.Totals.Items, Mode=OneWay}"
+                        FontWeight="SemiBold"
+                        AutomationProperties.AutomationId="ks.import.totalItems" />
+                    <TextBlock Text="{x:Bind ViewModel.Report.Totals.HistoryEntries, Mode=OneWay}" Opacity="0.7" />
+                    <TextBlock Text="{x:Bind ViewModel.DuplicateSentence, Mode=OneWay}" AutomationProperties.AutomationId="ks.import.duplicates" />
+
+                    <RadioButtons
+                        x:Name="PolicyRadios"
+                        Header="Items this vault already has"
+                        SelectedIndex="0"
+                        SelectionChanged="OnPolicySelectionChanged"
+                        AutomationProperties.AutomationId="ks.import.duplicatePolicy">
+                        <RadioButton Content="Skip them" />
+                        <RadioButton Content="Update them" />
+                        <RadioButton Content="Keep both" />
+                    </RadioButtons>
+                    <TextBlock Text="{x:Bind ViewModel.PolicyExplanation, Mode=OneWay}" TextWrapping="Wrap" Opacity="0.6" FontSize="12" />
+
+                    <TextBlock Text="By category" FontWeight="SemiBold" Margin="0,8,0,0" />
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.Report.ByCategory, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="interop:ImportCategoryCount">
+                                <StackPanel Orientation="Horizontal" Spacing="4">
+                                    <TextBlock Text="{x:Bind Category}" />
+                                    <TextBlock Text=":" />
+                                    <TextBlock Text="{x:Bind Items}" />
+                                </StackPanel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <TextBlock Text="Not imported" FontWeight="SemiBold" Margin="0,8,0,0" />
+                    <ItemsControl ItemsSource="{x:Bind ViewModel.Report.Dropped, Mode=OneWay}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="interop:DropNote">
+                                <TextBlock Text="{x:Bind Explanation}" TextWrapping="Wrap" FontSize="12" Opacity="0.7" AutomationProperties.AutomationId="ks.import.droppedHistory" />
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                    <ComboBox
+                        x:Name="TargetVaultCombo"
+                        Header="Target vault"
+                        ItemsSource="{x:Bind ViewModel.Vaults, Mode=OneWay}"
+                        DisplayMemberPath="Name"
+                        PlaceholderText="Follow source"
+                        SelectionChanged="OnTargetVaultChanged" />
+
+                    <!-- Per-item detail (import.md §8, mirroring the macOS sheet's ks.import.detailTable). Read-only:
+                         ImportPlanHandle (Kagisecure.Interop/Import.cs) has no way to change or exclude one item's
+                         action before commit, only report()/source_path()/is_spent() — see ViewModel.ItemDetailNote. -->
+                    <TextBlock Text="Every item" FontWeight="SemiBold" Margin="0,8,0,0" />
+                    <TextBlock
+                        Text="{x:Bind ViewModel.ItemDetailNoteText}"
+                        TextWrapping="Wrap"
+                        FontSize="12"
+                        Opacity="0.6" />
+
+                    <ComboBox
+                        Header="Show"
+                        SelectedIndex="0"
+                        SelectionChanged="OnActionFilterChanged"
+                        AutomationProperties.AutomationId="ks.import.itemFilter">
+                        <ComboBoxItem Content="All items" Tag="all" />
+                        <ComboBoxItem Content="Add" Tag="create" />
+                        <ComboBoxItem Content="Update" Tag="update" />
+                        <ComboBoxItem Content="Skip" Tag="skip" />
+                        <ComboBoxItem Content="Keep both" Tag="keepboth" />
+                    </ComboBox>
+
+                    <ListView
+                        ItemsSource="{x:Bind ViewModel.Items, Mode=OneWay}"
+                        Height="260"
+                        SelectionMode="None"
+                        AutomationProperties.AutomationId="ks.import.detailTable">
+                        <ListView.HeaderTemplate>
+                            <DataTemplate>
+                                <Grid ColumnDefinitions="200,150,120,90,*" Padding="4,2">
+                                    <TextBlock Grid.Column="0" Text="Title" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock Grid.Column="1" Text="Category" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock Grid.Column="2" Text="Vault" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock Grid.Column="3" Text="Action" FontWeight="SemiBold" FontSize="12" />
+                                    <TextBlock Grid.Column="4" Text="Not imported" FontWeight="SemiBold" FontSize="12" />
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.HeaderTemplate>
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="interop:ImportItemRow">
+                                <Grid ColumnDefinitions="200,150,120,90,*" Padding="4,4">
+                                    <TextBlock Grid.Column="0" Text="{x:Bind Title}" TextTrimming="CharacterEllipsis" AutomationProperties.AutomationId="ks.import.item.title" />
+                                    <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="2">
+                                        <TextBlock Text="{x:Bind Category}" TextTrimming="CharacterEllipsis" />
+                                        <TextBlock
+                                            Text=" (guessed)"
+                                            Opacity="0.6"
+                                            FontSize="11"
+                                            Visibility="{x:Bind CategoryWasGuessed, Converter={StaticResource BoolToVisibilityConverter}}" />
+                                    </StackPanel>
+                                    <TextBlock Grid.Column="2" Text="{x:Bind Vault}" TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Grid.Column="3" Text="{x:Bind Action, Converter={StaticResource ActionName}}" AutomationProperties.AutomationId="ks.import.item.action" />
+                                    <TextBlock
+                                        Grid.Column="4"
+                                        Text="{x:Bind Dropped, Converter={StaticResource DroppedSummary}}"
+                                        TextTrimming="CharacterEllipsis"
+                                        Opacity="0.7"
+                                        FontSize="12" />
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+
+                    <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,8,0,0">
+                        <Button Content="Cancel" Click="OnBackClicked" />
+                        <Button
+                            Content="Import"
+                            Style="{StaticResource AccentButtonStyle}"
+                            Command="{x:Bind ViewModel.CommitCommand}"
+                            AutomationProperties.AutomationId="ks.import.confirm" />
+                    </StackPanel>
+                </StackPanel>
+
+                <!-- Shred prompt -->
+                <StackPanel Spacing="10" Visibility="{x:Bind ViewModel.Phase, Mode=OneWay, Converter={StaticResource PhaseIs}, ConverterParameter='ShredPrompt,Finished'}">
+                    <TextBlock
+                        Text="{x:Bind ViewModel.Outcome.Headline, Mode=OneWay}"
+                        FontWeight="SemiBold"
+                        TextWrapping="Wrap"
+                        AutomationProperties.AutomationId="ks.import.result" />
+
+                    <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.Phase, Mode=OneWay, Converter={StaticResource PhaseIs}, ConverterParameter=ShredPrompt}">
+                        <TextBlock Text="Delete the source file?" FontWeight="SemiBold" AutomationProperties.AutomationId="ks.import.shredPrompt" />
+                        <TextBlock Text="{x:Bind ViewModel.ShredWarning, Mode=OneWay}" TextWrapping="Wrap" Opacity="0.75" />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Content="Delete the file" Command="{x:Bind ViewModel.ShredSourceCommand}" AutomationProperties.AutomationId="ks.import.shredConfirm" />
+                            <Button Content="Keep it" Command="{x:Bind ViewModel.KeepSourceCommand}" AutomationProperties.AutomationId="ks.import.shredSkip" />
+                        </StackPanel>
+                    </StackPanel>
+
+                    <TextBlock
+                        Text="{x:Bind ViewModel.FinishedSentence, Mode=OneWay}"
+                        TextWrapping="Wrap"
+                        Opacity="0.7"
+                        Visibility="{x:Bind ViewModel.Phase, Mode=OneWay, Converter={StaticResource PhaseIs}, ConverterParameter=Finished}" />
+                    <Button
+                        Content="Done"
+                        Style="{StaticResource AccentButtonStyle}"
+                        Click="OnBackClicked"
+                        Visibility="{x:Bind ViewModel.Phase, Mode=OneWay, Converter={StaticResource PhaseIs}, ConverterParameter=Finished}" />
+                </StackPanel>
+
+                <!-- Failure -->
+                <StackPanel Spacing="10" Visibility="{x:Bind ViewModel.Phase, Mode=OneWay, Converter={StaticResource PhaseIs}, ConverterParameter=Failed}">
+                    <InfoBar IsOpen="True" Severity="Error" Message="{x:Bind ViewModel.ErrorMessage, Mode=OneWay}" AutomationProperties.AutomationId="ks.import.error" />
+                    <Button Content="Try again" Command="{x:Bind ViewModel.RetryCommand}" />
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Grid>
+</Page>

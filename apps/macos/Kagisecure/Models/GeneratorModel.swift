@@ -131,11 +131,11 @@ extension WordSeparator {
     /// What the menu row says.
     var label: String {
         switch self {
-        case .hyphen: "Hyphen  -"
-        case .underscore: "Underscore  _"
-        case .period: "Period  ."
-        case .space: "Space"
-        case .none: "None"
+        case .hyphen: String(localized: "Hyphen  -")
+        case .underscore: String(localized: "Underscore  _")
+        case .period: String(localized: "Period  .")
+        case .space: String(localized: "Space")
+        case .none: String(localized: "None")
         }
     }
 }

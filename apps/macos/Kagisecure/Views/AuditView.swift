@@ -16,6 +16,16 @@ struct AuditView: View {
     @State private var actorFilter: String = "all"
     @State private var toolFilter: String = "all"
     @State private var query = ""
+    /// Which log: the personal vault's, or the machine vault's (ADR-0042 §8).
+    @State private var log: AuditLog = .personal
+    @State private var machineRows: [AuditRowView] = []
+    @State private var machineProblem: String?
+
+    /// The two logs the view can show.
+    enum AuditLog: Hashable {
+        case personal
+        case machine
+    }
 
     private static let pageSize: UInt32 = 500
 
@@ -33,10 +43,10 @@ struct AuditView: View {
             if rows.isEmpty {
                 EmptyStateView(
                     symbol: "list.bullet.rectangle.portrait",
-                    title: store.auditRows.isEmpty ? "Nothing recorded yet" : "Nothing matches",
-                    message: store.auditRows.isEmpty
-                        ? "Every agent call lands here — allowed, denied, or failed."
-                        : "Clear the filters to see everything again.")
+                    title: sourceRows.isEmpty ? String(localized: "Nothing recorded yet") : String(localized: "Nothing matches"),
+                    message: sourceRows.isEmpty
+                        ? String(localized: "Every agent call lands here — allowed, denied, or failed.")
+                        : String(localized: "Clear the filters to see everything again."))
                     .accessibilityIdentifier("ks.audit.empty")
             } else {
                 Table(rows) {
@@ -77,13 +87,84 @@ struct AuditView: View {
                 .accessibilityIdentifier("ks.audit.table")
             }
             Divider()
-            footer
+            if log == .personal {
+                footer
+            } else {
+                Text(
+                    machineProblem
+                        ?? String(localized: "The machine vault's log: what unattended jobs did, and what you decided about them.")
+                )
+                .font(.caption)
+                .foregroundStyle(machineProblem == nil ? Color.secondary : Color.red)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityIdentifier("ks.audit.machineState")
+            }
         }
         .navigationTitle("Audit")
-        .onAppear { store.refreshAudit(limit: Self.pageSize) }
+        .onAppear { reload() }
+        .onChange(of: log) { _, _ in reload() }
     }
 
+    private var sourceRows: [AuditRowView] {
+        log == .personal ? store.auditRows : machineRows
+    }
+
+    private func reload() {
+        switch log {
+        case .personal:
+            store.refreshAudit(limit: Self.pageSize)
+        case .machine:
+            do {
+                machineRows = try unattendedAuditPage(
+                    session: store.session, limit: Self.pageSize, offset: 0)
+                machineProblem = nil
+            } catch {
+                machineRows = []
+                machineProblem = describeAnyError(error)
+            }
+        }
+    }
+
+    /// The search field on one row and the three pickers under it.
+    ///
+    /// One row of all five needed about 590 points before the search field got any, and the
+    /// detail column of a 1040-point window is about 460 (the item list stays beside it): the
+    /// field was squeezed to nothing and the row ran off the window. The pickers also give way,
+    /// down to their own minimum, rather than holding a fixed width each.
     private var filters: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                TextField("Filter by tool, variable or path", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 120)
+                    .accessibilityIdentifier("ks.audit.query")
+
+                Picker("Log", selection: $log) {
+                    Text("Personal vault").tag(AuditLog.personal)
+                    Text("Machine vault").tag(AuditLog.machine)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .accessibilityIdentifier("ks.audit.log")
+
+                Button {
+                    reload()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .help("Reload")
+                .accessibilityIdentifier("ks.audit.reload")
+            }
+            pickers
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+
+    private var pickers: some View {
         HStack(spacing: 12) {
             Picker("Result", selection: $outcomeFilter) {
                 Text("All results").tag("all")
@@ -92,17 +173,18 @@ struct AuditView: View {
                 Text("Failed").tag("failed")
             }
             .pickerStyle(.menu)
-            .frame(width: 160)
+            .frame(maxWidth: 160)
             .accessibilityIdentifier("ks.audit.filter.outcome")
 
             Picker("Caller", selection: $actorFilter) {
                 Text("Everyone").tag("all")
                 Text("Agents (mcp)").tag("mcp")
+                Text("Unattended").tag(Self.unattendedActor)
                 Text("This app").tag("app")
                 Text("The CLI").tag("cli")
             }
             .pickerStyle(.menu)
-            .frame(width: 160)
+            .frame(maxWidth: 160)
             .accessibilityIdentifier("ks.audit.filter.actor")
 
             Picker("Tool", selection: $toolFilter) {
@@ -112,46 +194,67 @@ struct AuditView: View {
                 Text("Other").tag("other")
             }
             .pickerStyle(.menu)
-            .frame(width: 160)
+            .frame(maxWidth: 160)
             .accessibilityIdentifier("ks.audit.filter.tool")
 
-            TextField("Filter by tool, variable or path", text: $query)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("ks.audit.query")
-
-            Button {
-                store.refreshAudit(limit: Self.pageSize)
-            } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-            .help("Reload")
-            .accessibilityIdentifier("ks.audit.reload")
+            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
     }
 
     private var footer: some View {
-        HStack(spacing: 6) {
-            Image(systemName: store.auditIntact ? "checkmark.seal" : "exclamationmark.triangle.fill")
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Image(
+                    systemName: store.auditIntact
+                        ? "checkmark.seal" : "exclamationmark.triangle.fill"
+                )
                 .foregroundStyle(store.auditIntact ? .green : .red)
                 .accessibilityHidden(true)
-            Text(
-                store.auditIntact
-                    ? "Hash chain intact — \(store.auditTotal) entries, names only, never values."
-                    : "The hash chain does not verify. Entries may have been dropped or reordered.")
+                (store.auditIntact
+                    ? Text("Hash chain intact — \(Int(store.auditTotal)) entries, names only, never values.")
+                    : Text("The hash chain does not verify. Entries may have been dropped or reordered."))
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("ks.audit.chainState")
-            Spacer()
+                Spacer()
+            }
+            // Distinct from the chain check above: the chain check only asks whether what *is*
+            // on disk is internally consistent. This asks whether disk has everything that has
+            // been appended in memory at all — the gap a save that keeps failing (a hostile
+            // `chflags uchg` on the vault directory, a full disk) leaves behind.
+            if store.auditUnsavedEntries > 0 {
+                HStack(spacing: 6) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .accessibilityHidden(true)
+                    Text(saveWarning)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("ks.audit.saveState")
+                    Spacer()
+                }
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
     }
 
+    /// "N audit entries are not saved to disk yet — the last save failed: <reason>".
+    private var saveWarning: String {
+        let count = store.auditUnsavedEntries
+        guard let reason = store.auditSaveError else {
+            return count == 1
+                ? String(localized: "1 audit entry is not saved to disk yet.")
+                : String(localized: "\(Int(count)) audit entries are not saved to disk yet.")
+        }
+        return count == 1
+            ? String(localized: "1 audit entry is not saved to disk yet — the last save failed: \(reason)")
+            : String(localized: "\(Int(count)) audit entries are not saved to disk yet — the last save failed: \(reason)")
+    }
+
     private var rows: [AuditRowView] {
         Self.filteredRows(
-            store.auditRows, outcome: outcomeFilter, actor: actorFilter, tool: toolFilter,
+            sourceRows, outcome: outcomeFilter, actor: actorFilter, tool: toolFilter,
             query: query)
     }
 
@@ -166,7 +269,7 @@ struct AuditView: View {
     ) -> [AuditRowView] {
         rows.filter { row in
             (outcome == "all" || row.outcome == outcome)
-                && (actor == "all" || row.actor == actor)
+                && (actor == "all" || actorMatches(row.actor, actor))
                 && (tool == "all"
                     || (tool == "other"
                         ? row.tool != fillCredentialTool && row.tool != totpCodeTool
@@ -174,6 +277,25 @@ struct AuditView: View {
                 && (query.isEmpty || matches(row, query.lowercased()))
         }
     }
+
+    /// Whether a row's actor belongs under the Caller filter `actor`.
+    ///
+    /// Agents are a prefix match: every agent actor starts with `mcp`, and an agent fill's carries
+    /// the agent's name, pid and browser after it (ADR-0036, implementation decision 7). Every
+    /// other filter is exact.
+    static func actorMatches(_ rowActor: String, _ actor: String) -> Bool {
+        switch actor {
+        case "mcp": rowActor.hasPrefix("mcp")
+        // A request from a run (`mcp unattended "<job>" run …`) and what the engine wrote on its
+        // own behalf (`unattended`) — ADR-0042 §8.
+        case Self.unattendedActor:
+            rowActor.hasPrefix("mcp unattended") || rowActor == Self.unattendedActor
+        default: rowActor == actor
+        }
+    }
+
+    /// The Caller filter's tag, and the actor the engine records its own entries under.
+    static let unattendedActor = "unattended"
 
     static func matches(_ row: AuditRowView, _ needle: String) -> Bool {
         row.tool.lowercased().contains(needle)

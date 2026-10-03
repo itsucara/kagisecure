@@ -24,7 +24,7 @@ struct ImportModelTests {
         let path = directory.appendingPathComponent("test.kagivault")
         let session = try VaultSession.create(
             path: path.path, masterPassword: "correct horse battery staple",
-            vaultName: "Personal", kdfMKib: 8, kdfT: 1)
+            vaultName: "Personal", kdfMKib: 64, kdfT: 1)
         return (session, directory)
     }
 

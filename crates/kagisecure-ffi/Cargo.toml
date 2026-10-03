@@ -15,19 +15,55 @@ authors.workspace = true
 crate-type = ["lib", "staticlib", "cdylib"]
 name = "kagisecure_ffi"
 
+[features]
+# The explicit `extern "C"` surface the Windows app's hand-written P/Invoke layer calls
+# (ADR-0003's fallback; see src/capi.rs). Off by default, so the Swift path never compiles it and
+# the default build keeps `#![forbid(unsafe_code)]`. `cargo xtask bindgen-cs` turns it on.
+capi = []
+
 [dependencies]
+# Off macOS, `default_vault_path` uses this to agree with `kagisecure_cli::paths::default_vault_path`
+# on where the vault lives, instead of a macOS-only hardcoded join (see lib.rs).
+directories = "6"
 kagisecure-core = { workspace = true, features = ["secret-material"] }
 kagisecure-agent = { workspace = true }
 # The importers (import.md, ADR-0031). The parser dependencies — zip, csv, serde_json — stay in
 # that crate's subtree rather than in core's, and the FFI layer is one of the two consumers ADR
 # allows to link it (the CLI is the other).
 kagisecure-import = { workspace = true }
+# Shared vaults (ADR-0035): the app creates, joins, reads and writes them through this crate. The
+# FFI layer is where the app's process already holds decrypted items; `kagisecure-mcp`,
+# `kagisecure-ipc` and the other agent-facing crates still never reach it (its dependency guard).
+kagisecure-shared = { workspace = true }
 # For the pinned extension id and the native host name the setup screen shows. No protocol type
 # is used here: the app never speaks the extension wire format, the agent library does.
 kagisecure-extension-ipc = { workspace = true }
+# For `authenticode::verify_peer` behind `verify_peer_code_signature` (ADR-0032) — the Windows
+# counterpart of the Swift check ADR-0015 keeps on macOS. Already in the graph through the agent.
+kagisecure-ipc = { workspace = true }
+# A copied machine-vault environment names its source in its passthrough map
+# (`unattended_manage`), and the notes golden vector is checked as CBOR bytes.
+ciborium = "0.2"
 uniffi = "0.32"
+# `PresenceGate` (ADR-0038): an async trait Swift implements and Rust awaits. `Arc<dyn PresenceGate>`
+# needs the trait to be dyn-compatible, which a native `async fn` in a trait is not on stable Rust;
+# `async_trait` boxes the future, which is exactly the shape uniffi's foreign-trait support expects
+# (ADR-0038, "Spike result").
+async-trait = "0.1"
 thiserror = "2"
 zeroize = "1.9"
+# `VaultSession::save_item`'s conflict check (step 4, user decision 4): hashing the item as loaded
+# so a stale edit-sheet save can be told apart from a fresh one without a second, secret-carrying
+# copy of the item crossing back out to Swift as an opaque "revision" token.
+sha2 = "0.11"
+# `ItemView::revision` is an HMAC-SHA-256 under a random per-session key, not a bare hash of the
+# item's secrets (which would be an offline guessing oracle handed to Swift for every item).
+hmac = "0.13"
 
 [dev-dependencies]
 tempfile = "3"
+# An executor for driving the async release calls in tests (the app's is Swift's own), and the
+# one-shot channel a scripted presence gate waits on.
+futures = { version = "0.3", default-features = false, features = ["std", "executor"] }
+# A real agent client, to show a pending presence prompt does not stall the agent.
+kagisecure-ipc = { workspace = true }

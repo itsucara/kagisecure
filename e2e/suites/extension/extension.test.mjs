@@ -39,8 +39,18 @@
  * | `mallory.github.io:PORT`      | refused — `github.io` is a public suffix, so this is a sibling    |
  * | `app.example.com:OTHER_PORT`  | refused — the port is part of the origin                          |
  * | `127.0.0.1:PORT`              | refused — an IP literal, exact host match only                    |
+ * | `app.examp1e.com:PORT`        | refused — a look-alike one character off, for the agent-fill cases |
  *
  * Nothing leaves the machine: the resolver rule sends every one of those hosts to 127.0.0.1.
+ *
+ * # Agent-requested fills
+ *
+ * The scenarios at the end drive ADR-0036's `request_fill` the way an agent does: a real
+ * `kagisecure-mcp`, spoken to over stdio by this file, pointed at the harness's MCP socket
+ * (`extension_harness --agent-socket … --agent-fill`), so the request crosses the same sidecar, the
+ * same broker, the same push to the browser and the same stamped report as it would from the app.
+ * The robot answering the queue announces every sheet it answers, which is how "no sheet" and "no
+ * second sheet" are asserted as counts rather than inferred from the audit log.
  */
 
 import test from "node:test";
@@ -51,7 +61,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 
-import { exampleBinary, binary, scratch, runDir, waitFor } from "../../lib/harness.mjs";
+import { exampleBinary, binary, scratch, runDir, waitFor, Sidecar } from "../../lib/harness.mjs";
 import { record, recordText, screenshot } from "../../lib/artifacts.mjs";
 
 /** The extension source both browsers load: `extensions/shared`, not `extensions/chrome`. */
@@ -142,8 +152,18 @@ function servePages() {
   });
 }
 
-/** Start `extension_harness` and wait for its ready line. */
-function startHarness(socket, sites, { deny = false, second = false } = {}) {
+/**
+ * Start `extension_harness` and wait for its ready line.
+ *
+ * `agentSocket` also serves the MCP socket there and turns agent fills on (`--agent-socket`,
+ * `--agent-fill`), which makes the test item and its vault visible to agents as `request_fill`
+ * requires.
+ */
+function startHarness(
+  socket,
+  sites,
+  { deny = false, presence = false, second = false, agentSocket = null } = {},
+) {
   const args = [
     "--socket", socket,
     "--username", USERNAME,
@@ -152,9 +172,13 @@ function startHarness(socket, sites, { deny = false, second = false } = {}) {
   ];
   for (const site of sites) args.push("--site", site);
   if (deny) args.push("--deny");
+  // Reviews every full sheet and allows it for the session, then denies every presence prompt:
+  // the app with nobody at the keyboard after the first login (ADR-0037).
+  if (presence) args.push("--presence");
   // A second account at the same websites, so that "which item" is a real question on page two of
   // an identifier-first sign-in. Only the world that tests that asks for it.
   if (second) args.push("--second-username", SECOND_USERNAME, "--second-password", SECOND_PASSWORD);
+  if (agentSocket) args.push("--agent-socket", agentSocket, "--agent-fill");
 
   const child = spawn(exampleBinary("extension_harness"), args, {
     stdio: ["pipe", "pipe", "pipe"],
@@ -185,6 +209,13 @@ function startHarness(socket, sites, { deny = false, second = false } = {}) {
   return {
     ready,
     stderr: () => stderr,
+    /**
+     * How many agent-fill sheets the robot in the chair has been shown so far. Each is a line the
+     * harness prints before it answers; the kind is the only thing on it.
+     */
+    agentSheets() {
+      return lines.filter((l) => l.includes('"event":"sheet"') && l.includes('"AgentFill"')).length;
+    },
     async audit() {
       const before = lines.length;
       child.stdin.write("audit\n");
@@ -318,15 +349,23 @@ async function world(mode = "allow") {
     otherPort: `http://app.example.com:${port === 65535 ? port - 1 : port + 1}`,
     ipLiteral: `http://127.0.0.1:${port}`,
     stranger: `http://unrelated.example.net:${port}`,
+    lookalike: `http://app.examp1e.com:${port}`,
   };
 
   const dir = scratch(`extension-${mode}`);
   const socket = path.join(runDir(), `ext-${mode}.sock`);
+  // Every `agent*` world also serves the MCP socket, and gets a sidecar of its own on it.
+  const agentSocket = mode.startsWith("agent") ? path.join(runDir(), `ext-${mode}-mcp.sock`) : null;
   const harness = startHarness(socket, [origins.saved, origins.secondSaved], {
     deny: mode === "deny",
+    presence: mode === "presence",
     second: mode === "identifier",
+    agentSocket,
   });
   await harness.ready;
+  const sidecar = agentSocket
+    ? new Sidecar(agentSocket, { cwd: dir, clientName: "kagisecure-e2e-agent" })
+    : null;
 
   const profileDir = path.join(dir, "profile");
   fs.mkdirSync(profileDir, { recursive: true });
@@ -343,6 +382,7 @@ async function world(mode = "allow") {
   }
 
   if (!context) {
+    if (sidecar) sidecar.stop();
     harness.stop();
     browserUnavailable =
       "No installed Chromium-family browser accepted --load-extension. Chrome 137+ removed the " +
@@ -358,17 +398,21 @@ async function world(mode = "allow") {
   await popup.goto(`chrome-extension://${EXTENSION_ID}/popup.html`);
   await popup.setViewportSize({ width: 320, height: 360 });
 
-  const built = { context, popup, harness, origins, browser, port, mode };
+  const built = { context, popup, harness, origins, browser, port, mode, sidecar };
   worlds.set(mode, built);
+  if (sidecar) await sidecar.initialize();
   return built;
 }
 
 /**
  * Shut one world down early.
  *
- * Each world is a browser *and* a harness, and a machine running four of them at once is a
+ * Each world is a browser *and* a harness, and there are nine of them — allow, identifier, deny,
+ * presence and lock, and the four agent-fill worlds — and a machine running nine at once is a
  * machine where a 1.5-second settle is sometimes not one. The worlds that a single scenario uses
- * therefore close themselves when that scenario is done, so the peak is three rather than four.
+ * (identifier, presence and every agent world) therefore close themselves when that scenario is
+ * done, so the peak is three — allow and deny, plus whichever single-scenario world or lock is
+ * running — rather than nine.
  * `test.after` still closes whatever is left, so a scenario that fails before it gets here leaks
  * nothing.
  */
@@ -377,12 +421,14 @@ async function closeWorld(mode) {
   if (!built) return;
   worlds.delete(mode);
   await built.context.close().catch(() => {});
+  if (built.sidecar) built.sidecar.stop();
   built.harness.stop();
 }
 
 test.after(async () => {
   for (const built of worlds.values()) {
     await built.context.close().catch(() => {});
+    if (built.sidecar) built.sidecar.stop();
     built.harness.stop();
   }
   if (pageServer) pageServer.server.close();
@@ -407,8 +453,30 @@ async function requireWorld(t, mode = "allow") {
 // Talking to the extension
 // -------------------------------------------------------------------------------------------
 
-/** Ask the service worker something, from the extension's own popup page. */
-function ask(popup, message) {
+/** The two `ask()` kinds `background.js` answers by relaying to the active tab's content script. */
+const RELAYED_TO_ACTIVE_TAB = new Set(["matches-active-tab", "totp-active-tab"]);
+
+/**
+ * Ask the service worker something, from the extension's own popup page.
+ *
+ * `matches-active-tab` and `totp-active-tab` are the two exceptions: `background.js`'s relay for
+ * them refuses any request whose `sender.tab` is set (added by commit ded6bd3, the fix for the
+ * adversarial suite's finding that a content script could otherwise forge the popup's own relay
+ * message and reach another tab's fill path with no trusted gesture behind it — see
+ * `RELAYED`/`tabIdOf` in `extensions/shared/background.js`). That check is correct in production,
+ * where the popup runs in a window of its own and never carries a `sender.tab` — but this suite's
+ * popup is deliberately opened as an ordinary tab (`world()`'s comment: "so Playwright can drive
+ * it"), so a plain `chrome.runtime.sendMessage` from it now carries exactly the `sender.tab` the
+ * check exists to catch, and is refused by the same rule a forging content script would be. So
+ * these two are asked through the service worker's own execution context instead — a devtools
+ * capability no page has, the same kind `the tab memory expires` already uses for
+ * `KsTabMemory.sweep` — which reproduces the relay's own logic without going through
+ * `chrome.runtime.onMessage`, and so without the `sender.tab` this rig cannot avoid having.
+ */
+async function ask(popup, message) {
+  if (RELAYED_TO_ACTIVE_TAB.has(message.kind)) {
+    return askActiveTabViaServiceWorker(popup.context(), message);
+  }
   return popup.evaluate(
     (msg) =>
       new Promise((resolve) => {
@@ -418,6 +486,29 @@ function ask(popup, message) {
         });
       }),
     message,
+  );
+}
+
+/** The relay half of `ask()` for `RELAYED_TO_ACTIVE_TAB`, run inside the service worker itself. */
+async function askActiveTabViaServiceWorker(context, message) {
+  let [worker] = context.serviceWorkers();
+  if (!worker) worker = await context.waitForEvent("serviceworker", { timeout: 15_000 });
+  return worker.evaluate(
+    async ({ kind, itemId }) => {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab || typeof tab.id !== "number") {
+        return { ok: false, code: "PROTOCOL", message: "No active tab." };
+      }
+      try {
+        const forwarded =
+          kind === "totp-active-tab" ? { kind: "totp-please", itemId } : { kind: "matches-please" };
+        const answer = await chrome.tabs.sendMessage(tab.id, forwarded);
+        return answer ?? { ok: true };
+      } catch {
+        return { ok: false, code: "PROTOCOL", message: "Autofill does not run on this page." };
+      }
+    },
+    { kind: message.kind, itemId: message.itemId },
   );
 }
 
@@ -1155,8 +1246,8 @@ test("with two accounts saved, page two continues as whoever page one chose", as
     "no audit entry may contain either account's password",
   );
   await page.close();
-  // The only scenario this world exists for. Closing it here keeps three browsers running at
-  // once rather than four — see `closeWorld`.
+  // The only scenario this world exists for. Closing it here is part of what keeps the peak at
+  // three browsers rather than five — see `closeWorld`.
   await closeWorld("identifier");
 });
 
@@ -1200,6 +1291,73 @@ test("a denied approval fills nothing", async (t) => {
   await page.close();
 });
 
+test("a trusted click with nobody present fills nothing, even straight after a reviewed fill", async (t) => {
+  const built = await requireWorld(t, "presence");
+  if (!built) return;
+
+  // This world's robot reviews every full sheet and allows it for the session, then denies every
+  // presence prompt — the app with nobody at the keyboard after the first login. Every click in
+  // this scenario is `page.mouse.click`, which goes through the DevTools protocol and arrives in
+  // the page with `isTrusted === true`: exactly what a browser-automation agent sends, and exactly
+  // what the content script's gate cannot tell from a person (ADR-0037).
+  const page = await open(built, built.origins.saved);
+  assert.equal(await waitForIcon(page), true, "the icon is drawn where an item is saved");
+  // The icon follows whichever of username/password is currently focused (`onFocusIn` /
+  // `refreshForm` in `extensions/shared/content.js`), so its position is only good for one click
+  // unless the password field is refocused first — this recomputes it fresh every time rather
+  // than trusting a coordinate captured once, which is what a real click would also have to do.
+  const clickIcon = async () => {
+    await page.locator("#password").focus();
+    const box = await page.locator("#password").boundingBox();
+    await page.mouse.click(box.x + box.width - 15, box.y + box.height / 2);
+  };
+
+  // The human's own login: a full sheet, "Allow for this session", and the value crosses.
+  await clickIcon();
+  assert.equal(await valueOf(page, "#password"), PASSWORD, "the reviewed fill works");
+  await screenshot(page, t.name, "01-reviewed", "the first fill, reviewed at a full sheet");
+
+  // Empty the form, as a site that bounced the user back to its login page would. Username last,
+  // so it ends up focused — which is exactly why `clickIcon` above refocuses the password field
+  // before locating the icon rather than assuming it is still there.
+  await page.locator("#password").fill("");
+  await page.locator("#username").fill("");
+  assert.equal(await page.inputValue("#password"), "");
+
+  // The same trusted click, a moment later, inside the review's five-minute memory. Before
+  // ADR-0037 the lease answered this with no sheet and no Touch ID; now it is a presence prompt,
+  // and nobody is there to answer it.
+  await clickIcon();
+  await page.waitForTimeout(3_000);
+  assert.equal(await page.inputValue("#password"), "", "no finger, no password");
+  assert.equal(await page.inputValue("#username"), "", "and nothing else from that fill");
+  const html = await page.content();
+  assert.ok(!html.includes(PASSWORD), "the page never sees the value the second time");
+  await screenshot(page, t.name, "02-not-refilled", "a trusted click with nobody present");
+
+  const entries = await built.harness.audit();
+  const details = entries.filter((e) => e.tool === "fill_credential").map((e) => e.detail);
+  assert.deepEqual(
+    details,
+    ["FILL_APPROVED", "FILL_DENIED"],
+    `one reviewed fill, one refused replay: ${JSON.stringify(entries)}`,
+  );
+  assert.ok(
+    !details.includes("FILL_CONFIRMED") && !details.includes("FILL_LEASED"),
+    "nothing crossed on the strength of the earlier review alone",
+  );
+  assert.ok(!JSON.stringify(entries).includes(PASSWORD), "no audit entry may contain the password");
+
+  recordText(
+    t.name,
+    "audit.txt",
+    entries.map((e) => `${e.tool.padEnd(16)} ${e.outcome.padEnd(10)} ${e.detail}`).join("\n"),
+    "the review, then the replay nobody confirmed",
+  );
+  await page.close();
+  await closeWorld("presence");
+});
+
 test("a locked vault fills nothing and the popup says so", async (t) => {
   const built = await requireWorld(t, "lock");
   if (!built) return;
@@ -1231,6 +1389,365 @@ test("a locked vault fills nothing and the popup says so", async (t) => {
   await screenshot(fresh, t.name, "03-locked-no-fill", "⌘\\ on a locked vault does nothing");
 
   await fresh.close();
+  await page.close();
+});
+
+// -------------------------------------------------------------------------------------------
+// Agent-requested fills (ADR-0036)
+// -------------------------------------------------------------------------------------------
+
+/**
+ * Every agent world is used by one scenario and closed by it. Each has a broker of its own, so a
+ * scenario's sheets, its origin mismatches and any block they lead to cannot reach another one:
+ * the limits are per agent, and every sidecar in this file has the same parent — this runner —
+ * which is what the broker keys an agent on (ADR-0036 §9.3). A suite that shared one world would
+ * pass or fail by the order its scenarios ran in.
+ */
+
+/** The item, found the way an agent finds it: by listing, never by title. */
+async function agentItemId(built) {
+  const listed = await built.sidecar.call("list_items");
+  assert.equal(listed.ok, true, listed.text);
+  const item = listed.structured.items.find((i) => i.title === "Test login");
+  assert.ok(item, `the test item is visible to agents in this world: ${listed.text}`);
+  return item.id;
+}
+
+/**
+ * Make sure the extension has a live native session before an agent asks for anything.
+ *
+ * A push needs an open connection, and the connection is what carried the `agent_fill`
+ * capability in its `hello`; with none, the honest answer is `FILL_UNAVAILABLE` and the scenario
+ * would be testing the wrong thing.
+ */
+async function connected(built) {
+  const status = await ask(built.popup, { kind: "status" });
+  assert.equal(status.ok, true, `status failed: ${JSON.stringify(status)}`);
+  assert.equal(status.state.status, "ready", JSON.stringify(status.state));
+}
+
+/**
+ * Call `request_fill` with `page` in front, as an agent that has just navigated there would.
+ *
+ * The call blocks for the whole flow — locate, report, sheet, delivery, the content script's
+ * outcome — so its budget covers a sixty-second sheet and a slow machine.
+ */
+async function requestFill(built, page, args) {
+  await page.bringToFront();
+  return built.sidecar.call("request_fill", args, { timeoutMs: 120_000 });
+}
+
+/** The password is in no tool result and in no byte the sidecar wrote, whatever happened. */
+function assertAgentSawNoPassword(built, ...results) {
+  for (const [where, haystack] of [
+    ["the sidecar's stdout", built.sidecar.rawStdout],
+    ["the sidecar's stderr", built.sidecar.rawStderr],
+    ...results.map((r, i) => [`tool result #${i + 1}`, JSON.stringify(r)]),
+  ]) {
+    assert.ok(!haystack.includes(PASSWORD), `the password reached ${where}`);
+  }
+}
+
+/** The audit entries `request_fill` wrote, in order. */
+function agentFillEntries(entries, tool = "request_fill") {
+  return entries.filter((e) => e.tool === tool);
+}
+
+test("an agent fill lands in the tab in front after approval", async (t) => {
+  const built = await requireWorld(t, "agent");
+  if (!built) return;
+  t.after(() => closeWorld("agent"));
+
+  await connected(built);
+  const itemId = await agentItemId(built);
+  const page = await open(built, built.origins.saved);
+  assert.equal(await page.inputValue("#password"), "", "nothing is filled on load");
+  await screenshot(page, t.name, "01-before", "the sign-in page the agent has open, in front");
+
+  const sheetsBefore = built.harness.agentSheets();
+  const result = await requestFill(built, page, {
+    item_id: itemId,
+    origin: built.origins.saved,
+  });
+  assert.equal(result.ok, true, result.text);
+  assert.equal(result.structured.status, "filled", result.text);
+  assert.deepEqual([...result.structured.fields_written].sort(), ["password", "username"]);
+  assert.deepEqual(result.structured.fields_pending, [], "one page, nothing left for later");
+  assert.equal(
+    built.harness.agentSheets() - sheetsBefore,
+    1,
+    "one sheet, answered by the robot in the chair",
+  );
+
+  // The value went where the browser said the tab was, and only there: into the page, not back
+  // up the MCP channel.
+  assert.equal(await valueOf(page, "#password"), PASSWORD, "the password is in the page");
+  assert.equal(await page.inputValue("#username"), USERNAME, "and so is the username");
+  assertAgentSawNoPassword(built, result);
+  await screenshot(page, t.name, "02-filled", "filled after one approval; the agent got a status");
+
+  const entries = await built.harness.audit();
+  const approved = agentFillEntries(entries).filter((e) => e.outcome === "Allowed");
+  assert.equal(approved.length, 1, `one approved agent fill: ${JSON.stringify(entries)}`);
+  assert.equal(
+    approved[0].detail,
+    "AGENT_FILL_APPROVED",
+    "audited before release, with a document id — a Chromium-family browser stamps one",
+  );
+  assert.equal(approved[0].origin, built.origins.saved, "the origin the browser established");
+  assert.deepEqual(approved[0].fields.split(",").sort(), ["password", "username"]);
+  assert.ok(
+    !entries.some((e) => e.tool === "fill_credential" && e.outcome === "Allowed"),
+    "the human path filled nothing: this was the agent's fill, under the agent's name",
+  );
+  assert.ok(!JSON.stringify(entries).includes(PASSWORD), "no audit entry contains the password");
+
+  recordText(
+    t.name,
+    "agent-fill.txt",
+    [
+      `request_fill ${JSON.stringify({ item_id: "<from list_items>", origin: built.origins.saved })}`,
+      `→ ${result.text}`,
+      "",
+      ...entries.map((e) => `${e.tool.padEnd(16)} ${e.outcome.padEnd(10)} ${e.detail}  ${e.origin}  ${e.fields}`),
+    ].join("\n"),
+    "what the agent was told, and what the log kept",
+  );
+  await page.close();
+});
+
+test("an agent fill on a look-alike site raises no sheet and fills nothing", async (t) => {
+  const built = await requireWorld(t, "agent-lookalike");
+  if (!built) return;
+  t.after(() => closeWorld("agent-lookalike"));
+
+  await connected(built);
+  const itemId = await agentItemId(built);
+
+  // The agent was steered to `app.examp1e.com` — one character off the saved `app.example.com`
+  // — and serves the same sign-in form there. The origin rule, not the human's eye, is what stops
+  // this (ADR-0036 §4), so the human is never asked.
+  const page = await open(built, built.origins.lookalike);
+  await screenshot(page, t.name, "01-lookalike", "a look-alike sign-in page, in front");
+  const sheetsBefore = built.harness.agentSheets();
+
+  // What the agent believes: it is on the real site. The tab says otherwise.
+  const believed = await requestFill(built, page, {
+    item_id: itemId,
+    origin: built.origins.saved,
+  });
+  assert.equal(believed.ok, false, believed.text);
+  assert.equal(believed.structured.code, "NO_MATCHING_TAB", believed.text);
+
+  // What the address bar says: the claim now agrees with the tab, and the item is still not
+  // saved for it. The second mismatch in one unlock session blocks the agent (§9.4).
+  const claimed = await requestFill(built, page, {
+    item_id: itemId,
+    origin: built.origins.lookalike,
+  });
+  assert.equal(claimed.ok, false, claimed.text);
+  assert.equal(claimed.structured.code, "NO_MATCHING_TAB", claimed.text);
+  assert.equal(
+    believed.structured.message,
+    claimed.structured.message,
+    "one code, one message, whichever check refused it (§11.2)",
+  );
+
+  assert.equal(built.harness.agentSheets() - sheetsBefore, 0, "no sheet was raised");
+  assert.equal(await page.inputValue("#password"), "", "nothing was filled");
+  assert.equal(await page.inputValue("#username"), "", "not even the username");
+  const html = await page.content();
+  assert.ok(!html.includes(PASSWORD), "the look-alike never sees the password");
+  assert.ok(!html.includes(USERNAME), "nor the username");
+  await screenshot(page, t.name, "02-refused", "still empty: the rule refused, nobody was asked");
+
+  // Blocked until somebody looks: the right page, a moment later, is refused without a sheet.
+  const real = await open(built, built.origins.saved);
+  const afterwards = await requestFill(built, real, {
+    item_id: itemId,
+    origin: built.origins.saved,
+  });
+  assert.equal(afterwards.ok, false, afterwards.text);
+  assert.equal(afterwards.structured.code, "USER_DENIED", afterwards.text);
+  assert.equal(built.harness.agentSheets() - sheetsBefore, 0, "and still no sheet");
+  assert.equal(await real.inputValue("#password"), "", "the real site is not filled either");
+  assertAgentSawNoPassword(built, believed, claimed, afterwards);
+
+  const entries = await built.harness.audit();
+  const agent = agentFillEntries(entries);
+  assert.deepEqual(
+    agent.map((e) => e.detail),
+    [
+      "AGENT_FILL_ORIGIN_MISMATCH",
+      "AGENT_FILL_ORIGIN_MISMATCH (agent blocked)",
+      "AGENT_FILL_BLOCKED",
+    ],
+    `a mismatch, the second that blocked, and the refusal after: ${JSON.stringify(entries)}`,
+  );
+  assert.ok(agent.every((e) => e.outcome === "Denied"), "none of them is an allowed outcome");
+  assert.equal(agent[0].origin, built.origins.lookalike, "the origin the browser reported");
+  assert.equal(agent[1].origin, built.origins.lookalike);
+  assert.ok(!JSON.stringify(entries).includes(PASSWORD), "no audit entry contains the password");
+
+  recordText(
+    t.name,
+    "lookalike.txt",
+    [
+      `claimed ${built.origins.saved} with ${built.origins.lookalike} in front → ${believed.text}`,
+      `claimed ${built.origins.lookalike} with it in front → ${claimed.text}`,
+      `then ${built.origins.saved}, the real site → ${afterwards.text}`,
+      "",
+      ...agent.map((e) => `${e.tool.padEnd(16)} ${e.outcome.padEnd(10)} ${e.detail}  ${e.origin}`),
+    ].join("\n"),
+    "two refusals by the rule, a block, and no sheet at any point",
+  );
+  await real.close();
+  await page.close();
+});
+
+test("an identifier-first agent fill fills the password on the next page without a second sheet", async (t) => {
+  const built = await requireWorld(t, "agent-identifier");
+  if (!built) return;
+  t.after(() => closeWorld("agent-identifier"));
+
+  await connected(built);
+  const itemId = await agentItemId(built);
+  const page = await open(built, built.origins.saved, "identifier-first/step1.html");
+  const sheetsBefore = built.harness.agentSheets();
+
+  // Page one: an email box and a Next button. The agent asks for the whole login, as it would
+  // anywhere; the answer says the password is still to come.
+  const first = await requestFill(built, page, {
+    item_id: itemId,
+    origin: built.origins.saved,
+  });
+  assert.equal(first.ok, true, first.text);
+  assert.deepEqual(first.structured.fields_written, ["username"], first.text);
+  assert.deepEqual(first.structured.fields_pending, ["password"], first.text);
+  assert.equal(built.harness.agentSheets() - sheetsBefore, 1, "one sheet, for both pages");
+  assert.equal(await valueOf(page, "#username"), USERNAME, "page one gets the username");
+  assert.ok(!(await page.content()).includes(PASSWORD), "and nothing else: there is nowhere to put it");
+  await screenshot(page, t.name, "01-step-one", "page one, the username written by an agent fill");
+
+  // The agent presses the page's own Next button, as the tool's description tells it to, and
+  // asks again for the password, in the same tab, on the next page of the same site.
+  await Promise.all([page.waitForURL(/identifier-first\/step2\.html/), page.click("button[type=submit]")]);
+  await page.waitForTimeout(1_500);
+  const second = await requestFill(built, page, {
+    item_id: itemId,
+    origin: built.origins.saved,
+    fields: ["password"],
+  });
+  assert.equal(second.ok, true, second.text);
+  assert.deepEqual(second.structured.fields_written, ["password"], second.text);
+  assert.deepEqual(second.structured.fields_pending, [], second.text);
+  assert.equal(
+    built.harness.agentSheets() - sheetsBefore,
+    1,
+    "page two was served by the approval page one got — no second sheet",
+  );
+  assert.equal(await valueOf(page, "#password"), PASSWORD, "page two gets the password");
+  assertAgentSawNoPassword(built, first, second);
+  await screenshot(page, t.name, "02-step-two", "page two, filled without asking again");
+
+  const entries = await built.harness.audit();
+  const approved = agentFillEntries(entries).filter((e) => e.outcome === "Allowed");
+  assert.equal(approved.length, 2, `one entry per page: ${JSON.stringify(entries)}`);
+  assert.equal(approved[0].detail, "AGENT_FILL_APPROVED (step 1 of 2)");
+  assert.equal(approved[0].fields, "username");
+  assert.match(
+    approved[1].detail,
+    /^AGENT_FILL_APPROVED \(step 2 of 2, entry \d+\)$/,
+    "step two's entry names step one's",
+  );
+  assert.equal(approved[1].fields, "password");
+  assert.ok(approved.every((e) => e.origin === built.origins.saved));
+  assert.ok(!JSON.stringify(entries).includes(PASSWORD), "no audit entry contains the password");
+
+  recordText(
+    t.name,
+    "two-step.txt",
+    [
+      `page one → ${first.text}`,
+      `page two → ${second.text}`,
+      `sheets shown: ${built.harness.agentSheets() - sheetsBefore}`,
+      "",
+      ...agentFillEntries(entries).map((e) => `${e.outcome.padEnd(10)} ${e.detail}  ${e.fields}`),
+    ].join("\n"),
+    "one approval, two pages",
+  );
+  await page.close();
+});
+
+test("an agent one-time code lands in the code field and never on the clipboard", async (t) => {
+  const built = await requireWorld(t, "agent-code");
+  if (!built) return;
+  t.after(() => closeWorld("agent-code"));
+
+  await connected(built);
+  const itemId = await agentItemId(built);
+
+  // Put something known on the clipboard first, the way a user's ⌘C does (see "the one-time code
+  // can also be copied to the clipboard" for why not `navigator.clipboard`). If the agent path
+  // fell back to the clipboard, this is what it would overwrite.
+  const copy = process.platform === "darwin" ? "Meta+KeyC" : "Control+KeyC";
+  const paste = process.platform === "darwin" ? "Meta+KeyV" : "Control+KeyV";
+  const sentinel = `KSE2E-CLIPBOARD-SENTINEL-${Date.now().toString(36)}`;
+  const scratchPage = await open(built, built.origins.stranger, "other.html");
+  await scratchPage.locator("#username").fill(sentinel);
+  await scratchPage.locator("#username").selectText();
+  await scratchPage.keyboard.press(copy);
+
+  // The site's second-factor page: a code box and nothing else.
+  const page = await open(built, built.origins.saved, "one-time-code.html");
+  await screenshot(page, t.name, "01-before", "a second-factor page, in front");
+  const sheetsBefore = built.harness.agentSheets();
+
+  const result = await requestFill(built, page, {
+    item_id: itemId,
+    origin: built.origins.saved,
+    fields: ["one_time_code"],
+  });
+  assert.equal(result.ok, true, result.text);
+  assert.deepEqual(result.structured.fields_written, ["one_time_code"], result.text);
+  assert.deepEqual(result.structured.fields_pending, [], result.text);
+  assert.equal(built.harness.agentSheets() - sheetsBefore, 1, "a code is approved on its own");
+
+  const code = await valueOf(page, "#otp");
+  assert.match(code, /^\d{6}$/, `a six-digit code should land in the code field, got "${code}"`);
+  assert.ok(
+    !JSON.stringify(result.structured).includes(code) && !result.text.includes(code),
+    "and the agent is told only that it was filled",
+  );
+  assertAgentSawNoPassword(built, result);
+  await screenshot(page, t.name, "02-code", "the code, typed into the page's code field");
+
+  // The clipboard: paste into an emptied field and read back what was there before.
+  await scratchPage.bringToFront();
+  await scratchPage.locator("#username").fill("");
+  await scratchPage.locator("#username").focus();
+  await scratchPage.keyboard.press(paste);
+  await scratchPage.waitForTimeout(500);
+  const pasted = await scratchPage.inputValue("#username");
+  assert.equal(pasted, sentinel, "the clipboard still holds what was put there before the fill");
+  assert.notEqual(pasted, code, "the code never went to the clipboard");
+  await screenshot(scratchPage, t.name, "03-clipboard", "the clipboard, unchanged by the fill");
+
+  const entries = await built.harness.audit();
+  const codes = agentFillEntries(entries, "totp_code").filter((e) => e.outcome === "Allowed");
+  assert.equal(codes.length, 1, `one approved code, under totp_code: ${JSON.stringify(entries)}`);
+  assert.equal(codes[0].detail, "AGENT_FILL_APPROVED");
+  assert.equal(codes[0].fields, "one_time_code");
+  assert.equal(codes[0].origin, built.origins.saved);
+  assert.ok(
+    !agentFillEntries(entries).some((e) => e.outcome === "Allowed"),
+    "a code approval is not a password approval",
+  );
+  const serialized = JSON.stringify(entries);
+  assert.ok(!serialized.includes(code), "no audit entry contains the code");
+  assert.ok(!serialized.includes(PASSWORD), "or the password");
+
+  await scratchPage.close();
   await page.close();
 });
 

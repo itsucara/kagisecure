@@ -14,11 +14,29 @@ authors.workspace = true
 kagisecure-core = { workspace = true, features = ["secret-material"] }
 kagisecure-ipc = { workspace = true }
 kagisecure-extension-ipc = { workspace = true }
+# Shared vaults (ADR-0035 §14): read and released here like the personal vault, never written.
+# The agent-facing crates beneath this one — `kagisecure-ipc`, `kagisecure-extension-ipc` — must
+# never reach it (`kagisecure-shared`'s dependency guard), and nothing in this crate may name its
+# `admin` module (the lexical guard beside it).
+kagisecure-shared = { workspace = true }
 thiserror = "2"
 directories = "6"
+
+# `browser_setup`'s Windows half: Chromium browsers on Windows find a native-messaging host through
+# `HKCU\Software\<vendor>\NativeMessagingHosts\<name>` (a registry value) rather than by scanning a
+# directory the way they do on macOS, so writing the manifest file is only half the job there — see
+# `windows_registry` below. Already in the lock file (`kagisecure-ipc`'s own `[target.'cfg(windows)']`
+# dependency, among others), so this is only the one additional feature gate this module's calls
+# need, per that crate's own precedent of feature-gating `windows-sys` per Win32 module.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+] }
 
 [dev-dependencies]
 tempfile = "3"
 # Only for reading a manifest back and for the canary sweeps. The manifest itself is written by
 # hand — see `browser_setup::manifest_body` for why.
 serde_json = "1"
+kagisecure-test-support = { workspace = true }

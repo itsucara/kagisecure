@@ -79,6 +79,12 @@ final class K_ApprovalTests: UITestCase {
             XCTAssertTrue(
                 element("ks.approval.ttlSlider").exists,
                 "the TTL is editable down, never up (mcp-server.md §5)")
+            // Beside the buttons, not in the scroll area: it is "Allow for this session"'s
+            // argument, and it has to be on screen whenever that button is (ui-spec.md §10.2).
+            XCTAssertTrue(
+                element("ks.approval.ttlMinutesField").isHittable,
+                "the TTL's exact control is on screen without scrolling; its frame is "
+                    + "\(element("ks.approval.ttlMinutesField").frame)")
             XCTAssertTrue(element("ks.approval.countdown").exists, "the 60-second window is shown")
             XCTAssertTrue(
                 text("ks.approval.summary").contains("ACME_TOKEN"),
@@ -198,29 +204,42 @@ final class K_ApprovalTests: UITestCase {
         waitFor("ks.approval.sentence")
 
         step("the TTL can be shortened, never lengthened") {
-            let slider = element("ks.approval.ttlSlider")
-            let before = text("ks.approval.ttlValue")
+            // Through the minutes field and its stepper (`ExactNumberField`): the keyboard's way
+            // to the TTL, and an exact one — see `UITestCase.setNumber`. The caller asked for the
+            // default, 900 s (mcp-server.md §5).
+            let field = "ks.approval.ttlMinutesField"
+            XCTAssertEqual(element(field).value as? String, "15", "the sheet opens at what was asked")
+            XCTAssertEqual(text("ks.approval.ttlValue"), "15 minutes")
 
-            // The keyboard, not `adjust(toNormalizedSliderPosition:)`. A SwiftUI `Slider` on macOS
-            // lowers to an `AXSlider` that XCUITest will happily "adjust" without anything moving;
-            // the arrow keys go through the control's own action and step it, which is also the
-            // path ui-spec.md §13 requires to exist for every control.
-            slider.click()
-            for _ in 0..<20 { app.typeKey(XCUIKeyboardKey.leftArrow, modifierFlags: []) }
-            let after = text("ks.approval.ttlValue")
-            XCTAssertNotEqual(
-                before, after,
-                "the TTL control has to actually move — the user may shorten what the agent asked "
-                    + "for (mcp-server.md §5)")
-            record("approval-ttl", "requested: \(before)\nshortened to: \(after)", "The TTL control")
-            capture("approval-ttl", "The TTL control, after being shortened")
-
-            // Put it back: the rest of the scenario wants a lease that outlives the next few steps.
-            for _ in 0..<20 { app.typeKey(XCUIKeyboardKey.rightArrow, modifierFlags: []) }
+            setNumber("99", in: "ks.approval.ttlMinutes")
+            XCTAssertTrue(
+                waitForValue(field, equals: "15"),
+                "the user may shorten what the agent asked for, never lengthen it "
+                    + "(mcp-server.md §5); typed 99, the field reads "
+                    + "\(String(describing: element(field).value))")
+            nudge("ks.approval.ttlMinutes", up: true)
             XCTAssertEqual(
-                text("ks.approval.ttlValue"), before,
-                "and it must not go past what the agent asked for — the user may shorten, never "
-                    + "lengthen (mcp-server.md §5)")
+                element(field).value as? String, "15", "and the stepper stops at the request too")
+            XCTAssertEqual(text("ks.approval.ttlValue"), "15 minutes")
+
+            setNumber("0", in: "ks.approval.ttlMinutes")
+            XCTAssertTrue(
+                waitForValue(field, equals: "1"), "the floor is one minute; typed 0, it took 1")
+            XCTAssertEqual(text("ks.approval.ttlValue"), "1 minute")
+
+            setNumber("10", in: "ks.approval.ttlMinutes")
+            XCTAssertTrue(waitForValue(field, equals: "10"), "a TTL inside the range is taken as typed")
+            nudge("ks.approval.ttlMinutes", up: false)
+            XCTAssertTrue(waitForValue(field, equals: "9"), "the stepper moves it by one minute")
+            nudge("ks.approval.ttlMinutes", up: true)
+            XCTAssertTrue(waitForValue(field, equals: "10"))
+            XCTAssertEqual(text("ks.approval.ttlValue"), "10 minutes")
+            XCTAssertTrue(
+                text("ks.approval.summary").contains("for 10 minutes"),
+                "the scope summary says what will actually be granted; it said "
+                    + "\(text("ks.approval.summary"))")
+            record("approval-ttl", "requested: 15 minutes\nshortened to: 10 minutes", "The TTL control")
+            capture("approval-ttl", "The TTL control, after being shortened to ten minutes")
         }
 
         try step("Allow for this session") {
@@ -240,6 +259,12 @@ final class K_ApprovalTests: UITestCase {
                 elements("ks.leases.cell.variables").allElementsBoundByIndex
                     .contains { text(of: $0).contains("ACME_TOKEN") },
                 "the row says which variables it covers")
+            // The shortened TTL is what was minted, not the 15 minutes asked for. "Expires in"
+            // counts down and rounds down, so a ten-minute lease a few seconds old reads 9.
+            let expires = text("ks.leases.cell.expires")
+            XCTAssertTrue(
+                ["10 minutes", "9 minutes"].contains(expires),
+                "the lease carries the TTL the user shortened it to; it expires in \(expires)")
             capture("approval-lease", "The lease minted by \"Allow for this session\"")
         }
 

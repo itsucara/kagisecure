@@ -1,0 +1,21 @@
+<Application
+    x:Class="Kagisecure.App.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!--
+      Without this, named styles (TitleTextBlockStyle, AccentButtonStyle, ...) and even some
+      controls' own default templates (InfoBar's close button references a resource key,
+      TabViewButtonBackground, that only exists in this dictionary) fail to resolve — a
+      XamlParseException at first use that brings the whole process down with a native fail-fast
+      (see Services/CrashLogger.cs). Every WinUI 3 desktop template includes this; it is not
+      optional the way it looks.
+    -->
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

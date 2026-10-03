@@ -16,13 +16,25 @@ enum SidebarSelection: Hashable {
     case agentLeases
     case agentAudit
     case agentSetup
+    /// Unattended jobs (ADR-0042 Phase 3).
+    case agentUnattended
     case browserExtension
+    /// A shared vault's items (ADR-0035), by vault id.
+    case sharedVault(String)
+    /// A shared vault's members, by vault id.
+    case sharedMembers(String)
+    /// A shared vault's environments (ui-spec.md §16), by vault id.
+    case sharedEnvironments(String)
 
-    /// Whether this row shows agent machinery rather than items.
-    var isAgentSection: Bool {
+    /// Whether this row shows items — the three-column arrangement — rather than a pane of its
+    /// own: agent machinery, or a shared vault's members or environments.
+    var showsItems: Bool { filter != nil }
+
+    /// The shared vault this row belongs to, if any.
+    var sharedVaultId: String? {
         switch self {
-        case .agentEnvironments, .agentLeases, .agentAudit, .agentSetup, .browserExtension: true
-        default: false
+        case .sharedVault(let id), .sharedMembers(let id), .sharedEnvironments(let id): id
+        default: nil
         }
     }
 
@@ -34,23 +46,36 @@ enum SidebarSelection: Hashable {
         case .tag(let name): .tag(tag: name)
         case .archive: .archive
         case .trash: .trash
-        case .agentEnvironments, .agentLeases, .agentAudit, .agentSetup, .browserExtension: nil
+        // A shared vault has no sections of its own: every item that is not deleted.
+        case .sharedVault: .all
+        case .agentEnvironments, .agentLeases, .agentAudit, .agentSetup, .agentUnattended,
+            .browserExtension, .sharedMembers, .sharedEnvironments:
+            nil
         }
     }
 }
 
 /// The unlocked vault, as the three panes need it.
 ///
-/// Every read and every write goes through `session`, which is the FFI object. The store holds no
-/// model state of its own beyond the current selection and query: after any mutation it re-asks
-/// Rust rather than patching a local copy, so the UI cannot drift from the file.
+/// Every read and every write goes through `session`, which is the FFI object — or, while a shared
+/// vault is selected, through that vault's `SharedVaultSession` (`source`), so the item list, the
+/// detail pane and the edit sheet work unchanged on either. The store holds no model state of its
+/// own beyond the current selection and query: after any mutation it re-asks Rust rather than
+/// patching a local copy, so the UI cannot drift from the file.
 @MainActor
 @Observable
 final class VaultStore {
     let session: VaultSession
 
     var selection: SidebarSelection = .all {
-        didSet { refresh() }
+        didSet {
+            if selection.sharedVaultId != oldValue.sharedVaultId {
+                // What is shown belongs to the vault it came from.
+                releases.hideAll(because: .deselected)
+                releases.source = source
+            }
+            refresh()
+        }
     }
     var query: String = "" {
         didSet { refresh() }
@@ -58,7 +83,11 @@ final class VaultStore {
     var sort: ItemSort = .title {
         didSet { refresh() }
     }
-    var selectedItemId: String?
+    var selectedItemId: String? {
+        // A shown value belongs to the item it was shown for: moving away hides it (ADR-0038
+        // user decisions 2 and 5).
+        didSet { releases.show(item: selectedItemId) }
+    }
 
     private(set) var items: [ItemView] = []
     private(set) var counts: SidebarCounts
@@ -70,35 +99,216 @@ final class VaultStore {
     private(set) var auditTotal: UInt32 = 0
     private(set) var auditIntact = true
 
+    /// Whether every appended audit entry has actually made it to disk (distinct from
+    /// `auditIntact`, which only asks whether what *is* on disk is internally consistent). A
+    /// non-zero count here means a save has been failing — the failure mode a hostile
+    /// `chflags uchg` on the vault directory or a full disk produces — and a denial's audit entry
+    /// could be sitting only in memory.
+    private(set) var auditUnsavedEntries: UInt32 = 0
+    private(set) var auditSaveError: String?
+
     /// Surfaced as an alert by the root view. Never carries a secret value.
     var errorMessage: String?
 
-    /// Field ids the user has revealed for the currently selected item, with their plaintext.
-    ///
-    /// Cleared whenever the selection changes or the item is saved, so a revealed value does not
-    /// outlive the row that is showing it.
-    private(set) var revealed: [String: String] = [:]
+    /// Why writes have stopped, if they have (step 4, user decision 3) — `session.conflict()`,
+    /// mirrored here so `RootView`'s conflict alert can bind to it. Kept current by
+    /// `syncFromDisk()` and by every mutation that reaches `perform(_:)` or `mutating(_:)`.
+    private(set) var conflictKind: VaultConflictKindView?
+
+    /// What "Keep this app's version" would discard, while its confirmation is on screen
+    /// (`RootView`'s overwrite alert, `overwriteConfirmationMessage(_:)`). `nil` the rest of the
+    /// time; the conflict alert itself only shows while this is `nil`.
+    private(set) var overwriteConfirmation: VaultConflictDetailsView?
+
+    /// A one-off note that the conflict resolved itself — the file continues this session again,
+    /// so "Keep this app's version" had nothing to overwrite. Not an error, so not
+    /// `errorMessage`'s "Something went wrong" alert.
+    var conflictNotice: String?
+
+    /// Every value the detail pane shows or copies, each from a presence-gated release
+    /// (ADR-0038). The store holds no value of its own.
+    let releases: ItemReleases
+
+    /// The shared vaults this Mac belongs to (ADR-0035), open while this store exists.
+    let shared: SharedVaultsModel
+
+    /// The shared-vault sheet on screen, if any — presented by `MainView`.
+    var sharedSheet: SharedSheet?
+
+    /// Told about every explicit vault mutation — a save, a toggle, an archive, a delete — so
+    /// `AutoLockCoordinator` can count it as in-app activity alongside a keystroke or a click in
+    /// one of our own windows (docs/investigations/2026-09-27-remote-idle-relock.md). Wired by
+    /// `AppModel.adopt(_:)`; a no-op in every test that builds a bare `VaultStore(session:)`. Not
+    /// called by `syncFromDisk()` or its timer/`didBecomeActive` callers — a background poll or the
+    /// app regaining focus is not evidence that whoever is driving the UI is still there.
+    var notifyActivity: () -> Void = {}
+
+    /// `NSApplicationDidBecomeActive` observer for `syncFromDisk()`. Torn down by
+    /// `stopSyncMonitor()`, not `deinit`: a `deinit` on a `@MainActor` type cannot touch
+    /// actor-isolated state (see `AutoLockCoordinator`'s own note), and this object's lifetime
+    /// already exactly matches "the vault is unlocked" — `AppModel.lock(reason:)` stops it right
+    /// before dropping the store.
+    private var activeObserver: NSObjectProtocol?
+    /// Polls `syncFromDisk()` every ~2s while the app is frontmost (design note "App UI ... on a
+    /// ~2s timer while the app is frontmost").
+    private var syncTimer: Timer?
 
     init(session: VaultSession) {
         self.session = session
+        self.releases = ItemReleases(source: session)
+        self.shared = SharedVaultsModel(personal: session)
         self.counts = session.sidebarCounts()
-        self.vaultName = session.vaults().first?.name ?? "Vault"
+        self.vaultName = session.vaults().first?.name ?? String(localized: "Vault")
+        shared.onRemoteChange = { [weak self] id in
+            guard let self, self.selection.sharedVaultId == id else { return }
+            self.refresh()
+        }
         refresh()
+    }
+
+    // MARK: - Shared vaults
+
+    /// The shared vault the sidebar selection belongs to, if any.
+    var sharedVaultId: String? { selection.sharedVaultId }
+
+    /// Where item calls go: the selected shared vault, or the personal vault.
+    var source: any ItemSource {
+        if let id = sharedVaultId, let vault = shared.session(for: id) {
+            return vault
+        }
+        return session
+    }
+
+    /// Whether items can be added and edited where the selection points: always in the personal
+    /// vault; in a shared vault, for a writer or an admin.
+    var canEditItems: Bool {
+        guard let id = sharedVaultId else { return true }
+        return shared.canWrite(id)
+    }
+
+    /// The window's title: the personal vault's name, or the selected shared vault's.
+    var windowTitle: String {
+        guard let id = sharedVaultId else { return vaultName }
+        return shared.summary(for: id)?.name ?? String(localized: "Shared vault")
+    }
+
+    /// After a change in the selected vault: a shared vault re-reads and syncs, then the list.
+    private func changed() {
+        if let id = sharedVaultId { shared.didChangeLocally(id) }
+        refresh()
+    }
+
+    // MARK: - Other writers (step 4, user decisions 3 and 4)
+
+    /// Bring the session up to date with the file and refresh what needs it (`VaultSession.sync`).
+    /// Called on `didBecomeActive`, on the ~2s frontmost timer, and before the Audit view
+    /// refreshes — never on every read, since a read needs no lock and every write already starts
+    /// from the file as it is.
+    func syncFromDisk() {
+        if session.sync() {
+            refresh()
+        }
+        conflictKind = session.conflict()
+    }
+
+    /// Start the didBecomeActive/timer sync monitor. Called by `AppModel.adopt(_:)` right after
+    /// constructing the store — like `AutoLockCoordinator.start()`, not from `init`, so a test that
+    /// builds a bare `VaultStore(session:)` (every existing one does) never leaves a live
+    /// `Timer`/`NotificationCenter` observer running past that test.
+    func startSyncMonitor() {
+        shared.start()
+        activeObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.syncFromDisk() }
+        }
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, NSApplication.shared.isActive else { return }
+                self.syncFromDisk()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        syncTimer = timer
+    }
+
+    /// Stop the didBecomeActive/timer monitor. Called by `AppModel.lock(reason:)` before the store
+    /// is released, mirroring `AutoLockCoordinator.stop()`.
+    func stopSyncMonitor() {
+        shared.stop()
+        syncTimer?.invalidate()
+        syncTimer = nil
+        if let activeObserver {
+            NotificationCenter.default.removeObserver(activeObserver)
+        }
+        activeObserver = nil
+    }
+
+    /// "Keep this app's version (overwrite the file)" — the conflict alert's other button. Does
+    /// not overwrite anything yet: it asks Rust what the file holds that would be lost
+    /// (`VaultSession.conflictDetails`) and puts that in front of the person as a confirmation
+    /// (`overwriteConfirmation`). Only `confirmKeepAppVersion()` writes.
+    func requestKeepAppVersion() {
+        do {
+            if let details = try session.conflictDetails() {
+                overwriteConfirmation = details
+            } else {
+                // The file continues this session again; nothing is in conflict any more.
+                syncFromDisk()
+            }
+            conflictKind = session.conflict()
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
+    }
+
+    /// The overwrite confirmation's destructive button: replace the vault file with this app's
+    /// version, exactly as described by `overwriteConfirmation` — Rust refuses to act on anything
+    /// else, and answers with the file's new details instead, which puts a fresh confirmation on
+    /// screen.
+    func confirmKeepAppVersion() {
+        guard let confirmed = overwriteConfirmation else { return }
+        overwriteConfirmation = nil
+        do {
+            switch try session.keepAppVersionOverConflict(confirmed: confirmed) {
+            case .overwritten:
+                refresh()
+            case .noLongerInConflict:
+                refresh()
+                conflictNotice =
+                    String(localized: "The vault file matches this app's version again, so nothing was overwritten. Changes made elsewhere in the meantime have been loaded.")
+            case .fileChangedAgain(let details):
+                overwriteConfirmation = details
+            }
+        } catch {
+            errorMessage = Self.message(for: error)
+        }
+        conflictKind = session.conflict()
+    }
+
+    /// The overwrite confirmation's Cancel: back to the conflict alert's two choices.
+    func cancelKeepAppVersion() {
+        overwriteConfirmation = nil
     }
 
     var selectedItem: ItemView? {
         guard let selectedItemId else { return nil }
-        return items.first { $0.id == selectedItemId } ?? (try? session.item(itemId: selectedItemId))
+        return items.first { $0.id == selectedItemId } ?? (try? source.item(itemId: selectedItemId))
     }
 
+    /// Called after every `refresh()`, so the AutoFill identity store follows the items
+    /// (ADR-0045). The receiver diffs; this does not.
+    var onItemsChanged: (() -> Void)?
+
     func refresh() {
+        defer { onItemsChanged?() }
         guard let filter = selection.filter else {
             items = []
             environments = session.environments()
             counts = session.sidebarCounts()
             return
         }
-        items = session.listItems(
+        items = source.listItems(
             filter: filter, query: query.isEmpty ? nil : query, sort: sort)
         counts = session.sidebarCounts()
         environments = session.environments()
@@ -112,102 +322,172 @@ final class VaultStore {
 
     // MARK: - Mutations
 
+    /// Run one throwing session call, recording a conflict (`conflictKind`) if it hits one, then
+    /// rethrow so the caller's own `catch` still runs.
+    ///
+    /// Every mutator below goes through this rather than calling `session` directly, so
+    /// `FfiError.Diverged` surfaces in `conflictKind` — and so the conflict alert appears —
+    /// whichever button a person happened to press, not only the ones already routed through
+    /// `perform(_:)`. It does not swallow anything: `save(draft:)`'s
+    /// `FfiError.ItemChangedElsewhere` and every other error still reach the caller unchanged.
+    private func mutating<T>(_ body: () throws -> T) throws -> T {
+        notifyActivity()
+        do {
+            return try body()
+        } catch {
+            if error is FfiError {
+                conflictKind = session.conflict()
+            }
+            throw error
+        }
+    }
+
     func createItem(category: String) throws {
-        let title = "New \(displayName(forCategory: category))"
-        let item = try session.createItem(vaultId: nil, category: category, title: title)
-        selection = .all
-        refresh()
+        let title = String(localized: "New \(displayName(forCategory: category))")
+        let item = try mutating { try source.newItem(category: category, title: title) }
+        // A new item in a shared vault stays in that vault's list.
+        if sharedVaultId == nil { selection = .all }
+        changed()
         selectedItemId = item.id
     }
 
+    /// # Errors
+    ///
+    /// `FfiError.ItemChangedElsewhere` if the item was edited elsewhere since the sheet that built
+    /// `draft` opened (user decision 4) — the caller should show the "reload" alert and re-read
+    /// the item rather than retry the same draft.
     func save(draft: ItemDraft) throws {
-        _ = try session.saveItem(draft: draft)
-        revealed.removeAll()
-        refresh()
+        _ = try mutating { try source.saveItem(draft: draft) }
+        releases.hideAll(because: .edited)
+        changed()
     }
 
     func toggleFavorite(_ item: ItemView) throws {
-        _ = try session.setFavorite(itemId: item.id, favorite: !item.favorite)
+        _ = try mutating { try source.setFavorite(itemId: item.id, favorite: !item.favorite) }
         refresh()
     }
 
     func setArchived(_ item: ItemView, _ archived: Bool) throws {
-        _ = try session.setArchived(itemId: item.id, archived: archived)
-        refresh()
+        _ = try mutating { try source.setArchived(itemId: item.id, archived: archived) }
+        changed()
     }
 
     func setTrashed(_ item: ItemView, _ trashed: Bool) throws {
-        _ = try session.setTrashed(itemId: item.id, trashed: trashed)
-        refresh()
+        _ = try mutating { try source.setTrashed(itemId: item.id, trashed: trashed) }
+        changed()
     }
 
     func deleteForever(_ item: ItemView) throws {
-        try session.deleteItem(itemId: item.id)
-        refresh()
+        // `item` is the Trash row the person confirmed: Rust refuses unless the item is still in
+        // the Trash and unchanged since that row was drawn (its revision).
+        try mutating { try source.deleteItem(itemId: item.id, revision: item.revision) }
+        changed()
     }
 
     func setAgentVisible(_ item: ItemView, _ visible: Bool) throws {
-        _ = try session.setAgentVisible(itemId: item.id, visible: visible)
+        _ = try mutating { try source.setAgentVisible(itemId: item.id, visible: visible) }
         refresh()
     }
 
     func setFieldAgentVisible(_ item: ItemView, _ field: FieldView, _ visible: Bool) throws {
-        _ = try session.setFieldAgentVisible(
-            itemId: item.id, fieldId: field.id, visible: visible)
+        _ = try mutating {
+            try source.setFieldAgentVisible(itemId: item.id, fieldId: field.id, visible: visible)
+        }
         refresh()
     }
 
     // MARK: - Reveal and copy
 
-    func isRevealed(_ field: FieldView) -> Bool {
-        revealed[field.id] != nil
-    }
+    /// The detail pane's field row that has keyboard focus, if any — what ⌘R acts on.
+    var focusedFieldId: String?
 
-    func revealedValue(_ field: FieldView) -> String? {
-        revealed[field.id]
-    }
-
-    /// Reveal one field (⌘R). One field, one explicit action — see `reveal_field` in the FFI.
-    func toggleReveal(item: ItemView, field: FieldView) throws {
-        if revealed.removeValue(forKey: field.id) != nil { return }
-        revealed[field.id] = try session.revealField(itemId: item.id, fieldId: field.id)
-    }
-
-    func clearRevealed() {
-        revealed.removeAll()
-    }
-
-    /// Copy a field's value without revealing it (ui-spec.md §4.2).
-    ///
-    /// A TOTP field is copied as its *code*, not as the `otpauth://` URI it stores: the URI is
-    /// the credential, and nobody wants it on their clipboard.
-    func copy(item: ItemView, field: FieldView) throws {
-        if field.kind == .totp {
-            let code = try session.totpCode(
-                itemId: item.id, fieldId: field.id, at: TotpCountdown.unixNow())
-            PasteboardService.copy(code.code, label: field.label)
-            return
+    /// ⌘R (ui-spec.md §11): reveal or conceal the focused concealed field — or, with no concealed
+    /// field focused, the item's password (`ItemView.passwordField`, the one definition ⇧⌘C and
+    /// Quick Access ⏎ use too), or failing that its one-time password, whose code is started or
+    /// stopped instead.
+    func toggleRevealForShortcut() {
+        guard let item = selectedItem else { return }
+        notifyActivity()
+        let concealed = item.fields.filter { $0.concealed && $0.hasValue }
+        guard
+            let field = concealed.first(where: { $0.id == focusedFieldId })
+                ?? item.passwordField ?? concealed.first(where: { $0.kind == .totp })
+        else { return }
+        let releases = self.releases
+        attemptRelease {
+            if field.kind == .totp {
+                if releases.isLive(totp: field) {
+                    releases.hideTotp(field)
+                } else {
+                    try await releases.showTotp(item: item, field: field)
+                }
+            } else {
+                try await releases.toggleReveal(item: item, field: field)
+            }
         }
-        let value = try session.revealField(itemId: item.id, fieldId: field.id)
-        PasteboardService.copy(value, label: field.label)
     }
 
-    /// Copy an item's current one-time password, for the list's hover action (ui-spec.md §3).
-    func copyItemTotp(_ item: ItemView) {
+    /// ⇧⌘C (ui-spec.md §11): copy the item's password.
+    ///
+    /// "Password" is `ItemView.passwordField`: the field the vault designates by id as the item's
+    /// primary secret (`Item::primary_secret` in the core) — the same field Quick Access ⏎ copies,
+    /// ⌘R reveals when nothing is focused, a browser fill writes, and the presence prompt calls
+    /// "the password". Not "the field labelled password" and not "the first concealed field":
+    /// labels and order can both be changed in the edit sheet without a presence check, so either
+    /// rule would let anything driving the UI relabel or reorder a PIN into the slot. Unlike ⌘R,
+    /// this ignores keyboard focus on purpose: 1Password 8's ⇧⌘C always copies the password
+    /// regardless of what is focused, and "Copy password" is a fixed action.
+    ///
+    /// A value already shown is copied with no new touch (`ItemReleases.copy`'s existing rule,
+    /// ADR-0038 user decision 1); otherwise this takes a one-use `Copy` release through the
+    /// presence gate. An item with no password copies nothing — never another secret in its place.
+    func copyPasswordForShortcut() {
+        guard let item = selectedItem, let field = item.passwordField else { return }
+        notifyActivity()
+        let releases = self.releases
+        attemptRelease {
+            try await releases.copy(item: item, field: field)
+        }
+    }
+
+    /// `attemptRelease`, for a release whose value the caller needs back — the edit sheet's
+    /// "Show". `nil` when there is none (cancelled, locked, refused), having reported anything
+    /// that is an error.
+    func attemptReleaseValue<T>(_ body: @MainActor () async throws -> T?) async -> T? {
         do {
-            guard let code = try session.itemTotpCode(
-                itemId: item.id, at: TotpCountdown.unixNow())
-            else { return }
-            PasteboardService.copy(code.code, label: "One-time password")
+            return try await body()
+        } catch FfiError.PresenceCancelled, FfiError.VaultLocked, FfiError.ReleaseEnded {
+            return nil
         } catch {
             errorMessage = Self.message(for: error)
+            return nil
         }
     }
 
-    /// ⌘C on the list: the row's primary field, which is what the subtitle already shows.
-    func copySubtitle() {
-        guard let subtitle = selectedItem?.subtitle else { return }
-        PasteboardService.copy(subtitle, label: "Username")
+    /// Run a release — a reveal, a copy, a one-time code, notes — and report what went wrong the
+    /// way every other action here does, except for the answers that are not errors: the person
+    /// cancelling the prompt, the vault locking under it, or a shown value having already ended.
+    /// Each of those leaves the screen exactly as it was, which is the whole of the answer.
+    func attemptRelease(_ body: @escaping @MainActor () async throws -> Void) {
+        Task { @MainActor in
+            do {
+                try await body()
+            } catch FfiError.PresenceCancelled, FfiError.VaultLocked, FfiError.ReleaseEnded {
+                // Not confirmed, locked, or already hidden again: nothing to say.
+            } catch {
+                errorMessage = Self.message(for: error)
+            }
+        }
+    }
+
+    /// Item ▸ Copy Username (⇧⌥⌘C, ui-spec.md §11): the item's username (`ItemView.username`), a
+    /// public value already on the item. With no username field, nothing is copied — never the
+    /// subtitle, which may be a website, a hostname or a card's masked digits rather than a
+    /// username.
+    func copyUsername() {
+        guard let username = selectedItem?.username, !username.isEmpty else { return }
+        notifyActivity()
+        PasteboardService.copy(username, label: "Username")
     }
 
     func displayName(forCategory id: String) -> String {
@@ -247,6 +527,15 @@ final class VaultStore {
         }
     }
 
+    /// Bind a variable to an item's field instead of a literal (ui-spec.md §10.4, §16.6).
+    func bindVariable(_ environment: EnvironmentView, name: String, itemId: String, fieldId: String)
+    {
+        perform {
+            _ = try session.bindVariable(
+                environmentId: environment.id, name: name, itemId: itemId, fieldId: fieldId)
+        }
+    }
+
     func removeVariable(_ environment: EnvironmentView, name: String) {
         perform { _ = try session.removeVariable(environmentId: environment.id, name: name) }
     }
@@ -262,32 +551,47 @@ final class VaultStore {
 
     // MARK: - Audit
 
+    /// `syncFromDisk()` first (design note "before the Audit view refreshes"): the log lives in
+    /// the vault file, so another process's write — the CLI, the agent, a second app window —
+    /// belongs on screen the moment this view is looked at, not just on the next timer tick.
     func refreshAudit(limit: UInt32) {
+        syncFromDisk()
         auditRows = session.auditPage(limit: limit, offset: 0)
         auditTotal = session.auditCount()
         auditIntact = session.auditIntact()
+        let durability = session.auditDurability()
+        auditUnsavedEntries = durability.unsavedEntries
+        auditSaveError = durability.lastError
     }
 
     private func perform(_ body: () throws -> Void) {
-        do {
+        notifyActivity()
+        attempt {
             try body()
             refreshEnvironments()
             counts = session.sidebarCounts()
+        }
+    }
+
+    /// The standard error path for an action a view starts with no error handling of its own —
+    /// a toggle, a menu item, a copy button. Never swallows a failure: a conflict raises the
+    /// conflict alert (`conflictKind`), anything else — `FfiError.Busy` included — the store's
+    /// "Something went wrong" alert (`errorMessage`, `ffiErrorMessage`). Views call this instead
+    /// of `try?`, which would make a refused write look like a button that did nothing.
+    func attempt(_ body: () throws -> Void) {
+        do {
+            try body()
         } catch {
-            errorMessage = Self.message(for: error)
+            // A conflict gets its own two-choice alert (`conflictKind`, in `RootView`); showing
+            // the generic one too would either stack two alerts or silently lose one of them.
+            conflictKind = session.conflict()
+            if conflictKind == nil {
+                errorMessage = Self.message(for: error)
+            }
         }
     }
 
     static func message(for error: Error) -> String {
-        if let ffi = error as? FfiError {
-            switch ffi {
-            case .WrongCredential:
-                return "That did not unlock the vault."
-            case .NotFound(let m), .AlreadyExists(let m), .NoSuchSlot(let m), .NotPresent(let m),
-                .Invalid(let m), .Io(let m):
-                return m
-            }
-        }
-        return error.localizedDescription
+        describeAnyError(error)
     }
 }

@@ -1,0 +1,2517 @@
+{
+  "description": "Shared origin-serialization contract. Each entry is a URL string and the ASCII origin serialization both halves of kagisecure must produce for it: `KsOrigin.originOf` in extensions/shared/origin.js and `Origin::ascii_serialization` in crates/kagisecure-extension-ipc/src/origin.rs. `origin: null` means autofill refuses the URL outright. Generated from WHATWG URL semantics; both implementations are expected to satisfy it byte for byte.",
+  "generator": "extensions/chrome/test/adversarial_origin_corpus.test.js documents how to regenerate",
+  "count": 502,
+  "cases": [
+    {
+      "url": "file:///etc/passwd",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "file://host/share/x",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "about:blank",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "about:srcdoc",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "data:text/html,<b>hi</b>",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "data:,",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "blob:https://example.com/2b1f-4c",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "blob:null/2b1f",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "javascript:alert(1)",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "chrome://settings",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "chrome-extension://abcdefghijklmnop/popup.html",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "ws://example.com/s",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "wss://example.com/s",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "ftp://example.com/",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "mailto:a@example.com",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "view-source:https://example.com/",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "filesystem:https://example.com/temporary/x",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "moz-extension://uuid/x",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "safari-web-extension://uuid/x",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "null",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "   ",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "\t\n",
+      "note": "non-web scheme or junk",
+      "origin": null
+    },
+    {
+      "url": "https://",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "http://",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "https:///path",
+      "note": "malformed",
+      "origin": "https://path"
+    },
+    {
+      "url": "https:// example.com",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "http://[",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "http://]",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "http://[::1",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "https://exa mple.com",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "not a url",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "//example.com/",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "/relative/path",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "example.com",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "https://:8080/",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "http://:80",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "https://?query",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "https://#frag",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "http://@",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "https://@example.com",
+      "note": "malformed",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "http:",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "https:",
+      "note": "malformed",
+      "origin": null
+    },
+    {
+      "url": "https://example.com",
+      "note": "port normalization",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com/",
+      "note": "port normalization",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com:443",
+      "note": "port normalization",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com:443/path",
+      "note": "port normalization",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com:8443",
+      "note": "port normalization",
+      "origin": "https://example.com:8443"
+    },
+    {
+      "url": "https://example.com:0",
+      "note": "port normalization",
+      "origin": "https://example.com:0"
+    },
+    {
+      "url": "http://example.com",
+      "note": "port normalization",
+      "origin": "http://example.com"
+    },
+    {
+      "url": "http://example.com:80",
+      "note": "port normalization",
+      "origin": "http://example.com"
+    },
+    {
+      "url": "http://example.com:8080",
+      "note": "port normalization",
+      "origin": "http://example.com:8080"
+    },
+    {
+      "url": "http://example.com:443",
+      "note": "port normalization",
+      "origin": "http://example.com:443"
+    },
+    {
+      "url": "https://example.com:80",
+      "note": "port normalization",
+      "origin": "https://example.com:80"
+    },
+    {
+      "url": "http://example.com:00080",
+      "note": "port normalization",
+      "origin": "http://example.com"
+    },
+    {
+      "url": "https://example.com:0443",
+      "note": "port normalization",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com:65535",
+      "note": "port normalization",
+      "origin": "https://example.com:65535"
+    },
+    {
+      "url": "https://example.com:65536",
+      "note": "port normalization",
+      "origin": null
+    },
+    {
+      "url": "https://example.com:99999",
+      "note": "port normalization",
+      "origin": null
+    },
+    {
+      "url": "https://example.com:-1",
+      "note": "port normalization",
+      "origin": null
+    },
+    {
+      "url": "https://example.com:abc",
+      "note": "port normalization",
+      "origin": null
+    },
+    {
+      "url": "HTTPS://EXAMPLE.COM",
+      "note": "case folding",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "HtTpS://ExAmPlE.CoM/Path",
+      "note": "case folding",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "HTTP://Example.COM:8080",
+      "note": "case folding",
+      "origin": "http://example.com:8080"
+    },
+    {
+      "url": "https://EXAMPLE.com",
+      "note": "case folding",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://Example.Com.",
+      "note": "case folding",
+      "origin": "https://example.com."
+    },
+    {
+      "url": "HTTPS://LOGIN.EXAMPLE.CO.UK",
+      "note": "case folding",
+      "origin": "https://login.example.co.uk"
+    },
+    {
+      "url": "https://example.com.",
+      "note": "trailing / stray dot",
+      "origin": "https://example.com."
+    },
+    {
+      "url": "https://example.com./",
+      "note": "trailing / stray dot",
+      "origin": "https://example.com."
+    },
+    {
+      "url": "https://example.com.:443",
+      "note": "trailing / stray dot",
+      "origin": "https://example.com."
+    },
+    {
+      "url": "https://example.com..",
+      "note": "trailing / stray dot",
+      "origin": "https://example.com.."
+    },
+    {
+      "url": "https://sub.example.com.",
+      "note": "trailing / stray dot",
+      "origin": "https://sub.example.com."
+    },
+    {
+      "url": "http://example.com.:80",
+      "note": "trailing / stray dot",
+      "origin": "http://example.com."
+    },
+    {
+      "url": "https://.example.com",
+      "note": "trailing / stray dot",
+      "origin": "https://.example.com"
+    },
+    {
+      "url": "https://example..com",
+      "note": "trailing / stray dot",
+      "origin": "https://example..com"
+    },
+    {
+      "url": "https://user@example.com",
+      "note": "userinfo stripped",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://user:pass@example.com",
+      "note": "userinfo stripped",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://user:pass@example.com:8443/path",
+      "note": "userinfo stripped",
+      "origin": "https://example.com:8443"
+    },
+    {
+      "url": "https://@example.com/",
+      "note": "userinfo stripped",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://:pass@example.com",
+      "note": "userinfo stripped",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://user%40evil.com@example.com",
+      "note": "userinfo stripped",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com@evil.test",
+      "note": "userinfo stripped",
+      "origin": "https://evil.test"
+    },
+    {
+      "url": "https://example.com:443@evil.test/",
+      "note": "userinfo stripped",
+      "origin": "https://evil.test"
+    },
+    {
+      "url": "https://user:p%40ss@example.com",
+      "note": "userinfo stripped",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://münchen.de",
+      "note": "IDN",
+      "origin": "https://xn--mnchen-3ya.de"
+    },
+    {
+      "url": "https://MÜNCHEN.de",
+      "note": "IDN",
+      "origin": "https://xn--mnchen-3ya.de"
+    },
+    {
+      "url": "https://xn--mnchen-3ya.de",
+      "note": "IDN",
+      "origin": "https://xn--mnchen-3ya.de"
+    },
+    {
+      "url": "https://日本.jp",
+      "note": "IDN",
+      "origin": "https://xn--wgv71a.jp"
+    },
+    {
+      "url": "https://xn--wgv71a119e.jp",
+      "note": "IDN",
+      "origin": "https://xn--wgv71a119e.jp"
+    },
+    {
+      "url": "https://пример.рф",
+      "note": "IDN",
+      "origin": "https://xn--e1afmkfd.xn--p1ai"
+    },
+    {
+      "url": "https://xn--e1afmkfd.xn--p1ai",
+      "note": "IDN",
+      "origin": "https://xn--e1afmkfd.xn--p1ai"
+    },
+    {
+      "url": "https://ÊXAMPLE.com",
+      "note": "IDN",
+      "origin": "https://xn--xample-hva.com"
+    },
+    {
+      "url": "https://faß.de",
+      "note": "IDN",
+      "origin": "https://xn--fa-hia.de"
+    },
+    {
+      "url": "https://fass.de",
+      "note": "IDN",
+      "origin": "https://fass.de"
+    },
+    {
+      "url": "https://exämple.com",
+      "note": "IDN",
+      "origin": "https://xn--exmple-cua.com"
+    },
+    {
+      "url": "https://exämple.com",
+      "note": "IDN",
+      "origin": "https://xn--exmple-cua.com"
+    },
+    {
+      "url": "https://xn--exmple-cua.com",
+      "note": "IDN",
+      "origin": "https://xn--exmple-cua.com"
+    },
+    {
+      "url": "https://☃.net",
+      "note": "IDN",
+      "origin": "https://xn--n3h.net"
+    },
+    {
+      "url": "https://example.com/ü",
+      "note": "IDN",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://ＥＸＡＭＰＬＥ.com",
+      "note": "IDN",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://xn--a.com",
+      "note": "IDN",
+      "origin": null
+    },
+    {
+      "url": "https://xn--.com",
+      "note": "IDN",
+      "origin": null
+    },
+    {
+      "url": "http://127.0.0.1",
+      "note": "IP literal",
+      "origin": "http://127.0.0.1"
+    },
+    {
+      "url": "http://127.0.0.1:8080",
+      "note": "IP literal",
+      "origin": "http://127.0.0.1:8080"
+    },
+    {
+      "url": "http://[::1]",
+      "note": "IP literal",
+      "origin": "http://[::1]"
+    },
+    {
+      "url": "http://[::1]:8080",
+      "note": "IP literal",
+      "origin": "http://[::1]:8080"
+    },
+    {
+      "url": "https://[2001:db8::1]",
+      "note": "IP literal",
+      "origin": "https://[2001:db8::1]"
+    },
+    {
+      "url": "https://[2001:DB8::1]",
+      "note": "IP literal",
+      "origin": "https://[2001:db8::1]"
+    },
+    {
+      "url": "https://[2001:0db8:0000:0000:0000:0000:0000:0001]",
+      "note": "IP literal",
+      "origin": "https://[2001:db8::1]"
+    },
+    {
+      "url": "http://0x7f.0x0.0x0.0x1",
+      "note": "IP literal",
+      "origin": "http://127.0.0.1"
+    },
+    {
+      "url": "http://2130706433",
+      "note": "IP literal",
+      "origin": "http://127.0.0.1"
+    },
+    {
+      "url": "http://127.1",
+      "note": "IP literal",
+      "origin": "http://127.0.0.1"
+    },
+    {
+      "url": "http://010.0.0.1",
+      "note": "IP literal",
+      "origin": "http://8.0.0.1"
+    },
+    {
+      "url": "http://0",
+      "note": "IP literal",
+      "origin": "http://0.0.0.0"
+    },
+    {
+      "url": "http://[v1.fe80::a]",
+      "note": "IP literal",
+      "origin": null
+    },
+    {
+      "url": "http://1.2.3.4.5",
+      "note": "IP literal",
+      "origin": null
+    },
+    {
+      "url": "https://localhost",
+      "note": "host edge case",
+      "origin": "https://localhost"
+    },
+    {
+      "url": "https://localhost:3000",
+      "note": "host edge case",
+      "origin": "https://localhost:3000"
+    },
+    {
+      "url": "http://localhost.",
+      "note": "host edge case",
+      "origin": "http://localhost."
+    },
+    {
+      "url": "https://a",
+      "note": "host edge case",
+      "origin": "https://a"
+    },
+    {
+      "url": "https://a.b.c.d.e.f.g.h.example.com",
+      "note": "host edge case",
+      "origin": "https://a.b.c.d.e.f.g.h.example.com"
+    },
+    {
+      "url": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com",
+      "note": "host edge case",
+      "origin": "https://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example.com"
+    },
+    {
+      "url": "https://example.com:443/../../etc",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com/#@evil.test",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com?x=https://evil.test",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com\\@evil.test",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com%2f@evil.test",
+      "note": "host edge case",
+      "origin": "https://evil.test"
+    },
+    {
+      "url": "https://example.com\u0000",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://exam\u0000ple.com",
+      "note": "host edge case",
+      "origin": null
+    },
+    {
+      "url": "https://example.com​",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://exam\tple.com",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://exam\nple.com",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://exam\rple.com",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example%2ecom",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://%65xample.com",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com/path;param",
+      "note": "host edge case",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://[fe80::1%25eth0]",
+      "note": "host edge case",
+      "origin": null
+    },
+    {
+      "url": "  https://example.com  ",
+      "note": "surrounding / embedded whitespace",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "\thttps://example.com\n",
+      "note": "surrounding / embedded whitespace",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://example.com\t",
+      "note": "surrounding / embedded whitespace",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "ht\ttps://example.com",
+      "note": "surrounding / embedded whitespace",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https\n://example.com",
+      "note": "surrounding / embedded whitespace",
+      "origin": "https://example.com"
+    },
+    {
+      "url": "https://github.com",
+      "note": "site",
+      "origin": "https://github.com"
+    },
+    {
+      "url": "https://github.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://github.com"
+    },
+    {
+      "url": "http://github.com",
+      "note": "site over http",
+      "origin": "http://github.com"
+    },
+    {
+      "url": "https://GITHUB.COM",
+      "note": "site uppercased",
+      "origin": "https://github.com"
+    },
+    {
+      "url": "https://github.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://github.com:8443"
+    },
+    {
+      "url": "https://user@github.com/",
+      "note": "site with userinfo",
+      "origin": "https://github.com"
+    },
+    {
+      "url": "https://github.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://github.com."
+    },
+    {
+      "url": "https://github.com:443",
+      "note": "site on its default port",
+      "origin": "https://github.com"
+    },
+    {
+      "url": "http://github.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://github.com"
+    },
+    {
+      "url": "https://github.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://github.com"
+    },
+    {
+      "url": "HTTPS://github.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://github.com"
+    },
+    {
+      "url": "https://github.com:0",
+      "note": "site on port zero",
+      "origin": "https://github.com:0"
+    },
+    {
+      "url": "https://gist.github.com",
+      "note": "site",
+      "origin": "https://gist.github.com"
+    },
+    {
+      "url": "https://gist.github.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://gist.github.com"
+    },
+    {
+      "url": "http://gist.github.com",
+      "note": "site over http",
+      "origin": "http://gist.github.com"
+    },
+    {
+      "url": "https://GIST.GITHUB.COM",
+      "note": "site uppercased",
+      "origin": "https://gist.github.com"
+    },
+    {
+      "url": "https://gist.github.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://gist.github.com:8443"
+    },
+    {
+      "url": "https://user@gist.github.com/",
+      "note": "site with userinfo",
+      "origin": "https://gist.github.com"
+    },
+    {
+      "url": "https://gist.github.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://gist.github.com."
+    },
+    {
+      "url": "https://gist.github.com:443",
+      "note": "site on its default port",
+      "origin": "https://gist.github.com"
+    },
+    {
+      "url": "http://gist.github.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://gist.github.com"
+    },
+    {
+      "url": "https://gist.github.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://gist.github.com"
+    },
+    {
+      "url": "HTTPS://gist.github.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://gist.github.com"
+    },
+    {
+      "url": "https://gist.github.com:0",
+      "note": "site on port zero",
+      "origin": "https://gist.github.com:0"
+    },
+    {
+      "url": "https://accounts.google.com",
+      "note": "site",
+      "origin": "https://accounts.google.com"
+    },
+    {
+      "url": "https://accounts.google.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://accounts.google.com"
+    },
+    {
+      "url": "http://accounts.google.com",
+      "note": "site over http",
+      "origin": "http://accounts.google.com"
+    },
+    {
+      "url": "https://ACCOUNTS.GOOGLE.COM",
+      "note": "site uppercased",
+      "origin": "https://accounts.google.com"
+    },
+    {
+      "url": "https://accounts.google.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://accounts.google.com:8443"
+    },
+    {
+      "url": "https://user@accounts.google.com/",
+      "note": "site with userinfo",
+      "origin": "https://accounts.google.com"
+    },
+    {
+      "url": "https://accounts.google.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://accounts.google.com."
+    },
+    {
+      "url": "https://accounts.google.com:443",
+      "note": "site on its default port",
+      "origin": "https://accounts.google.com"
+    },
+    {
+      "url": "http://accounts.google.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://accounts.google.com"
+    },
+    {
+      "url": "https://accounts.google.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://accounts.google.com"
+    },
+    {
+      "url": "HTTPS://accounts.google.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://accounts.google.com"
+    },
+    {
+      "url": "https://accounts.google.com:0",
+      "note": "site on port zero",
+      "origin": "https://accounts.google.com:0"
+    },
+    {
+      "url": "https://login.microsoftonline.com",
+      "note": "site",
+      "origin": "https://login.microsoftonline.com"
+    },
+    {
+      "url": "https://login.microsoftonline.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://login.microsoftonline.com"
+    },
+    {
+      "url": "http://login.microsoftonline.com",
+      "note": "site over http",
+      "origin": "http://login.microsoftonline.com"
+    },
+    {
+      "url": "https://LOGIN.MICROSOFTONLINE.COM",
+      "note": "site uppercased",
+      "origin": "https://login.microsoftonline.com"
+    },
+    {
+      "url": "https://login.microsoftonline.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://login.microsoftonline.com:8443"
+    },
+    {
+      "url": "https://user@login.microsoftonline.com/",
+      "note": "site with userinfo",
+      "origin": "https://login.microsoftonline.com"
+    },
+    {
+      "url": "https://login.microsoftonline.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://login.microsoftonline.com."
+    },
+    {
+      "url": "https://login.microsoftonline.com:443",
+      "note": "site on its default port",
+      "origin": "https://login.microsoftonline.com"
+    },
+    {
+      "url": "http://login.microsoftonline.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://login.microsoftonline.com"
+    },
+    {
+      "url": "https://login.microsoftonline.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://login.microsoftonline.com"
+    },
+    {
+      "url": "HTTPS://login.microsoftonline.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://login.microsoftonline.com"
+    },
+    {
+      "url": "https://login.microsoftonline.com:0",
+      "note": "site on port zero",
+      "origin": "https://login.microsoftonline.com:0"
+    },
+    {
+      "url": "https://okta.com",
+      "note": "site",
+      "origin": "https://okta.com"
+    },
+    {
+      "url": "https://okta.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://okta.com"
+    },
+    {
+      "url": "http://okta.com",
+      "note": "site over http",
+      "origin": "http://okta.com"
+    },
+    {
+      "url": "https://OKTA.COM",
+      "note": "site uppercased",
+      "origin": "https://okta.com"
+    },
+    {
+      "url": "https://okta.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://okta.com:8443"
+    },
+    {
+      "url": "https://user@okta.com/",
+      "note": "site with userinfo",
+      "origin": "https://okta.com"
+    },
+    {
+      "url": "https://okta.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://okta.com."
+    },
+    {
+      "url": "https://okta.com:443",
+      "note": "site on its default port",
+      "origin": "https://okta.com"
+    },
+    {
+      "url": "http://okta.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://okta.com"
+    },
+    {
+      "url": "https://okta.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://okta.com"
+    },
+    {
+      "url": "HTTPS://okta.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://okta.com"
+    },
+    {
+      "url": "https://okta.com:0",
+      "note": "site on port zero",
+      "origin": "https://okta.com:0"
+    },
+    {
+      "url": "https://dev-12345.okta.com",
+      "note": "site",
+      "origin": "https://dev-12345.okta.com"
+    },
+    {
+      "url": "https://dev-12345.okta.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://dev-12345.okta.com"
+    },
+    {
+      "url": "http://dev-12345.okta.com",
+      "note": "site over http",
+      "origin": "http://dev-12345.okta.com"
+    },
+    {
+      "url": "https://DEV-12345.OKTA.COM",
+      "note": "site uppercased",
+      "origin": "https://dev-12345.okta.com"
+    },
+    {
+      "url": "https://dev-12345.okta.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://dev-12345.okta.com:8443"
+    },
+    {
+      "url": "https://user@dev-12345.okta.com/",
+      "note": "site with userinfo",
+      "origin": "https://dev-12345.okta.com"
+    },
+    {
+      "url": "https://dev-12345.okta.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://dev-12345.okta.com."
+    },
+    {
+      "url": "https://dev-12345.okta.com:443",
+      "note": "site on its default port",
+      "origin": "https://dev-12345.okta.com"
+    },
+    {
+      "url": "http://dev-12345.okta.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://dev-12345.okta.com"
+    },
+    {
+      "url": "https://dev-12345.okta.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://dev-12345.okta.com"
+    },
+    {
+      "url": "HTTPS://dev-12345.okta.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://dev-12345.okta.com"
+    },
+    {
+      "url": "https://dev-12345.okta.com:0",
+      "note": "site on port zero",
+      "origin": "https://dev-12345.okta.com:0"
+    },
+    {
+      "url": "https://amazon.co.jp",
+      "note": "site",
+      "origin": "https://amazon.co.jp"
+    },
+    {
+      "url": "https://amazon.co.jp/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://amazon.co.jp"
+    },
+    {
+      "url": "http://amazon.co.jp",
+      "note": "site over http",
+      "origin": "http://amazon.co.jp"
+    },
+    {
+      "url": "https://AMAZON.CO.JP",
+      "note": "site uppercased",
+      "origin": "https://amazon.co.jp"
+    },
+    {
+      "url": "https://amazon.co.jp:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://amazon.co.jp:8443"
+    },
+    {
+      "url": "https://user@amazon.co.jp/",
+      "note": "site with userinfo",
+      "origin": "https://amazon.co.jp"
+    },
+    {
+      "url": "https://amazon.co.jp.",
+      "note": "site with a trailing dot",
+      "origin": "https://amazon.co.jp."
+    },
+    {
+      "url": "https://amazon.co.jp:443",
+      "note": "site on its default port",
+      "origin": "https://amazon.co.jp"
+    },
+    {
+      "url": "http://amazon.co.jp:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://amazon.co.jp"
+    },
+    {
+      "url": "https://amazon.co.jp/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://amazon.co.jp"
+    },
+    {
+      "url": "HTTPS://amazon.co.jp/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://amazon.co.jp"
+    },
+    {
+      "url": "https://amazon.co.jp:0",
+      "note": "site on port zero",
+      "origin": "https://amazon.co.jp:0"
+    },
+    {
+      "url": "https://www.amazon.co.jp",
+      "note": "site",
+      "origin": "https://www.amazon.co.jp"
+    },
+    {
+      "url": "https://www.amazon.co.jp/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://www.amazon.co.jp"
+    },
+    {
+      "url": "http://www.amazon.co.jp",
+      "note": "site over http",
+      "origin": "http://www.amazon.co.jp"
+    },
+    {
+      "url": "https://WWW.AMAZON.CO.JP",
+      "note": "site uppercased",
+      "origin": "https://www.amazon.co.jp"
+    },
+    {
+      "url": "https://www.amazon.co.jp:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://www.amazon.co.jp:8443"
+    },
+    {
+      "url": "https://user@www.amazon.co.jp/",
+      "note": "site with userinfo",
+      "origin": "https://www.amazon.co.jp"
+    },
+    {
+      "url": "https://www.amazon.co.jp.",
+      "note": "site with a trailing dot",
+      "origin": "https://www.amazon.co.jp."
+    },
+    {
+      "url": "https://www.amazon.co.jp:443",
+      "note": "site on its default port",
+      "origin": "https://www.amazon.co.jp"
+    },
+    {
+      "url": "http://www.amazon.co.jp:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://www.amazon.co.jp"
+    },
+    {
+      "url": "https://www.amazon.co.jp/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://www.amazon.co.jp"
+    },
+    {
+      "url": "HTTPS://www.amazon.co.jp/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://www.amazon.co.jp"
+    },
+    {
+      "url": "https://www.amazon.co.jp:0",
+      "note": "site on port zero",
+      "origin": "https://www.amazon.co.jp:0"
+    },
+    {
+      "url": "https://bbc.co.uk",
+      "note": "site",
+      "origin": "https://bbc.co.uk"
+    },
+    {
+      "url": "https://bbc.co.uk/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://bbc.co.uk"
+    },
+    {
+      "url": "http://bbc.co.uk",
+      "note": "site over http",
+      "origin": "http://bbc.co.uk"
+    },
+    {
+      "url": "https://BBC.CO.UK",
+      "note": "site uppercased",
+      "origin": "https://bbc.co.uk"
+    },
+    {
+      "url": "https://bbc.co.uk:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://bbc.co.uk:8443"
+    },
+    {
+      "url": "https://user@bbc.co.uk/",
+      "note": "site with userinfo",
+      "origin": "https://bbc.co.uk"
+    },
+    {
+      "url": "https://bbc.co.uk.",
+      "note": "site with a trailing dot",
+      "origin": "https://bbc.co.uk."
+    },
+    {
+      "url": "https://bbc.co.uk:443",
+      "note": "site on its default port",
+      "origin": "https://bbc.co.uk"
+    },
+    {
+      "url": "http://bbc.co.uk:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://bbc.co.uk"
+    },
+    {
+      "url": "https://bbc.co.uk/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://bbc.co.uk"
+    },
+    {
+      "url": "HTTPS://bbc.co.uk/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://bbc.co.uk"
+    },
+    {
+      "url": "https://bbc.co.uk:0",
+      "note": "site on port zero",
+      "origin": "https://bbc.co.uk:0"
+    },
+    {
+      "url": "https://news.bbc.co.uk",
+      "note": "site",
+      "origin": "https://news.bbc.co.uk"
+    },
+    {
+      "url": "https://news.bbc.co.uk/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://news.bbc.co.uk"
+    },
+    {
+      "url": "http://news.bbc.co.uk",
+      "note": "site over http",
+      "origin": "http://news.bbc.co.uk"
+    },
+    {
+      "url": "https://NEWS.BBC.CO.UK",
+      "note": "site uppercased",
+      "origin": "https://news.bbc.co.uk"
+    },
+    {
+      "url": "https://news.bbc.co.uk:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://news.bbc.co.uk:8443"
+    },
+    {
+      "url": "https://user@news.bbc.co.uk/",
+      "note": "site with userinfo",
+      "origin": "https://news.bbc.co.uk"
+    },
+    {
+      "url": "https://news.bbc.co.uk.",
+      "note": "site with a trailing dot",
+      "origin": "https://news.bbc.co.uk."
+    },
+    {
+      "url": "https://news.bbc.co.uk:443",
+      "note": "site on its default port",
+      "origin": "https://news.bbc.co.uk"
+    },
+    {
+      "url": "http://news.bbc.co.uk:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://news.bbc.co.uk"
+    },
+    {
+      "url": "https://news.bbc.co.uk/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://news.bbc.co.uk"
+    },
+    {
+      "url": "HTTPS://news.bbc.co.uk/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://news.bbc.co.uk"
+    },
+    {
+      "url": "https://news.bbc.co.uk:0",
+      "note": "site on port zero",
+      "origin": "https://news.bbc.co.uk:0"
+    },
+    {
+      "url": "https://example.org",
+      "note": "site",
+      "origin": "https://example.org"
+    },
+    {
+      "url": "https://example.org/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://example.org"
+    },
+    {
+      "url": "http://example.org",
+      "note": "site over http",
+      "origin": "http://example.org"
+    },
+    {
+      "url": "https://EXAMPLE.ORG",
+      "note": "site uppercased",
+      "origin": "https://example.org"
+    },
+    {
+      "url": "https://example.org:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://example.org:8443"
+    },
+    {
+      "url": "https://user@example.org/",
+      "note": "site with userinfo",
+      "origin": "https://example.org"
+    },
+    {
+      "url": "https://example.org.",
+      "note": "site with a trailing dot",
+      "origin": "https://example.org."
+    },
+    {
+      "url": "https://example.org:443",
+      "note": "site on its default port",
+      "origin": "https://example.org"
+    },
+    {
+      "url": "http://example.org:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://example.org"
+    },
+    {
+      "url": "https://example.org/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://example.org"
+    },
+    {
+      "url": "HTTPS://example.org/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://example.org"
+    },
+    {
+      "url": "https://example.org:0",
+      "note": "site on port zero",
+      "origin": "https://example.org:0"
+    },
+    {
+      "url": "https://example.net",
+      "note": "site",
+      "origin": "https://example.net"
+    },
+    {
+      "url": "https://example.net/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://example.net"
+    },
+    {
+      "url": "http://example.net",
+      "note": "site over http",
+      "origin": "http://example.net"
+    },
+    {
+      "url": "https://EXAMPLE.NET",
+      "note": "site uppercased",
+      "origin": "https://example.net"
+    },
+    {
+      "url": "https://example.net:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://example.net:8443"
+    },
+    {
+      "url": "https://user@example.net/",
+      "note": "site with userinfo",
+      "origin": "https://example.net"
+    },
+    {
+      "url": "https://example.net.",
+      "note": "site with a trailing dot",
+      "origin": "https://example.net."
+    },
+    {
+      "url": "https://example.net:443",
+      "note": "site on its default port",
+      "origin": "https://example.net"
+    },
+    {
+      "url": "http://example.net:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://example.net"
+    },
+    {
+      "url": "https://example.net/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://example.net"
+    },
+    {
+      "url": "HTTPS://example.net/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://example.net"
+    },
+    {
+      "url": "https://example.net:0",
+      "note": "site on port zero",
+      "origin": "https://example.net:0"
+    },
+    {
+      "url": "https://sub.domain.example.com",
+      "note": "site",
+      "origin": "https://sub.domain.example.com"
+    },
+    {
+      "url": "https://sub.domain.example.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://sub.domain.example.com"
+    },
+    {
+      "url": "http://sub.domain.example.com",
+      "note": "site over http",
+      "origin": "http://sub.domain.example.com"
+    },
+    {
+      "url": "https://SUB.DOMAIN.EXAMPLE.COM",
+      "note": "site uppercased",
+      "origin": "https://sub.domain.example.com"
+    },
+    {
+      "url": "https://sub.domain.example.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://sub.domain.example.com:8443"
+    },
+    {
+      "url": "https://user@sub.domain.example.com/",
+      "note": "site with userinfo",
+      "origin": "https://sub.domain.example.com"
+    },
+    {
+      "url": "https://sub.domain.example.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://sub.domain.example.com."
+    },
+    {
+      "url": "https://sub.domain.example.com:443",
+      "note": "site on its default port",
+      "origin": "https://sub.domain.example.com"
+    },
+    {
+      "url": "http://sub.domain.example.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://sub.domain.example.com"
+    },
+    {
+      "url": "https://sub.domain.example.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://sub.domain.example.com"
+    },
+    {
+      "url": "HTTPS://sub.domain.example.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://sub.domain.example.com"
+    },
+    {
+      "url": "https://sub.domain.example.com:0",
+      "note": "site on port zero",
+      "origin": "https://sub.domain.example.com:0"
+    },
+    {
+      "url": "https://a-b-c.example.com",
+      "note": "site",
+      "origin": "https://a-b-c.example.com"
+    },
+    {
+      "url": "https://a-b-c.example.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://a-b-c.example.com"
+    },
+    {
+      "url": "http://a-b-c.example.com",
+      "note": "site over http",
+      "origin": "http://a-b-c.example.com"
+    },
+    {
+      "url": "https://A-B-C.EXAMPLE.COM",
+      "note": "site uppercased",
+      "origin": "https://a-b-c.example.com"
+    },
+    {
+      "url": "https://a-b-c.example.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://a-b-c.example.com:8443"
+    },
+    {
+      "url": "https://user@a-b-c.example.com/",
+      "note": "site with userinfo",
+      "origin": "https://a-b-c.example.com"
+    },
+    {
+      "url": "https://a-b-c.example.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://a-b-c.example.com."
+    },
+    {
+      "url": "https://a-b-c.example.com:443",
+      "note": "site on its default port",
+      "origin": "https://a-b-c.example.com"
+    },
+    {
+      "url": "http://a-b-c.example.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://a-b-c.example.com"
+    },
+    {
+      "url": "https://a-b-c.example.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://a-b-c.example.com"
+    },
+    {
+      "url": "HTTPS://a-b-c.example.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://a-b-c.example.com"
+    },
+    {
+      "url": "https://a-b-c.example.com:0",
+      "note": "site on port zero",
+      "origin": "https://a-b-c.example.com:0"
+    },
+    {
+      "url": "https://xn--80ak6aa92e.com",
+      "note": "site",
+      "origin": "https://xn--80ak6aa92e.com"
+    },
+    {
+      "url": "https://xn--80ak6aa92e.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://xn--80ak6aa92e.com"
+    },
+    {
+      "url": "http://xn--80ak6aa92e.com",
+      "note": "site over http",
+      "origin": "http://xn--80ak6aa92e.com"
+    },
+    {
+      "url": "https://XN--80AK6AA92E.COM",
+      "note": "site uppercased",
+      "origin": "https://xn--80ak6aa92e.com"
+    },
+    {
+      "url": "https://xn--80ak6aa92e.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://xn--80ak6aa92e.com:8443"
+    },
+    {
+      "url": "https://user@xn--80ak6aa92e.com/",
+      "note": "site with userinfo",
+      "origin": "https://xn--80ak6aa92e.com"
+    },
+    {
+      "url": "https://xn--80ak6aa92e.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://xn--80ak6aa92e.com."
+    },
+    {
+      "url": "https://xn--80ak6aa92e.com:443",
+      "note": "site on its default port",
+      "origin": "https://xn--80ak6aa92e.com"
+    },
+    {
+      "url": "http://xn--80ak6aa92e.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://xn--80ak6aa92e.com"
+    },
+    {
+      "url": "https://xn--80ak6aa92e.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://xn--80ak6aa92e.com"
+    },
+    {
+      "url": "HTTPS://xn--80ak6aa92e.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://xn--80ak6aa92e.com"
+    },
+    {
+      "url": "https://xn--80ak6aa92e.com:0",
+      "note": "site on port zero",
+      "origin": "https://xn--80ak6aa92e.com:0"
+    },
+    {
+      "url": "https://app.slack.com",
+      "note": "site",
+      "origin": "https://app.slack.com"
+    },
+    {
+      "url": "https://app.slack.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://app.slack.com"
+    },
+    {
+      "url": "http://app.slack.com",
+      "note": "site over http",
+      "origin": "http://app.slack.com"
+    },
+    {
+      "url": "https://APP.SLACK.COM",
+      "note": "site uppercased",
+      "origin": "https://app.slack.com"
+    },
+    {
+      "url": "https://app.slack.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://app.slack.com:8443"
+    },
+    {
+      "url": "https://user@app.slack.com/",
+      "note": "site with userinfo",
+      "origin": "https://app.slack.com"
+    },
+    {
+      "url": "https://app.slack.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://app.slack.com."
+    },
+    {
+      "url": "https://app.slack.com:443",
+      "note": "site on its default port",
+      "origin": "https://app.slack.com"
+    },
+    {
+      "url": "http://app.slack.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://app.slack.com"
+    },
+    {
+      "url": "https://app.slack.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://app.slack.com"
+    },
+    {
+      "url": "HTTPS://app.slack.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://app.slack.com"
+    },
+    {
+      "url": "https://app.slack.com:0",
+      "note": "site on port zero",
+      "origin": "https://app.slack.com:0"
+    },
+    {
+      "url": "https://id.atlassian.com",
+      "note": "site",
+      "origin": "https://id.atlassian.com"
+    },
+    {
+      "url": "https://id.atlassian.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://id.atlassian.com"
+    },
+    {
+      "url": "http://id.atlassian.com",
+      "note": "site over http",
+      "origin": "http://id.atlassian.com"
+    },
+    {
+      "url": "https://ID.ATLASSIAN.COM",
+      "note": "site uppercased",
+      "origin": "https://id.atlassian.com"
+    },
+    {
+      "url": "https://id.atlassian.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://id.atlassian.com:8443"
+    },
+    {
+      "url": "https://user@id.atlassian.com/",
+      "note": "site with userinfo",
+      "origin": "https://id.atlassian.com"
+    },
+    {
+      "url": "https://id.atlassian.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://id.atlassian.com."
+    },
+    {
+      "url": "https://id.atlassian.com:443",
+      "note": "site on its default port",
+      "origin": "https://id.atlassian.com"
+    },
+    {
+      "url": "http://id.atlassian.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://id.atlassian.com"
+    },
+    {
+      "url": "https://id.atlassian.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://id.atlassian.com"
+    },
+    {
+      "url": "HTTPS://id.atlassian.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://id.atlassian.com"
+    },
+    {
+      "url": "https://id.atlassian.com:0",
+      "note": "site on port zero",
+      "origin": "https://id.atlassian.com:0"
+    },
+    {
+      "url": "https://auth0.com",
+      "note": "site",
+      "origin": "https://auth0.com"
+    },
+    {
+      "url": "https://auth0.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://auth0.com"
+    },
+    {
+      "url": "http://auth0.com",
+      "note": "site over http",
+      "origin": "http://auth0.com"
+    },
+    {
+      "url": "https://AUTH0.COM",
+      "note": "site uppercased",
+      "origin": "https://auth0.com"
+    },
+    {
+      "url": "https://auth0.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://auth0.com:8443"
+    },
+    {
+      "url": "https://user@auth0.com/",
+      "note": "site with userinfo",
+      "origin": "https://auth0.com"
+    },
+    {
+      "url": "https://auth0.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://auth0.com."
+    },
+    {
+      "url": "https://auth0.com:443",
+      "note": "site on its default port",
+      "origin": "https://auth0.com"
+    },
+    {
+      "url": "http://auth0.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://auth0.com"
+    },
+    {
+      "url": "https://auth0.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://auth0.com"
+    },
+    {
+      "url": "HTTPS://auth0.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://auth0.com"
+    },
+    {
+      "url": "https://auth0.com:0",
+      "note": "site on port zero",
+      "origin": "https://auth0.com:0"
+    },
+    {
+      "url": "https://tenant.eu.auth0.com",
+      "note": "site",
+      "origin": "https://tenant.eu.auth0.com"
+    },
+    {
+      "url": "https://tenant.eu.auth0.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://tenant.eu.auth0.com"
+    },
+    {
+      "url": "http://tenant.eu.auth0.com",
+      "note": "site over http",
+      "origin": "http://tenant.eu.auth0.com"
+    },
+    {
+      "url": "https://TENANT.EU.AUTH0.COM",
+      "note": "site uppercased",
+      "origin": "https://tenant.eu.auth0.com"
+    },
+    {
+      "url": "https://tenant.eu.auth0.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://tenant.eu.auth0.com:8443"
+    },
+    {
+      "url": "https://user@tenant.eu.auth0.com/",
+      "note": "site with userinfo",
+      "origin": "https://tenant.eu.auth0.com"
+    },
+    {
+      "url": "https://tenant.eu.auth0.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://tenant.eu.auth0.com."
+    },
+    {
+      "url": "https://tenant.eu.auth0.com:443",
+      "note": "site on its default port",
+      "origin": "https://tenant.eu.auth0.com"
+    },
+    {
+      "url": "http://tenant.eu.auth0.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://tenant.eu.auth0.com"
+    },
+    {
+      "url": "https://tenant.eu.auth0.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://tenant.eu.auth0.com"
+    },
+    {
+      "url": "HTTPS://tenant.eu.auth0.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://tenant.eu.auth0.com"
+    },
+    {
+      "url": "https://tenant.eu.auth0.com:0",
+      "note": "site on port zero",
+      "origin": "https://tenant.eu.auth0.com:0"
+    },
+    {
+      "url": "https://signin.aws.amazon.com",
+      "note": "site",
+      "origin": "https://signin.aws.amazon.com"
+    },
+    {
+      "url": "https://signin.aws.amazon.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://signin.aws.amazon.com"
+    },
+    {
+      "url": "http://signin.aws.amazon.com",
+      "note": "site over http",
+      "origin": "http://signin.aws.amazon.com"
+    },
+    {
+      "url": "https://SIGNIN.AWS.AMAZON.COM",
+      "note": "site uppercased",
+      "origin": "https://signin.aws.amazon.com"
+    },
+    {
+      "url": "https://signin.aws.amazon.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://signin.aws.amazon.com:8443"
+    },
+    {
+      "url": "https://user@signin.aws.amazon.com/",
+      "note": "site with userinfo",
+      "origin": "https://signin.aws.amazon.com"
+    },
+    {
+      "url": "https://signin.aws.amazon.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://signin.aws.amazon.com."
+    },
+    {
+      "url": "https://signin.aws.amazon.com:443",
+      "note": "site on its default port",
+      "origin": "https://signin.aws.amazon.com"
+    },
+    {
+      "url": "http://signin.aws.amazon.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://signin.aws.amazon.com"
+    },
+    {
+      "url": "https://signin.aws.amazon.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://signin.aws.amazon.com"
+    },
+    {
+      "url": "HTTPS://signin.aws.amazon.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://signin.aws.amazon.com"
+    },
+    {
+      "url": "https://signin.aws.amazon.com:0",
+      "note": "site on port zero",
+      "origin": "https://signin.aws.amazon.com:0"
+    },
+    {
+      "url": "https://mail.proton.me",
+      "note": "site",
+      "origin": "https://mail.proton.me"
+    },
+    {
+      "url": "https://mail.proton.me/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://mail.proton.me"
+    },
+    {
+      "url": "http://mail.proton.me",
+      "note": "site over http",
+      "origin": "http://mail.proton.me"
+    },
+    {
+      "url": "https://MAIL.PROTON.ME",
+      "note": "site uppercased",
+      "origin": "https://mail.proton.me"
+    },
+    {
+      "url": "https://mail.proton.me:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://mail.proton.me:8443"
+    },
+    {
+      "url": "https://user@mail.proton.me/",
+      "note": "site with userinfo",
+      "origin": "https://mail.proton.me"
+    },
+    {
+      "url": "https://mail.proton.me.",
+      "note": "site with a trailing dot",
+      "origin": "https://mail.proton.me."
+    },
+    {
+      "url": "https://mail.proton.me:443",
+      "note": "site on its default port",
+      "origin": "https://mail.proton.me"
+    },
+    {
+      "url": "http://mail.proton.me:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://mail.proton.me"
+    },
+    {
+      "url": "https://mail.proton.me/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://mail.proton.me"
+    },
+    {
+      "url": "HTTPS://mail.proton.me/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://mail.proton.me"
+    },
+    {
+      "url": "https://mail.proton.me:0",
+      "note": "site on port zero",
+      "origin": "https://mail.proton.me:0"
+    },
+    {
+      "url": "https://vault.bitwarden.com",
+      "note": "site",
+      "origin": "https://vault.bitwarden.com"
+    },
+    {
+      "url": "https://vault.bitwarden.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://vault.bitwarden.com"
+    },
+    {
+      "url": "http://vault.bitwarden.com",
+      "note": "site over http",
+      "origin": "http://vault.bitwarden.com"
+    },
+    {
+      "url": "https://VAULT.BITWARDEN.COM",
+      "note": "site uppercased",
+      "origin": "https://vault.bitwarden.com"
+    },
+    {
+      "url": "https://vault.bitwarden.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://vault.bitwarden.com:8443"
+    },
+    {
+      "url": "https://user@vault.bitwarden.com/",
+      "note": "site with userinfo",
+      "origin": "https://vault.bitwarden.com"
+    },
+    {
+      "url": "https://vault.bitwarden.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://vault.bitwarden.com."
+    },
+    {
+      "url": "https://vault.bitwarden.com:443",
+      "note": "site on its default port",
+      "origin": "https://vault.bitwarden.com"
+    },
+    {
+      "url": "http://vault.bitwarden.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://vault.bitwarden.com"
+    },
+    {
+      "url": "https://vault.bitwarden.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://vault.bitwarden.com"
+    },
+    {
+      "url": "HTTPS://vault.bitwarden.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://vault.bitwarden.com"
+    },
+    {
+      "url": "https://vault.bitwarden.com:0",
+      "note": "site on port zero",
+      "origin": "https://vault.bitwarden.com:0"
+    },
+    {
+      "url": "https://my.1password.com",
+      "note": "site",
+      "origin": "https://my.1password.com"
+    },
+    {
+      "url": "https://my.1password.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://my.1password.com"
+    },
+    {
+      "url": "http://my.1password.com",
+      "note": "site over http",
+      "origin": "http://my.1password.com"
+    },
+    {
+      "url": "https://MY.1PASSWORD.COM",
+      "note": "site uppercased",
+      "origin": "https://my.1password.com"
+    },
+    {
+      "url": "https://my.1password.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://my.1password.com:8443"
+    },
+    {
+      "url": "https://user@my.1password.com/",
+      "note": "site with userinfo",
+      "origin": "https://my.1password.com"
+    },
+    {
+      "url": "https://my.1password.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://my.1password.com."
+    },
+    {
+      "url": "https://my.1password.com:443",
+      "note": "site on its default port",
+      "origin": "https://my.1password.com"
+    },
+    {
+      "url": "http://my.1password.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://my.1password.com"
+    },
+    {
+      "url": "https://my.1password.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://my.1password.com"
+    },
+    {
+      "url": "HTTPS://my.1password.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://my.1password.com"
+    },
+    {
+      "url": "https://my.1password.com:0",
+      "note": "site on port zero",
+      "origin": "https://my.1password.com:0"
+    },
+    {
+      "url": "https://secure.paypal.com",
+      "note": "site",
+      "origin": "https://secure.paypal.com"
+    },
+    {
+      "url": "https://secure.paypal.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://secure.paypal.com"
+    },
+    {
+      "url": "http://secure.paypal.com",
+      "note": "site over http",
+      "origin": "http://secure.paypal.com"
+    },
+    {
+      "url": "https://SECURE.PAYPAL.COM",
+      "note": "site uppercased",
+      "origin": "https://secure.paypal.com"
+    },
+    {
+      "url": "https://secure.paypal.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://secure.paypal.com:8443"
+    },
+    {
+      "url": "https://user@secure.paypal.com/",
+      "note": "site with userinfo",
+      "origin": "https://secure.paypal.com"
+    },
+    {
+      "url": "https://secure.paypal.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://secure.paypal.com."
+    },
+    {
+      "url": "https://secure.paypal.com:443",
+      "note": "site on its default port",
+      "origin": "https://secure.paypal.com"
+    },
+    {
+      "url": "http://secure.paypal.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://secure.paypal.com"
+    },
+    {
+      "url": "https://secure.paypal.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://secure.paypal.com"
+    },
+    {
+      "url": "HTTPS://secure.paypal.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://secure.paypal.com"
+    },
+    {
+      "url": "https://secure.paypal.com:0",
+      "note": "site on port zero",
+      "origin": "https://secure.paypal.com:0"
+    },
+    {
+      "url": "https://chase.com",
+      "note": "site",
+      "origin": "https://chase.com"
+    },
+    {
+      "url": "https://chase.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://chase.com"
+    },
+    {
+      "url": "http://chase.com",
+      "note": "site over http",
+      "origin": "http://chase.com"
+    },
+    {
+      "url": "https://CHASE.COM",
+      "note": "site uppercased",
+      "origin": "https://chase.com"
+    },
+    {
+      "url": "https://chase.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://chase.com:8443"
+    },
+    {
+      "url": "https://user@chase.com/",
+      "note": "site with userinfo",
+      "origin": "https://chase.com"
+    },
+    {
+      "url": "https://chase.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://chase.com."
+    },
+    {
+      "url": "https://chase.com:443",
+      "note": "site on its default port",
+      "origin": "https://chase.com"
+    },
+    {
+      "url": "http://chase.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://chase.com"
+    },
+    {
+      "url": "https://chase.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://chase.com"
+    },
+    {
+      "url": "HTTPS://chase.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://chase.com"
+    },
+    {
+      "url": "https://chase.com:0",
+      "note": "site on port zero",
+      "origin": "https://chase.com:0"
+    },
+    {
+      "url": "https://online.citi.com",
+      "note": "site",
+      "origin": "https://online.citi.com"
+    },
+    {
+      "url": "https://online.citi.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://online.citi.com"
+    },
+    {
+      "url": "http://online.citi.com",
+      "note": "site over http",
+      "origin": "http://online.citi.com"
+    },
+    {
+      "url": "https://ONLINE.CITI.COM",
+      "note": "site uppercased",
+      "origin": "https://online.citi.com"
+    },
+    {
+      "url": "https://online.citi.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://online.citi.com:8443"
+    },
+    {
+      "url": "https://user@online.citi.com/",
+      "note": "site with userinfo",
+      "origin": "https://online.citi.com"
+    },
+    {
+      "url": "https://online.citi.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://online.citi.com."
+    },
+    {
+      "url": "https://online.citi.com:443",
+      "note": "site on its default port",
+      "origin": "https://online.citi.com"
+    },
+    {
+      "url": "http://online.citi.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://online.citi.com"
+    },
+    {
+      "url": "https://online.citi.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://online.citi.com"
+    },
+    {
+      "url": "HTTPS://online.citi.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://online.citi.com"
+    },
+    {
+      "url": "https://online.citi.com:0",
+      "note": "site on port zero",
+      "origin": "https://online.citi.com:0"
+    },
+    {
+      "url": "https://banking.sparkasse.de",
+      "note": "site",
+      "origin": "https://banking.sparkasse.de"
+    },
+    {
+      "url": "https://banking.sparkasse.de/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://banking.sparkasse.de"
+    },
+    {
+      "url": "http://banking.sparkasse.de",
+      "note": "site over http",
+      "origin": "http://banking.sparkasse.de"
+    },
+    {
+      "url": "https://BANKING.SPARKASSE.DE",
+      "note": "site uppercased",
+      "origin": "https://banking.sparkasse.de"
+    },
+    {
+      "url": "https://banking.sparkasse.de:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://banking.sparkasse.de:8443"
+    },
+    {
+      "url": "https://user@banking.sparkasse.de/",
+      "note": "site with userinfo",
+      "origin": "https://banking.sparkasse.de"
+    },
+    {
+      "url": "https://banking.sparkasse.de.",
+      "note": "site with a trailing dot",
+      "origin": "https://banking.sparkasse.de."
+    },
+    {
+      "url": "https://banking.sparkasse.de:443",
+      "note": "site on its default port",
+      "origin": "https://banking.sparkasse.de"
+    },
+    {
+      "url": "http://banking.sparkasse.de:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://banking.sparkasse.de"
+    },
+    {
+      "url": "https://banking.sparkasse.de/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://banking.sparkasse.de"
+    },
+    {
+      "url": "HTTPS://banking.sparkasse.de/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://banking.sparkasse.de"
+    },
+    {
+      "url": "https://banking.sparkasse.de:0",
+      "note": "site on port zero",
+      "origin": "https://banking.sparkasse.de:0"
+    },
+    {
+      "url": "https://netbank.mufg.jp",
+      "note": "site",
+      "origin": "https://netbank.mufg.jp"
+    },
+    {
+      "url": "https://netbank.mufg.jp/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://netbank.mufg.jp"
+    },
+    {
+      "url": "http://netbank.mufg.jp",
+      "note": "site over http",
+      "origin": "http://netbank.mufg.jp"
+    },
+    {
+      "url": "https://NETBANK.MUFG.JP",
+      "note": "site uppercased",
+      "origin": "https://netbank.mufg.jp"
+    },
+    {
+      "url": "https://netbank.mufg.jp:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://netbank.mufg.jp:8443"
+    },
+    {
+      "url": "https://user@netbank.mufg.jp/",
+      "note": "site with userinfo",
+      "origin": "https://netbank.mufg.jp"
+    },
+    {
+      "url": "https://netbank.mufg.jp.",
+      "note": "site with a trailing dot",
+      "origin": "https://netbank.mufg.jp."
+    },
+    {
+      "url": "https://netbank.mufg.jp:443",
+      "note": "site on its default port",
+      "origin": "https://netbank.mufg.jp"
+    },
+    {
+      "url": "http://netbank.mufg.jp:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://netbank.mufg.jp"
+    },
+    {
+      "url": "https://netbank.mufg.jp/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://netbank.mufg.jp"
+    },
+    {
+      "url": "HTTPS://netbank.mufg.jp/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://netbank.mufg.jp"
+    },
+    {
+      "url": "https://netbank.mufg.jp:0",
+      "note": "site on port zero",
+      "origin": "https://netbank.mufg.jp:0"
+    },
+    {
+      "url": "https://kagisecure.com",
+      "note": "site",
+      "origin": "https://kagisecure.com"
+    },
+    {
+      "url": "https://kagisecure.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://kagisecure.com"
+    },
+    {
+      "url": "http://kagisecure.com",
+      "note": "site over http",
+      "origin": "http://kagisecure.com"
+    },
+    {
+      "url": "https://KAGISECURE.COM",
+      "note": "site uppercased",
+      "origin": "https://kagisecure.com"
+    },
+    {
+      "url": "https://kagisecure.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://kagisecure.com:8443"
+    },
+    {
+      "url": "https://user@kagisecure.com/",
+      "note": "site with userinfo",
+      "origin": "https://kagisecure.com"
+    },
+    {
+      "url": "https://kagisecure.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://kagisecure.com."
+    },
+    {
+      "url": "https://kagisecure.com:443",
+      "note": "site on its default port",
+      "origin": "https://kagisecure.com"
+    },
+    {
+      "url": "http://kagisecure.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://kagisecure.com"
+    },
+    {
+      "url": "https://kagisecure.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://kagisecure.com"
+    },
+    {
+      "url": "HTTPS://kagisecure.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://kagisecure.com"
+    },
+    {
+      "url": "https://kagisecure.com:0",
+      "note": "site on port zero",
+      "origin": "https://kagisecure.com:0"
+    },
+    {
+      "url": "https://www.kagisecure.com",
+      "note": "site",
+      "origin": "https://www.kagisecure.com"
+    },
+    {
+      "url": "https://www.kagisecure.com/login?next=%2Fhome",
+      "note": "site with path and query",
+      "origin": "https://www.kagisecure.com"
+    },
+    {
+      "url": "http://www.kagisecure.com",
+      "note": "site over http",
+      "origin": "http://www.kagisecure.com"
+    },
+    {
+      "url": "https://WWW.KAGISECURE.COM",
+      "note": "site uppercased",
+      "origin": "https://www.kagisecure.com"
+    },
+    {
+      "url": "https://www.kagisecure.com:8443/",
+      "note": "site on an explicit port",
+      "origin": "https://www.kagisecure.com:8443"
+    },
+    {
+      "url": "https://user@www.kagisecure.com/",
+      "note": "site with userinfo",
+      "origin": "https://www.kagisecure.com"
+    },
+    {
+      "url": "https://www.kagisecure.com.",
+      "note": "site with a trailing dot",
+      "origin": "https://www.kagisecure.com."
+    },
+    {
+      "url": "https://www.kagisecure.com:443",
+      "note": "site on its default port",
+      "origin": "https://www.kagisecure.com"
+    },
+    {
+      "url": "http://www.kagisecure.com:80/x#frag",
+      "note": "site on its default port with a fragment",
+      "origin": "http://www.kagisecure.com"
+    },
+    {
+      "url": "https://www.kagisecure.com/#/spa/route",
+      "note": "site with a hash route",
+      "origin": "https://www.kagisecure.com"
+    },
+    {
+      "url": "HTTPS://www.kagisecure.com/MiXeD",
+      "note": "site with a mixed-case scheme",
+      "origin": "https://www.kagisecure.com"
+    },
+    {
+      "url": "https://www.kagisecure.com:0",
+      "note": "site on port zero",
+      "origin": "https://www.kagisecure.com:0"
+    }
+  ]
+}

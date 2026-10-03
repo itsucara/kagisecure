@@ -34,8 +34,9 @@ Five properties hold for every source, and each is a test, not a convention:
    is an annoyance; a wrongly-public one is a breach.
 3. **No intermediate plaintext on disk.** Zip entries are read through `std::io::Read` into
    `Zeroizing` buffers. Nothing is extracted to a temp file, and nothing is written until
-   `Vault::save()` — which is atomic and `0600`. A failure mid-apply leaves the vault file
-   untouched, and `--dry-run` never calls `save()` at all.
+   `commit` runs as the closure of a `Vault::transact`, which writes atomically and `0600`
+   ([ADR-0039](decisions/0039-transactional-vault-writes-and-the-lock-file.md)). A failure
+   mid-apply leaves the vault file untouched, and `--dry-run` never reaches `commit` at all.
 4. **Everything lands invisible to agents.** Every imported item gets `agent_visible = false`
    ([threat-model.md](threat-model.md) M-9). The post-import screen shows a count and a one-click
    "make this vault visible to agents"; nothing happens until a human presses it. Imported password
@@ -206,7 +207,7 @@ report — **a secret is never dropped for failing to parse.**
 
 ### 2.6 Vaults and accounts
 
-One `VaultMeta` per 1PUX vault, created on commit through `Vault::add_logical_vault`. With a
+One `VaultMeta` per 1PUX vault, created on commit through `Tx::add_logical_vault`. With a
 single account in the export the name is `<vault.name>`; with more than one it is
 `<account.name> / <vault.name>`. `--logical-vault <NAME>` collapses everything into one existing
 logical vault instead.

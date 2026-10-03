@@ -4,6 +4,7 @@
 - **Date:** 2026-09-09
 - **Deciders:** M1 implementation
 - **Amends:** [vault-format.md](../vault-format.md) §2.1, §3, §3.2
+- **Refined by:** [ADR-0039](0039-transactional-vault-writes-and-the-lock-file.md)
 
 ## Context
 
@@ -62,6 +63,9 @@ before the AEAD ever got the chance to reject it.
 - Changing the master password no longer touches the recovery slot. Tested:
   `a_password_change_does_not_invalidate_the_recovery_code`.
 - Raising Argon2 cost on the password slot (`Vault::upgrade_kdf`) likewise leaves recovery alone.
+  Note (2026-09-25): since [ADR-0039](0039-transactional-vault-writes-and-the-lock-file.md) step
+  6, this is `Vault::prepare_kdf_upgrade` (Argon2id, before any lock) followed by
+  `Tx::install_master_password` (inside the transaction); `Vault::upgrade_kdf` no longer exists.
 - vault-format.md §3 should be amended to include the optional `kdf` key in the entry schema, and
   §2.1's salt row reworded to "regenerated on password change; slots with their own `kdf` are
   unaffected".

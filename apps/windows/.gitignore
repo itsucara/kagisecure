@@ -1,0 +1,13 @@
+# dotnet build output. (The repository root ignores bin/ and obj/ too; this keeps apps/windows
+# self-contained if it is ever opened or packaged on its own.)
+bin/
+obj/
+TestResults/
+*.user
+.vs/
+
+# kagisecure_ffi.dll is built and staged by `cargo xtask bindgen-cs` under target/windows/, and
+# copied into bin/ by the build. It is never checked in (ADR-0009's reasoning for the Swift path's
+# binaries applies unchanged).
+*.dll
+*.pdb

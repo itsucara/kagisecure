@@ -1,6 +1,7 @@
 # ADR-0021: The extension id is pinned by a committed key, and the private key is not
 
-- **Status:** Accepted
+- **Status:** Accepted; amended 2026-10-03 (the Chrome Web Store assigns its own id — see the
+  amendment below, which corrects "Publishing to the Web Store would change nothing")
 - **Date:** 2026-09-10
 - **Deciders:** M6 implementation
 
@@ -35,6 +36,9 @@ The same id whether the extension is loaded unpacked from any directory, on any 
 or Edge or Arc or Brave.
 
 ### Publishing to the Web Store would change nothing
+
+> **Wrong — corrected by the amendment of 2026-10-03 below.** The Chrome Web Store refuses a new
+> item whose manifest contains `key`, so the store id is not the pinned one.
 
 A store listing's id is derived from the key the store holds. Uploading a package that already
 contains a `key` keeps that id. So the pinned id survives publication, and the app's allow-list
@@ -85,3 +89,49 @@ than one.
   manifest's and the constant in `lib.rs`. Two edits, both greppable, and the alternative — reading
   the id from configuration — would mean the allow-list is whatever a file says, which is not an
   allow-list.
+
+## Amendment 2026-10-03: the Chrome Web Store assigns its own id
+
+**What this ADR got wrong.** "Publishing to the Web Store would change nothing" assumed that
+uploading a package whose manifest carries `key` keeps the id that key derives. It does not, for a
+**new** item: the Chrome Web Store refuses the upload of a new item whose manifest contains `key`,
+and assigns the item an id of its own — derived from a key pair the store generates and holds —
+at the first upload. The first upload has to be made by hand in the developer dashboard; the
+store's API cannot create an item. So the store install's id is unknown until that upload, and is
+not `nlijibjnmanccalmafnfbobkcfjiibmd`. The "Nothing about the allow-list changes at release time"
+consequence above is withdrawn: it changes once, after the first upload.
+
+**Decision (the owner).** Publish the extension on the Chrome Web Store, publicly listed from the
+first release, under the same publisher as the macOS app's Developer ID. Keep the committed `key`
+for unpacked loads. Then:
+
+1. **The store package strips `key`.** `cargo xtask chrome-package` writes
+   `dist/kagisecure-chrome-<version>.zip` from `extensions/shared` with `key` removed and `version`
+   set from the workspace (`docs/chrome-web-store.md`). The committed manifest keeps its `key`, so
+   `Load unpacked`, the e2e suite and the run browser (`Contents/Resources/ChromiumExtension`,
+   ADR-0042) still get the pinned id.
+2. **The store id joins the allow-list.** After the first upload, the item's id (shown in the
+   dashboard and in the item's store URL) is added as the second entry of
+   `kagisecure_extension_ipc::PINNED_EXTENSION_IDS`. That one list feeds both halves of the check:
+   the app's `Hello` check, and the `allowed_origins` of every native messaging manifest the setup
+   screen writes (`kagisecure_agent::browser_setup::manifest_body`). A user who installed from the
+   store presses **Set up** again in an app build carrying the new entry, which rewrites the
+   manifest with both origins.
+3. **Optionally, one id for both.** The dashboard shows the item's public key (Package → View
+   public key). Replacing the committed `key` with it makes an unpacked load get the store id too.
+   If that is done, the old id stays in `PINNED_EXTENSION_IDS` for a transition — anyone with the
+   old unpacked id installed keeps working until they reload — and the order is swapped so the
+   store id is `[0]`, which is what the setup screen shows and what the test in
+   `extensions/chrome/test/adversarial_extension_surface.test.js` derives from the committed key.
+   The upload then still strips `key`: the store keeps the item's key itself, and an update whose
+   manifest carries one is at best redundant.
+
+**What is unchanged.** Pinning is still not authentication (above). The private key for
+`nlijibjnmanccalmafnfbobkcfjiibmd` is still discarded and still not needed: a store item is signed
+by the store, and this project still does not distribute `.crx` files. Safari is untouched — it
+pins a bundle identifier, not a Chromium id (ADR-0024).
+
+**Consequences.** Two Chromium ids are served instead of one, and the setup screen shows only the
+first; a store user comparing ids there will see the unpacked one until the screen lists both or
+the keys are unified as in (3). Every id on the list is one this project controls: the unpacked one
+by a key nobody holds, the store one by the store account.

@@ -92,8 +92,7 @@ const CREDENTIAL_WORDS: &[&str] = &["pin", "cvv", "cvc", "cvn", "cid"];
 /// * 1Password marked the field `guarded`;
 /// * the login field's designation is `password`;
 /// * the login field's type is `P`, the HTML password input;
-/// * the title or the id reads as a credential ([`CREDENTIAL_SUBSTRINGS`],
-///   [`CREDENTIAL_WORDS`]);
+/// * the title or the id reads as a credential (`CREDENTIAL_SUBSTRINGS`, `CREDENTIAL_WORDS`);
 /// * the value type key is one this build does not know **and** any of the above hints is set.
 ///
 /// Everything else is public.

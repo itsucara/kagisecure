@@ -190,11 +190,14 @@ tail attached — a crash before the reporter flushed must not be able to report
 ### Suite A — MCP agent flow (`e2e/suites/mcp/`)
 
 Three processes: this runner as the MCP client, a real `kagisecure-mcp`, and a real `kagisecure
-daemon`. 21 scenarios covering the nine tools, the default-deny rule, `describe_item` returning
-names only, the `add_variables` pending flow, `write_env_file`'s 0600/atomic/gitignore behaviour,
-`run_with_env` masking and `output: "none"`, lease reuse, use-count exhaustion, lease expiry,
-revocation, locking, the audit chain, and a 32-byte random canary checked against every tool result
-and the sidecar's raw streams.
+daemon`. 22 scenarios covering the ten tools (`request_fill` only as far as the headless
+daemon's `FILL_UNAVAILABLE` — for a visible item, a hidden one, an absent one and a one-time code
+alike, before the item is looked up and with no audit entry; suite B drives it into a browser), the
+default-deny rule, `describe_item` returning names only, the
+`add_variables` pending flow, `write_env_file`'s 0600/atomic/gitignore behaviour, `run_with_env`
+masking and `output: "none"`, lease reuse, use-count exhaustion, lease expiry, revocation, locking,
+the audit chain, and a 32-byte random canary checked against every tool result and the sidecar's
+raw streams.
 
 **The slow one.** "A lease expires on its own" waits a real minute, because `ttl_seconds` is clamped
 to a 60-second floor and the IPC boundary exposes no clock. It is the only scenario over a second,
@@ -214,7 +217,19 @@ button.
 A real Chromium-family browser, the real unpacked extension from `extensions/shared/`, the real
 `kagisecure-nmhost` **launched by the browser** so the process-ancestry gate is exercised rather
 than switched off, a real socket, and `extension_harness` holding a real `ExtensionAgent`.
-15 scenarios, every state screenshotted into the report.
+27 scenarios (25 run automatically; 2 report `skipped` on Safari), every state screenshotted into
+the report.
+
+**Asking about the active tab.** The popup is opened as an ordinary tab rather than the browser's
+own toolbar popup, because that is the only way Playwright can drive it (§ below). That has one
+consequence: `background.js`'s relay for `matches-active-tab` and `totp-active-tab` refuses any
+request whose `sender.tab` is set — hardening added by commit `ded6bd3` so a content script cannot
+forge the popup's own relay message and reach another tab's fill path with no trusted gesture
+behind it — and a popup running as a tab now carries exactly that. So the harness's `ask()` answers
+those two kinds by evaluating inside the **service worker** instead (`askActiveTabViaServiceWorker`
+in `extension.test.mjs`), a devtools capability no page has, reproducing the relay's own logic
+without going through `chrome.runtime.onMessage` at all — the same kind of capability
+`the tab memory expires` already uses for `KsTabMemory.sweep`.
 
 **Which browser.** Chrome 137 removed `--load-extension`; on Chrome 152 the switch is silently
 ignored, the extension is not installed, and nothing is logged. Edge is the same Chromium with the
@@ -235,13 +250,40 @@ every hostname, and the hostnames are chosen for where they sit on the list:
 | `mallory.github.io:PORT` | refused — `github.io` is a public suffix, so these are siblings |
 | `app.example.com:OTHER` | refused — the port is part of the origin |
 | `127.0.0.1:PORT` | refused — an IP literal, exact host match only |
+| `app.examp1e.com:PORT` | refused — a look-alike one character off, used by the agent-fill scenarios |
 
 Nothing leaves the machine.
 
-**Three worlds, not one.** The allow-path scenarios share a browser and a harness. The denial
+**Several worlds, not one.** The allow-path scenarios share a browser and a harness. The denial
 scenario gets its own, started with `extension_harness --deny` (a thread answering the queue with
-`Decision::Deny`). The lock scenario gets its own, because a locked `VaultHandle` cannot be
-unlocked from outside. A suite whose scenarios only pass in one order hides bugs.
+`Decision::Deny`). The presence scenario gets its own, started with `extension_harness
+--presence` — a thread that allows every full sheet for the session and denies every presence-only
+prompt, which is the app with nobody at the keyboard after the first login; it asserts that a
+`page.mouse.click` on the icon, trusted input synthesized over CDP exactly as an automation agent
+sends it, fills nothing inside the lease's window
+([ADR-0037](decisions/0037-every-fill-needs-a-fresh-presence-proof.md)). The lock scenario gets its
+own, because a locked `VaultHandle` cannot be unlocked from outside. A suite whose scenarios only
+pass in one order hides bugs.
+
+**Agent-requested fills** ([ADR-0036](decisions/0036-agent-requested-browser-fill.md)) get four
+worlds, one per scenario, each started with `extension_harness --agent-socket <path>
+--agent-fill`: the harness also serves the MCP socket there, turns the broker's switch on and makes
+the test item agent-visible, and the scenario speaks MCP to a real `kagisecure-mcp` pointed at it —
+the same `Sidecar` client suite A uses. The scenarios are: an approved fill lands in the tab in
+front; a look-alike (`app.examp1e.com`) raises no sheet, fills nothing, and a second mismatch
+blocks the agent even on the real site; an identifier-first sign-in fills the password on page two
+without a second sheet; and a one-time code lands in the page's code field and leaves the
+clipboard as it was. Each has its own world because the broker's limits are per agent, and every
+sidecar here has the same parent — this runner — which is what an agent is keyed on: three sheets
+or one mismatch spent in one scenario would otherwise change what the next one is told. The robot
+answering the queue prints a `sheet` event for every request it answers, which is how "no sheet"
+and "no second sheet" are counted rather than inferred from the audit log.
+
+> **Not yet run.** The four agent-fill scenarios are written and wired in, and load under
+> `node --test`, but suite B opens a visible browser window and has not been run since they were
+> added. The Rust tests in `crates/kagisecure-agent/tests/agent_fill*.rs` cover the same paths with
+> a scripted service worker; what only this suite can show is the real extension answering the
+> push in a real browser.
 
 **The manifest.** This suite writes the native messaging manifest **only** into the throwaway
 profile — on Edge 152 that is the copy a browser launched with `--user-data-dir` actually reads —
@@ -250,6 +292,30 @@ and never into `~/Library/Application Support/<browser>/NativeMessagingHosts/`. 
 real everyday browser pointing at a `target/debug` binary if the run was killed in between. That
 test was removed when this one landed; `npm run e2e` no longer exists.
 
+**Unattended sign-ins** ([ADR-0042](decisions/0042-unattended-agent-access.md) §12) are one more
+scenario, in `unattended.test.mjs`, and it is **headless only** — it opens no window and takes no
+focus, so it can run on a machine someone is working on:
+
+    cargo build -p kagisecure-nmhost -p kagisecure-mcp
+    cargo build -p kagisecure-agent --example unattended_harness
+    cd e2e/suites/extension && node --test unattended.test.mjs
+
+`unattended_harness` stands in for the app's unattended half: it writes a personal vault, a machine
+vault with one Login item (a canary password), one job and one login grant, starts the real engine
+with `run_browser` pointed at `extensions/shared` and the built `kagisecure-nmhost`, arms it and
+starts the job once. The engine launches the **run browser** — Playwright's Chromium, else Microsoft
+Edge, with `--headless=new`, `--ignore-certificate-errors` and the host-resolver rule above — and
+the job, `unattended-job.mjs`, attaches to it at `KAGISECURE_RUN_BROWSER_CDP`, opens
+`https://app.example.com:PORT/unattended-login.html` (served over https with a certificate
+`openssl` makes for the run, since a login grant names an exact https origin), asks its own
+`kagisecure-mcp` for `request_fill`, and submits the form. While the run is still up, the test
+points a **second** headless browser at the run's own extension endpoint. It asserts: the page's
+form post carried the canary; the machine log has `UNATTENDED_FILL_APPROVED (grant … run 1)` at
+that exact origin and a `HOST_REFUSED` for the second browser; the grant was counted once and not
+suspended; the run's profile is gone; and the canary is in no tool result, sidecar byte, harness
+byte or audit entry. If no browser loads the extension headless, or `openssl` is missing, it
+reports `skipped`.
+
 **Safari** cannot be driven by automation here. Its two scenarios report `skipped` with the manual
 steps attached to the report, never as failures. What is *not* skipped by that: the Safari wire
 format is covered without Safari, by `SafariExtensionTransportTests` in the app's test bundle and
@@ -257,15 +323,21 @@ by `crates/kagisecure-agent/tests/safari.rs`.
 
 ### Suite C — CLI and vault format (`e2e/suites/cli/`)
 
-18 scenarios against scratch vaults: creation and the recovery code, recovery setting a new
+20 scenarios against scratch vaults: creation and the recovery code, recovery setting a new
 password, wrong-password exit codes, tampered headers and bodies and truncation, KDF parameter
 bounds, the item lifecycle, the `--reveal` / `--json` rules, the generator's modes and clamps,
-`totp` against an independent RFC 6238 implementation in Python, and the committed golden vector
-opening at its released parameters.
+`totp` against an independent RFC 6238 implementation in Python, the audit chain, `import`, and the
+committed golden vector opening at its released parameters.
 
-The scratch vaults use `--kdf-m-kib 8 --kdf-t 1`. That is not a shortcut around the crypto: the
-golden-vector scenario opens a real file written at the released parameters. It is the difference
-between a suite that runs in seconds and one nobody runs.
+The scratch vaults use `CHEAP_KDF` from `e2e/lib/harness.mjs` (`--kdf-m-kib 64 --kdf-t 1`) — the
+cheapest Argon2id parameters `kagisecure-core` will still open a file at. That floor is `MIN_M_KIB`
+/ `MIN_T` in `crates/kagisecure-core/src/crypto/kdf.rs`, which is not a policy choice weakened for
+testing but the v1 golden vector's own parameters: the golden vector was written at m = 64 KiB,
+t = 1, and a vault format rule against editing golden vectors makes that the strongest floor the
+*open* path can carry without breaking format compatibility, so no scratch vault can legitimately
+be cheaper than the fixture the suite also opens at its released parameters. Read the floor from
+`CHEAP_KDF` rather than a literal — every suite that creates its own scratch vaults does. It is
+still the difference between a suite that runs in seconds and one nobody runs.
 
 ## 7. Suite D — the macOS app (`e2e/suites/app/`, `apps/macos/KagisecureUITests/`)
 
@@ -336,9 +408,48 @@ has — `ks.lock.title`, `ks.approval.sentence`, `ks.audit.chainState` — rathe
 
 Two more things worth knowing before writing an assertion:
 
-- **A `Text` keeps its string in `value`, not `label`.** `label` is empty unless the view also sets
-  `.accessibilityLabel`. `UITestCase.text(_:)` reads whichever one carries it, and every assertion
-  about on-screen text goes through it.
+- **A `Text` keeps its string in `value`, not `label`** — and an `.accessibilityLabel` does not
+  move it there. Measured on macOS (an `NSHostingView` read back through `AXUIElement`):
+
+  | view                                                   | `label` | `value`       |
+  |--------------------------------------------------------|---------|---------------|
+  | `Text(s)`                                              | empty   | `s`           |
+  | `Text(s).accessibilityLabel(l)`                        | empty   | `l`, not `s`  |
+  | `Text(s).accessibilityLabel(l).accessibilityValue(v)`  | `l`     | `v`           |
+
+  The second row is the surprise: the label *replaces* the string as the value, which is what
+  VoiceOver reads, and what is drawn is not in the tree at all — so a concealed field's mask reads
+  as "Password, concealed. Reveal asks for Touch ID or your Mac password.", never as its dots.
+  `UITestCase.text(_:)` reads `label` and then `value`, which serves the first two rows; a view in
+  the third (the generator's candidate, the import sheet's source path) is read by `.value`.
+- **A number interpolated into a `Text` is formatted for the locale.** `Text("\(7776) words")`
+  reads "7,776 words" here. Assert on the digits, not on a grouping.
+- **A menu-style `MenuBarExtra` drops identifiers, and nothing else.** Measured on macOS 27 (a
+  probe app read through `AXUIElement`): the status item's `AXTitle` is the icon's
+  `.accessibilityLabel` and follows it live — XCUITest's `title`, not its `label`, which is
+  empty. Its menu is an `AXMenu` child of the status item whether open or closed, one
+  `AXMenuItem` per entry with its title and enabled state, kept current while closed; no entry
+  carries its `.accessibilityIdentifier` (a button's comes out as `menuAction:`). So the suite
+  reads the lock state from `icon.title` and the entries by title from the status item's own
+  subtree, which keeps them apart from the main menu bar's commands of the same name. Closed,
+  the menu's frame is zero-size; open, it is real — that is how a scenario knows it is open, not
+  `isHittable`.
+- **A status item's frame is not always where it can be clicked.** A menu-bar manager that
+  collapses status items (BetterTouchTool's, on the Mac this was measured on) leaves a collapsed
+  item reporting a frame under its own chevron; XCUITest's click lands on the chevron and expands
+  the hidden items instead of opening the menu, after which the item's frame is its real one.
+  `L_MenuBarAndDarkModeTests.openStatusMenu` clicks until the menu's frame says it is open, at
+  most three times. Allowing Kagisecure in the manager's settings takes the question away.
+- **Settings remembers its tab.** SwiftUI keeps the selected Settings tab in the app's
+  `UserDefaults.standard` (`com_apple_SwiftUI_Settings_selectedTabIndex`), which
+  `-KSUITestDefaultsSuite` does not redirect, so a scenario selects the tab it needs rather than
+  assuming where ⌘, lands.
+- **A number is typed, not slid.** `adjust(toNormalizedSliderPosition:)` does not reliably move a
+  SwiftUI `Slider`, the arrow keys reach an `NSSlider` only with Full Keyboard Access on, and a
+  drag lands wherever the knob stops. Every slider in the app has an `ExactNumberField` beside it
+  — `<id>Field` and `<id>Stepper` — which is the keyboard's path to the value (ui-spec.md §13);
+  `UITestCase.setNumber` types into the field and commits with Return, `UITestCase.nudge` clicks
+  the stepper's arrow, and the scenario asserts the field's exact value.
 - **Selection lives on the cell.** A sidebar row's `Selected` attribute is on the `AXOutlineRow` and
   `AXCell`; the static text carrying the identifier never has one. `UITestCase.clickSidebarRow`
   clicks the cell and checks the cell.
@@ -474,7 +585,42 @@ $ E2E_GUI=1 make e2e               # all four
 The other three suites are safe to run while the machine is in use. Suite B launches a browser, but
 into its own throwaway profile and without taking the keyboard.
 
-### 7.8 Status
+### 7.8 The keystrokes have to arrive as typed
+
+XCUITest's keystrokes go through the input source the Mac has selected, like anybody's. With an
+input method selected rather than a plain keyboard layout, a typed string is composed rather than
+typed: what reaches a field is not what the scenario sent. On the run that found this, a
+synthesized keystroke also brought System Settings to the front, and the scenarios after it typed
+into System Settings instead of the app — failures that read as product bugs and are not.
+
+So before suite D starts — before its build, so the answer comes in seconds — the runner
+(`e2e/lib/gui-preflight.mjs`) reads two things and **refuses the run** if either is wrong:
+
+* **The selected input source**, from `AppleSelectedInputSources` in `com.apple.HIToolbox`
+  (`AppleCurrentKeyboardLayoutInputSourceID` goes into the message). A `Keyboard Layout` entry
+  must be selected and no input method may be: an entry whose `InputSourceKind` is `Input Mode`,
+  `Input Method` or `Keyboard Input Method` refuses. `Non Keyboard Input Method` entries — the
+  character palette, press-and-hold accents, the emoji row — are selected on every Mac, never
+  compose keystrokes, and do not count. A list that cannot be read is reported as not checked
+  rather than refused.
+* **Whether System Settings is running** (`pgrep -x "System Settings"`). Quit it first.
+
+The refusal says what it found and how to fix it — switch to a plain layout such as ABC from the
+input menu, quit System Settings — and the runner does neither for you, for §7.4's reason: this
+suite does not change the machine it is measuring. Nor is this the kind of guard §7.4 warns about:
+the selected input source is not correlated with the keystrokes going wrong, it is what they go
+through.
+
+To check a Mac without running anything:
+
+```console
+$ node e2e/run.mjs --preflight
+   preflight  input source: keyboard layout ABC
+   preflight  System Settings: not running
+   preflight  ready for suite "app"
+```
+
+### 7.9 Status
 
 Implemented, not yet observed green end to end. `KagisecureUITests` builds and links
 (`xcodebuild build-for-testing`), and every scenario is wired to a real accessibility identifier and

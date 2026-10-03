@@ -47,7 +47,8 @@ final class QuickAccessController {
             // Not fatal, and not silent: the menu-bar item and the Item menu still open Quick
             // Access, so the feature works — the shortcut is what is unavailable, and the user is
             // the only one who can free it up.
-            hotKeyError = "⇧⌘Space is unavailable — \(error)."
+            let reason = "\(error)"
+            hotKeyError = String(localized: "⇧⌘Space is unavailable — \(reason).")
         }
     }
 

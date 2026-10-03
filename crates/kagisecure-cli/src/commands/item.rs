@@ -2,12 +2,13 @@
 
 use std::path::Path;
 
-use anyhow::{Result, bail};
-use kagisecure_core::model::{Category, Field, FieldValue, Item, Secret};
-use kagisecure_core::{Error, Vault};
+use anyhow::{Context, Result, bail};
+use kagisecure_core::Vault;
+use kagisecure_core::audit::AuditDraft;
+use kagisecure_core::model::{Category, Field, FieldValue, Item, Secret, SecretText};
 
 use crate::cli::{AddArgs, ListArgs, RmArgs, ShowArgs};
-use crate::commands::ymd;
+use crate::commands::{cli_draft, record_audit_best_effort, transact_patiently, ymd};
 use crate::prompt::SecretInput;
 
 fn open(path: &Path, input: &mut SecretInput) -> Result<Vault> {
@@ -16,19 +17,21 @@ fn open(path: &Path, input: &mut SecretInput) -> Result<Vault> {
     Ok(Vault::open_with_password(path, password.as_bytes())?)
 }
 
-/// Add an item. Concealed values come from a prompt or standard input, never from argv.
+/// Add an item. Concealed values, one-time-password seeds and the note all come from a prompt,
+/// standard input, or — the note only — a file, never from argv.
 ///
 /// # Errors
 ///
-/// If the vault cannot be opened, a `--field` is malformed, or a value cannot be read.
+/// If the vault cannot be opened, a `--field` is malformed, a value cannot be read, or
+/// `--note-file` names a path that cannot be read.
 pub fn add(path: &Path, args: &AddArgs, input: &mut SecretInput) -> Result<()> {
-    // The master password is read first so that the secret values follow it on standard input in
-    // a predictable order.
+    // The master password is read first so that the secret, one-time-password and note values
+    // follow it on standard input in a predictable order.
     let mut vault = open(path, input)?;
 
     let category: Category = args.category.parse().unwrap_or(Category::Login);
-    let mut item = Item::new(vault.default_vault_id()?, category, args.title.clone());
 
+    let mut fields = Vec::new();
     for spec in &args.fields {
         let Some((label, value)) = spec.split_once('=') else {
             bail!("--field expects LABEL=VALUE, got {spec:?}");
@@ -36,12 +39,12 @@ pub fn add(path: &Path, args: &AddArgs, input: &mut SecretInput) -> Result<()> {
         if label.is_empty() {
             bail!("--field needs a label before the '='");
         }
-        item.fields.push(Field::public(label, value));
+        fields.push(Field::public(label, value));
     }
 
     for label in &args.secrets {
         let value = input.read(&format!("Value for {label}"))?;
-        item.fields.push(Field::concealed(
+        fields.push(Field::concealed(
             label,
             Secret::from_string(value.to_string()),
         ));
@@ -54,19 +57,44 @@ pub fn add(path: &Path, args: &AddArgs, input: &mut SecretInput) -> Result<()> {
         // ui-spec.md §9 asks the setup flow to prevent.
         let uri = uri.to_string();
         kagisecure_core::totp::Totp::parse_uri(&uri)?;
-        item.fields
-            .push(Field::totp(label, Secret::from_string(uri)));
+        fields.push(Field::totp(label, Secret::from_string(uri)));
     }
 
-    item.tags.clone_from(&args.tags);
-    item.urls.clone_from(&args.urls);
-    item.notes.clone_from(&args.note);
+    // The note, if `--note` or `--note-file` asked for one — read (or read from disk) here,
+    // alongside every `--secret` and `--totp` value above, and for the same reason: never while a
+    // lock is held. `--note` and `--note-file` conflict in the grammar (`cli.rs`), so exactly one
+    // of these two arms ever supplies a value.
+    let note = if let Some(path) = &args.note_file {
+        let contents = std::fs::read_to_string(path)
+            .with_context(|| format!("reading the note from {}", path.display()))?;
+        Some(contents.trim_end_matches(['\r', '\n']).to_owned())
+    } else if args.note {
+        Some(input.read("Note")?.to_string())
+    } else {
+        None
+    };
 
-    let id = item.id;
-    let concealed = item.fields.iter().filter(|f| f.value.is_secret()).count();
-    let public = item.fields.len() - concealed;
-    vault.add_item(item);
-    vault.save()?;
+    let concealed = fields.iter().filter(|f| f.value.is_secret()).count();
+    let public = fields.len() - concealed;
+
+    // Every prompt above ran before any lock was taken (never hold it across one). The only read
+    // that has to be fresh is which logical vault the item lands in, so that is the one thing the
+    // transaction itself decides.
+    let mut fields = Some(fields);
+    let id = transact_patiently(&mut vault, |tx| {
+        let mut item = Item::new(tx.default_vault_id()?, category.clone(), args.title.clone());
+        item.fields = fields.take().expect("the transaction commits at most once");
+        item.tags.clone_from(&args.tags);
+        item.urls.clone_from(&args.urls);
+        item.notes = note.clone().map(SecretText::new);
+        let id = item.id;
+        tx.add_item(item);
+        tx.append_audit(AuditDraft {
+            item_id: Some(id),
+            ..cli_draft("item add")
+        });
+        Ok(id)
+    })?;
 
     println!("Added {id}");
     println!("  title      {}", args.title);
@@ -111,13 +139,23 @@ pub fn list(path: &Path, args: &ListArgs, input: &mut SecretInput) -> Result<()>
     Ok(())
 }
 
-/// Show one item's metadata, and its concealed values only when explicitly asked.
+/// Show one item's metadata, and its concealed values — including its notes, which are secret
+/// like any other field (ADR-0038) — only when explicitly asked.
+///
+/// Every `--reveal` is audited, best-effort: actor `cli`, tool `reveal_field`, the item id and the
+/// labels of whatever was actually shown (`"notes"` among them if the note was), detail
+/// `MASTER_PASSWORD` — the CLI's presence proof is the master password it already asked for to
+/// open the vault at all, unlike the app's per-reveal biometric gate (ADR-0038's "the CLI already
+/// asks for the master password on every run, so a presence gate there adds nothing"). This never
+/// blocks the value from printing: if the audit save fails, the value is already on the terminal
+/// and only a warning goes to stderr (design doc "transactions-and-audit" part B, user decision 1:
+/// "own reveals ... AUDIT them, best-effort, NEVER blocking").
 ///
 /// # Errors
 ///
 /// If the vault cannot be opened or the item does not resolve.
 pub fn show(path: &Path, args: &ShowArgs, input: &mut SecretInput) -> Result<()> {
-    let vault = open(path, input)?;
+    let mut vault = open(path, input)?;
     let item = vault.find_item(&args.item)?;
 
     if args.json {
@@ -136,8 +174,11 @@ pub fn show(path: &Path, args: &ShowArgs, input: &mut SecretInput) -> Result<()>
     for url in &item.urls {
         println!("{:<14}{url}", "url");
     }
-    if let Some(note) = &item.notes {
-        println!("{:<14}{note}", "note");
+    let has_notes = item.notes.is_some();
+    match (&item.notes, args.reveal) {
+        (Some(note), true) => println!("{:<14}{}", "note", note.expose()),
+        (Some(_), false) => println!("{:<14}(hidden, use --reveal)", "note"),
+        (None, _) => {}
     }
     println!("{:<14}{}", "created", ymd(item.created_at));
     println!("{:<14}{}", "updated", ymd(item.updated_at));
@@ -148,14 +189,22 @@ pub fn show(path: &Path, args: &ShowArgs, input: &mut SecretInput) -> Result<()>
     );
     println!();
     println!("{:<24}  {:<12}  VALUE", "FIELD", "KIND");
+    let mut revealed_fields = Vec::new();
+    let mut any_concealed = false;
     for field in &item.fields {
         let rendered = match &field.value {
             FieldValue::Public(v) => v.clone(),
-            FieldValue::Secret(s) if args.reveal => match s.expose_str() {
-                Some(v) => v.to_owned(),
-                None => format!("<{} bytes, not text>", s.len()),
-            },
-            FieldValue::Secret(_) => "<concealed>".to_owned(),
+            FieldValue::Secret(s) if args.reveal => {
+                revealed_fields.push(field.label.clone());
+                match s.expose_str() {
+                    Some(v) => v.to_owned(),
+                    None => format!("<{} bytes, not text>", s.len()),
+                }
+            }
+            FieldValue::Secret(_) => {
+                any_concealed = true;
+                "<concealed>".to_owned()
+            }
         };
         println!(
             "{:<24}  {:<12}  {}",
@@ -164,9 +213,30 @@ pub fn show(path: &Path, args: &ShowArgs, input: &mut SecretInput) -> Result<()>
             rendered
         );
     }
-    if !args.reveal && item.fields.iter().any(|f| f.value.is_secret()) {
+    if !args.reveal && (any_concealed || has_notes) {
         println!();
         println!("Concealed values are hidden. Pass --reveal to print them to this terminal.");
+    }
+
+    let item_id = item.id;
+
+    // Everything above is done reading `item`, so the vault can be borrowed mutably from here —
+    // never before the value has already been printed: a failed audit save must not cost the user
+    // the thing they asked to see.
+    if args.reveal {
+        let mut shown = revealed_fields;
+        if has_notes {
+            shown.push("notes".to_owned());
+        }
+        record_audit_best_effort(
+            &mut vault,
+            AuditDraft {
+                item_id: Some(item_id),
+                variables: shown,
+                detail: Some("MASTER_PASSWORD".to_owned()),
+                ..cli_draft("reveal_field")
+            },
+        );
     }
     Ok(())
 }
@@ -178,29 +248,19 @@ pub fn show(path: &Path, args: &ShowArgs, input: &mut SecretInput) -> Result<()>
 /// If the vault cannot be opened or the item does not resolve.
 pub fn rm(path: &Path, args: &RmArgs, input: &mut SecretInput) -> Result<()> {
     let mut vault = open(path, input)?;
-    let removed = vault.remove_item(&args.item)?;
-    let id = removed.id;
-    let title = removed.title.clone();
-    drop(removed);
-    vault.save()?;
+    let (id, title) = transact_patiently(&mut vault, |tx| {
+        let removed = tx.remove_item(&args.item)?;
+        let id = removed.id;
+        let title = removed.title.clone();
+        drop(removed);
+        tx.append_audit(AuditDraft {
+            item_id: Some(id),
+            ..cli_draft("item rm")
+        });
+        Ok((id, title))
+    })?;
     println!("Removed {id} ({title})");
     Ok(())
-}
-
-/// Resolve `NAME=item/field` into a variable name and the field it refers to.
-///
-/// # Errors
-///
-/// [`Error::FieldNotFound`] if the field does not exist on the item.
-pub fn resolve_field<'v>(vault: &'v Vault, item_ref: &str, field_ref: &str) -> Result<&'v Field> {
-    let item = vault.find_item(item_ref)?;
-    item.field(field_ref).ok_or_else(|| {
-        Error::FieldNotFound {
-            item: item_ref.to_owned(),
-            field: field_ref.to_owned(),
-        }
-        .into()
-    })
 }
 
 /// Shorten a display string to `width` characters, with an ellipsis when it does not fit.
