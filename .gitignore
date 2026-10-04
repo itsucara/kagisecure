@@ -78,3 +78,5 @@ node_modules/
 
 # Local Codex config
 .codex/
+apps/ios/KagisecureiOS.xcodeproj/
+apps/ios/build/

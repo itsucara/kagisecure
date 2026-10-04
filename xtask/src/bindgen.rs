@@ -65,7 +65,7 @@ pub fn swift_sources_only(root: &Path) -> Result<()> {
 /// way — UniFFI reads the metadata out of one slice and the metadata is architecture-independent
 /// — so a universal build stays idempotent against the checked-in Swift, which is what let CI
 /// keep checking a cheap host-only build (ADR-0027), and lets a local check do the same now.
-pub fn bindgen(root: &Path, arches: Arches) -> Result<()> {
+pub fn bindgen(root: &Path, arches: Arches, ios: bool) -> Result<()> {
     let package = root.join("apps/macos/KagisecureFFI");
     let sources = package.join("Sources/KagisecureFFI");
     let artifacts = package.join("Artifacts");
@@ -84,6 +84,22 @@ pub fn bindgen(root: &Path, arches: Arches) -> Result<()> {
         .with_context(|| format!("building kagisecure-ffi for {target}"))?;
     }
     let library = fat_library(root, &targets)?;
+    // The iOS slices: one per platform (device, simulator), each its own `-library` entry below.
+    let ios_libraries: Vec<PathBuf> = if ios {
+        let mut libraries = Vec::new();
+        for target in IOS_TARGETS {
+            run(Command::new(cargo())
+                .current_dir(root)
+                .env("RUSTFLAGS", release_rustflags(root))
+                .args(["build", "--release", "-p", "kagisecure-ffi", "--target"])
+                .arg(target))
+            .with_context(|| format!("building kagisecure-ffi for {target}"))?;
+            libraries.push(single_slice(root, target));
+        }
+        libraries
+    } else {
+        Vec::new()
+    };
 
     // 2. The bindings: the Swift wrapper into the package's `Sources`, the C header and the
     //    modulemap into a staging directory that step 3 folds into the xcframework.
@@ -147,20 +163,29 @@ pub fn bindgen(root: &Path, arches: Arches) -> Result<()> {
     if framework.exists() {
         std::fs::remove_dir_all(&framework)?;
     }
-    run(Command::new("xcodebuild")
+    let mut command = Command::new("xcodebuild");
+    command
         .arg("-create-xcframework")
         .arg("-library")
         .arg(&library)
         .arg("-headers")
-        .arg(&headers)
-        .arg("-output")
-        .arg(&framework))
-    .context("assembling the xcframework")?;
+        .arg(&headers);
+    for ios_library in &ios_libraries {
+        command
+            .arg("-library")
+            .arg(ios_library)
+            .arg("-headers")
+            .arg(&headers);
+    }
+    run(command.arg("-output").arg(&framework)).context("assembling the xcframework")?;
 
     println!("bindgen: swift sources -> {}", sources.display());
     println!("bindgen: xcframework   -> {}", framework.display());
     Ok(())
 }
+
+/// The iPhone and the iOS simulator on Apple silicon (`cargo xtask bindgen --ios`).
+const IOS_TARGETS: [&str; 2] = ["aarch64-apple-ios", "aarch64-apple-ios-sim"];
 
 /// One target's `libkagisecure_ffi.a`.
 fn single_slice(root: &Path, target: &str) -> PathBuf {

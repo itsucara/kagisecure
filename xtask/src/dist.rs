@@ -105,7 +105,7 @@ pub fn dist(root: &Path, options: &Options) -> Result<()> {
     );
 
     ensure_icon(root)?;
-    bindgen(root, arches)?;
+    bindgen(root, arches, false)?;
     let staging = helpers(root, Profile::Release, arches)?;
     let (app, updates) = build_app(root, &dist_dir, &staging, &team, arches)?;
 

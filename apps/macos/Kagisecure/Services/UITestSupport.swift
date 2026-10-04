@@ -86,6 +86,33 @@ enum AppDefaults {
         /// one application's is a property of the process and dies with it.
         static let appearanceArgument = "-KSUITestAppearance"
 
+        /// `-KSUITestTouchID unavailable|enrolFails|works` — what the Secure Enclave double
+        /// (`ScriptedPlatformKey`) does. Absent under the suite means `unavailable`, so a scenario
+        /// that does not ask about Touch ID can never touch the real Enclave key or meet the
+        /// post-unlock offer sheet it did not expect.
+        static let touchIDArgument = "-KSUITestTouchID"
+
+        /// `-KSUITestTouchIDLog <path>` — where the double writes one `unwrap` line per Touch ID
+        /// unlock it performs, so a scenario can prove an unlock was *not* attempted.
+        static let touchIDLogArgument = "-KSUITestTouchIDLog"
+
+        /// `-KSUITestBrowsers "id=Name,id=Name"` — the browsers the "Connect your browsers"
+        /// prompt sees, all installed and unconnected, instead of detecting the real ones.
+        /// Without it the prompt never appears under the suite (`BrowserConnectModel`).
+        static let browsersArgument = "-KSUITestBrowsers"
+
+        /// The injected browser list, if the suite passed one.
+        static func injectedBrowsers() -> [BrowserCandidate]? {
+            guard let raw = value(for: browsersArgument) else { return nil }
+            return raw.split(separator: ",").compactMap { entry in
+                let parts = entry.split(separator: "=", maxSplits: 1).map(String.init)
+                guard parts.count == 2 else { return nil }
+                return BrowserCandidate(
+                    id: parts[0], name: parts[1], kind: parts[0] == "safari" ? .safari : .chromium,
+                    installed: true, connected: false, appURL: nil)
+            }
+        }
+
         /// Whether the app was launched by the UI-test suite at all.
         ///
         /// Used only to decide whether to say so in the window's accessibility tree, so a
@@ -140,6 +167,73 @@ enum AppDefaults {
                 case "light": NSApplication.shared.appearance = NSAppearance(named: .aqua)
                 default: break
                 }
+            }
+        }
+    }
+
+    /// The Secure Enclave, as the UI-test suite needs it: no real key is ever created, read or
+    /// deleted while the app runs under `-KSUITest…` arguments (`PlatformKeyService` defers to
+    /// this whenever `shared` is non-nil).
+    ///
+    /// `works` keeps the vault key it was handed in memory and hands it back on `unwrap`, so the
+    /// whole slot path — install, lock screen, Touch ID button, unlock — runs for real around a
+    /// fake sensor. The key dies with the process.
+    final class ScriptedPlatformKey: @unchecked Sendable {
+        enum Mode: String { case unavailable, enrolFails, works }
+
+        static let shared: ScriptedPlatformKey? = {
+            guard UITestSupport.isActive else { return nil }
+            let mode = UITestSupport.value(for: UITestSupport.touchIDArgument)
+                .flatMap(Mode.init(rawValue:)) ?? .unavailable
+            let log = UITestSupport.value(for: UITestSupport.touchIDLogArgument)
+                .map { URL(fileURLWithPath: $0) }
+            return ScriptedPlatformKey(mode: mode, log: log)
+        }()
+
+        let mode: Mode
+        let log: URL?
+        private let lock = NSLock()
+        private var vaultKey: Data?
+
+        init(mode: Mode, log: URL?) {
+            self.mode = mode
+            self.log = log
+        }
+
+        func availability() -> PlatformKeyAvailability {
+            mode == .unavailable ? .unavailable("Touch ID is scripted off in this test run") : .available
+        }
+
+        func enroll(vaultKey: Data) throws -> EnrolledPlatformKey {
+            switch mode {
+            case .unavailable: throw PlatformKeyError.unavailable("scripted")
+            case .enrolFails: throw PlatformKeyError.cancelled
+            case .works:
+                lock.withLock { self.vaultKey = vaultKey }
+                return EnrolledPlatformKey(
+                    slotId: "macos-secure-enclave", wrappedKey: Data((0..<64).map { _ in UInt8.random(in: 0...255) }))
+            }
+        }
+
+        func unwrap() throws -> Data {
+            append("unwrap")
+            guard let key = lock.withLock({ vaultKey }) else { throw PlatformKeyError.noKey }
+            return key
+        }
+
+        func hasKey() -> Bool { lock.withLock { vaultKey != nil } }
+
+        func deleteKey() { lock.withLock { vaultKey = nil } }
+
+        private func append(_ word: String) {
+            guard let log else { return }
+            let line = Data((word + "\n").utf8)
+            if let handle = try? FileHandle(forWritingTo: log) {
+                defer { try? handle.close() }
+                _ = try? handle.seekToEnd()
+                try? handle.write(contentsOf: line)
+            } else {
+                try? line.write(to: log)
             }
         }
     }

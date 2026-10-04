@@ -31,7 +31,12 @@ fn main() -> Result<()> {
 
     match args.first().map(String::as_str) {
         Some("bindgen") if flags == ["--swift-only"] => bindgen::swift_sources_only(&root),
-        Some("bindgen") => bindgen::bindgen(&root, arches(&flags)?),
+        Some("bindgen") => {
+            // `--ios` adds the iPhone and simulator slices to the same xcframework.
+            let ios = flags.contains(&"--ios");
+            let rest: Vec<&str> = flags.iter().copied().filter(|f| *f != "--ios").collect();
+            bindgen::bindgen(&root, arches(&rest)?, ios)
+        }
         Some("bindgen-cs") => {
             // Only `--release` means anything here: a Windows DLL has no universal build.
             if let Some(flag) = flags.iter().find(|f| **f != "--release") {

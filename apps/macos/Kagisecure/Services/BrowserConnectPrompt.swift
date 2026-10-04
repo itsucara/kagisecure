@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import OSLog
 import SafariServices
 
 import KagisecureFFI
@@ -30,6 +31,35 @@ struct BrowserCandidate: Identifiable, Equatable, Hashable {
 
 /// The pure decision: which browsers to offer, and when (unit-tested in BrowserConnectPromptTests).
 enum BrowserConnectPrompt {
+    static let seenKey = "browserPrompt.seenConnected"
+
+    /// Chromium browsers (by display name) the extension has been seen connected from. With at
+    /// least one native host connected, each running browser whose manifest is installed is
+    /// added; the result is the stored set.
+    @discardableResult
+    static func recordSeen(
+        connectedHosts: UInt32, running: Set<String>, installedManifests: [String],
+        in defaults: UserDefaults
+    ) -> Set<String> {
+        var seen = Set(defaults.stringArray(forKey: seenKey) ?? [])
+        guard connectedHosts > 0 else { return seen }
+        let added = installedManifests.filter { name in
+            bundleIDs[name].map(running.contains) ?? false
+        }
+        guard !Set(added).isSubset(of: seen) else { return seen }
+        seen.formUnion(added)
+        defaults.set(seen.sorted(), forKey: seenKey)
+        return seen
+    }
+
+    static let bundleIDs: [String: String] = [
+        "Google Chrome": "com.google.Chrome",
+        "Microsoft Edge": "com.microsoft.edgemac",
+        "Arc": "company.thebrowser.Browser",
+        "Brave Browser": "com.brave.Browser",
+        "Chromium": "org.chromium.Chromium",
+    ]
+
     /// `UserDefaults` key: ids the person checked "Don't ask about this browser again" for.
     static let silencedKey = "browserPrompt.silenced"
     /// `UserDefaults` key: `[id: secondsSince1970]` until which "Later" holds a browser back.
@@ -127,21 +157,34 @@ final class BrowserConnectModel {
     /// Called once the vault is unlocked and the extension listener has started.
     func vaultUnlocked(ext: ExtensionService) {
         self.ext = ext
+        #if DEBUG
+            // The suite can hand the prompt a fixed list instead of this Mac's real browsers.
+            if let injected = UITestSupport.injectedBrowsers() {
+                browsers = injected
+                offerIfNeeded()
+                return
+            }
+        #endif
         // The UI-test suite drives its own sheets; a prompt it does not expect would stall it.
         guard !ProcessInfo.processInfo.arguments.contains(where: { $0.hasPrefix("-KSUITest") }) else { return }
         Task {
             await refresh()
-            let offer = BrowserConnectPrompt.browsersToOffer(
-                browsers, silenced: silenced, snoozedUntil: BrowserConnectPrompt.snoozedUntil(in: defaults),
-                now: Date())
-            guard BrowserConnectPrompt.shouldPresent(
-                unlocked: true, alreadyShownThisLaunch: shownThisLaunch, offer: offer)
-            else { return }
-            shownThisLaunch = true
-            offered = offer
-            dontAsk = []
-            pending = true
+            offerIfNeeded()
         }
+    }
+
+    /// Raise the sheet if anything is left to offer once silenced and snoozed browsers are gone.
+    private func offerIfNeeded() {
+        let offer = BrowserConnectPrompt.browsersToOffer(
+            browsers, silenced: silenced, snoozedUntil: BrowserConnectPrompt.snoozedUntil(in: defaults),
+            now: Date())
+        guard BrowserConnectPrompt.shouldPresent(
+            unlocked: true, alreadyShownThisLaunch: shownThisLaunch, offer: offer)
+        else { return }
+        shownThisLaunch = true
+        offered = offer
+        dontAsk = []
+        pending = true
     }
 
     func vaultLocked() {
@@ -188,6 +231,11 @@ final class BrowserConnectModel {
 
     // MARK: Settings
 
+    /// Whether the "Ask to connect" box for `id` is checked: true unless it was silenced.
+    func asksToConnect(_ id: String) -> Bool {
+        !silenced.contains(id)
+    }
+
     /// Allow prompting for a silenced browser again (and clear its snooze).
     func allowPrompt(for id: String, _ allow: Bool) {
         if allow { silenced.remove(id) } else { silenced.insert(id) }
@@ -209,7 +257,9 @@ final class BrowserConnectModel {
         switch browser.kind {
         case .safari:
             if let id = ext?.setup?.safari.bundleId {
-                SFSafariApplication.showPreferencesForExtension(withIdentifier: id) { _ in }
+                // `@Sendable`: Safari calls back on its XPC queue, and a closure that inherited this
+                // type's main-actor isolation traps there (the 0.1.4 crash).
+                SFSafariApplication.showPreferencesForExtension(withIdentifier: id) { @Sendable _ in }
             }
         case .chromium:
             // Write the native-messaging manifest first, so the extension finds this app the
@@ -234,10 +284,25 @@ final class BrowserConnectModel {
 
     /// Re-read which browsers exist and which are connected.
     func refresh() async {
+        #if DEBUG
+            // An injected list is the whole truth for the run; detection would replace it.
+            if UITestSupport.injectedBrowsers() != nil { return }
+        #endif
+        // Re-read the silenced set: it is the stored truth, and a copy taken at launch goes stale.
+        silenced = BrowserConnectPrompt.silenced(in: defaults)
         guard let ext else { return }
         ext.refreshSetup()
         guard let setup = ext.setup else { return }
         let extensionIDs = [setup.extensionId, BrowserConnectPrompt.webStoreItemID]
+        // macOS refuses a read of another app's profile data (Chrome's `Secure Preferences`:
+        // EPERM, no prompt), so the profile scan cannot be the only evidence. The other is the
+        // extension actually talking to us: while a native host is connected, every Chromium
+        // browser that is running with our manifest installed is recorded as connected, for good.
+        let seen = BrowserConnectPrompt.recordSeen(
+            connectedHosts: ext.status.connectedHosts,
+            running: Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier)),
+            installedManifests: setup.manifests.filter(\.installed).map(\.browser),
+            in: defaults)
         var list: [BrowserCandidate] = setup.manifests.map { manifest in
             let id = BrowserConnectPrompt.id(for: manifest.browser)
             let profileRoot = URL(fileURLWithPath: manifest.path)
@@ -248,7 +313,8 @@ final class BrowserConnectModel {
                 id: id, name: manifest.browser, kind: .chromium,
                 installed: manifest.browserInstalled || app != nil,
                 connected: manifest.installed
-                    && Self.anyProfileHasExtension(root: profileRoot, ids: extensionIDs),
+                    && (seen.contains(manifest.browser)
+                        || Self.anyProfileHasExtension(root: profileRoot, ids: extensionIDs)),
                 appURL: app)
         }
         // Safari is only offered when this build can actually serve it.
@@ -262,16 +328,8 @@ final class BrowserConnectModel {
         offered = offered.map { old in list.first { $0.id == old.id } ?? old }
     }
 
-    private static let bundleIDs: [String: String] = [
-        "Google Chrome": "com.google.Chrome",
-        "Microsoft Edge": "com.microsoft.edgemac",
-        "Arc": "company.thebrowser.Browser",
-        "Brave Browser": "com.brave.Browser",
-        "Chromium": "org.chromium.Chromium",
-    ]
-
     static func appURL(for name: String) -> URL? {
-        guard let id = bundleIDs[name] else { return nil }
+        guard let id = BrowserConnectPrompt.bundleIDs[name] else { return nil }
         return NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
     }
 
@@ -293,11 +351,23 @@ final class BrowserConnectModel {
         return false
     }
 
-    private static func safariExtensionEnabled(_ id: String) async -> Bool {
-        await withCheckedContinuation { continuation in
-            SFSafariExtensionManager.getStateOfSafariExtension(withIdentifier: id) { state, _ in
-                continuation.resume(returning: state?.isEnabled ?? false)
+    /// Safari's state, through the `async` form of the call. SafariServices annotates the
+    /// completion-handler form's reply as main-actor but runs it on its XPC queue, so a closure
+    /// passed there — whatever its declared isolation — trapped in Swift's isolation check (the
+    /// 0.1.4 crash after unlock). The `async` bridge resumes us without running such a closure.
+    nonisolated static func safariExtensionEnabled(_ id: String) async -> Bool {
+        do {
+            let state = try await SFSafariExtensionManager.stateOfSafariExtension(withIdentifier: id)
+            if !state.isEnabled {
+                safariLog.info("Safari reports extension \(id, privacy: .public) as disabled")
             }
+            return state.isEnabled
+        } catch {
+            safariLog.error(
+                "Safari extension state for \(id, privacy: .public) failed: \(String(describing: error), privacy: .public)")
+            return false
         }
     }
+
+    nonisolated private static let safariLog = Logger(subsystem: "com.kagisecure.app", category: "safari")
 }

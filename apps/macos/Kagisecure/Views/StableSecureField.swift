@@ -41,7 +41,17 @@ struct StableSecureField: NSViewRepresentable {
         field.font = .systemFont(ofSize: NSFont.systemFontSize)
         field.lineBreakMode = .byClipping
         field.usesSingleLineMode = true
+        Self.configureAgainstAutoFill(field)
         return field
+    }
+
+    /// Every use of this field is a Kagisecure secret (the master password, an agent secret
+    /// value) — never a website login. Without an explicit content type, macOS Passwords AutoFill
+    /// treats any secure field as a login password and offers its suggestions over the lock
+    /// screen. An empty content type opts the field out of that heuristic.
+    static func configureAgainstAutoFill(_ field: NSSecureTextField) {
+        field.contentType = NSTextContentType(rawValue: "")
+        field.isAutomaticTextCompletionEnabled = false
     }
 
     /// Reports this field's real size back to SwiftUI, so the `NSSecureTextField`'s own frame —

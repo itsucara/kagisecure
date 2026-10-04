@@ -305,15 +305,38 @@ final class CredentialIdentitySync {
             return out
         }
         Task {
-            let store = ASCredentialIdentityStore.shared
             // Not enabled in System Settings yet: nothing to publish to. Published on the next
             // change or unlock after it is.
-            guard await store.state().isEnabled else { return }
-            do {
-                try await store.replaceCredentialIdentities(identities)
-            } catch {
+            guard await IdentityStoreCalls.isEnabled() else { return }
+            if let error = await IdentityStoreCalls.replace(.init(value: identities)) {
                 Logger(subsystem: "com.kagisecure.app", category: "autofill")
                     .error("identity store update failed: \(String(describing: error))")
+            }
+        }
+    }
+}
+
+/// `ASCredentialIdentityStore`, called through its completion handlers from nonisolated code.
+///
+/// The store answers on SafariServices' XPC queue. Its `async` overloads, awaited from the main
+/// actor, ran the reply with main-actor isolation on that queue, and Swift's isolation check
+/// killed the app right after unlock (0.1.4, `_dispatch_assert_queue_fail`).
+enum IdentityStoreCalls {
+    @concurrent nonisolated static func isEnabled() async -> Bool {
+        await withCheckedContinuation { continuation in
+            ASCredentialIdentityStore.shared.getState { @Sendable state in
+                continuation.resume(returning: state.isEnabled)
+            }
+        }
+    }
+
+    /// The identities are built fresh for this call and never touched again by the caller.
+    struct Identities: @unchecked Sendable { let value: [any ASCredentialIdentity] }
+
+    @concurrent nonisolated static func replace(_ identities: Identities) async -> (any Error)? {
+        await withCheckedContinuation { continuation in
+            ASCredentialIdentityStore.shared.replaceCredentialIdentities(identities.value) { @Sendable _, error in
+                continuation.resume(returning: error)
             }
         }
     }

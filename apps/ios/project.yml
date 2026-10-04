@@ -1,0 +1,103 @@
+# XcodeGen spec for the iPhone app. `xcodegen generate` here produces
+# KagisecureiOS.xcodeproj, which is not checked in — the same rule as apps/macos (ADR-0010).
+
+name: KagisecureiOS
+options:
+  # English is the source language; translations live in KagisecureiOS/Localizable.xcstrings
+  # (UI) and KagisecureiOS/InfoPlist.xcstrings (Info.plist keys), as on macOS.
+  developmentLanguage: en
+  bundleIdPrefix: com.itsucara.kagisecure
+  createIntermediateGroups: true
+  deploymentTarget:
+    iOS: "18.0"
+  groupSortPosition: top
+
+packages:
+  # The same local package the Mac app links. `make bindgen-ios` must have run once so that the
+  # xcframework carries the ios-arm64 / ios-arm64-simulator slices.
+  KagisecureFFI:
+    path: ../macos/KagisecureFFI
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "18.0"
+    MARKETING_VERSION: "0.1.1"
+    CURRENT_PROJECT_VERSION: "0.1.1"
+    # Automatic signing with no team: simulator builds need none. Device signing is a later phase.
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: ""
+    TARGETED_DEVICE_FAMILY: "1"
+    SWIFT_STRICT_CONCURRENCY: complete
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    GCC_TREAT_WARNINGS_AS_ERRORS: YES
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: NO
+
+targets:
+  KagisecureiOS:
+    type: application
+    platform: iOS
+    sources:
+      - path: KagisecureiOS
+    dependencies:
+      - package: KagisecureFFI
+        product: KagisecureFFI
+    info:
+      path: KagisecureiOS/Info.plist
+      properties:
+        CFBundleName: Kagisecure
+        CFBundleDevelopmentRegion: en
+        CFBundleLocalizations: [en, ja]
+        CFBundleDisplayName: Kagisecure
+        CFBundleShortVersionString: "$(MARKETING_VERSION)"
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
+        NSFaceIDUsageDescription: "Unlock your kagisecure vault."
+        UILaunchScreen: {}
+        UIApplicationSupportsIndirectInputEvents: true
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.itsucara.kagisecure.ios
+        PRODUCT_NAME: Kagisecure
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ENABLE_PREVIEWS: YES
+
+  KagisecureiOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources:
+      - path: KagisecureiOSTests
+    dependencies:
+      - target: KagisecureiOS
+      - package: KagisecureFFI
+        product: KagisecureFFI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.itsucara.kagisecure.ios.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Kagisecure.app/Kagisecure"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+
+  KagisecureiOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: KagisecureiOSUITests
+    dependencies:
+      - target: KagisecureiOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.itsucara.kagisecure.ios.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: KagisecureiOS
+
+schemes:
+  KagisecureiOS:
+    build:
+      targets:
+        KagisecureiOS: all
+    test:
+      targets:
+        - KagisecureiOSTests
+        - KagisecureiOSUITests

@@ -53,6 +53,38 @@ class UITestCase: XCTestCase {
             attributes: [.posixPermissions: 0o700])
         socketPath = "/tmp/ksui-\(id)/agent.sock"
         defaultsSuite = "com.kagisecure.app.uitest.\(id)"
+        Self.snapshotRealPreferences()
+    }
+
+    /// The bundle identifier of the app under test, whose preferences belong to the person at
+    /// this Mac.
+    static let realDomain = "com.kagisecure.app"
+
+    /// The person's own `com.kagisecure.app` preferences as they were before this process ran its
+    /// first scenario. `nil` means the domain did not exist.
+    ///
+    /// The app's own settings go to the scratch suite (`-KSUITestDefaultsSuite`, see
+    /// `AppDefaults`), but AppKit and SwiftUI keep their window frames, split-view widths and
+    /// Settings tab selection in the standard domain of the bundle identifier, which the suite
+    /// cannot move. So the domain is captured once, before anything here can have touched it, and
+    /// put back after every scenario. Taken once per process rather than per scenario, so a
+    /// scenario that fails before its tear-down cannot turn its leftovers into the next snapshot.
+    nonisolated(unsafe) private static var realPreferences: [String: Any]?
+    nonisolated(unsafe) private static var didSnapshot = false
+
+    private static func snapshotRealPreferences() {
+        guard !didSnapshot else { return }
+        didSnapshot = true
+        realPreferences = UserDefaults.standard.persistentDomain(forName: realDomain)
+    }
+
+    nonisolated private static func restoreRealPreferences() {
+        guard didSnapshot else { return }
+        if let realPreferences {
+            UserDefaults.standard.setPersistentDomain(realPreferences, forName: realDomain)
+        } else {
+            UserDefaults.standard.removePersistentDomain(forName: realDomain)
+        }
     }
 
     override func tearDownWithError() throws {
@@ -68,6 +100,8 @@ class UITestCase: XCTestCase {
         }
         app = nil
         Self.killStrayApps()
+        // Only once the app is gone, so nothing it flushes on the way out lands after this.
+        Self.restoreRealPreferences()
         // The preferences suite is a plist in ~/Library/Preferences. It is not the user's, but it
         // is in the user's directory, so it goes.
         if let defaultsSuite {
@@ -127,12 +161,17 @@ class UITestCase: XCTestCase {
     ///     against *system-wide* input idleness, so a test that types nothing for eleven minutes
     ///     while a subprocess works would lock the vault underneath itself.
     ///   - pasteboardSeconds: how long a copied value stays on the clipboard.
+    ///   - extraArguments: further `-KSUITest…` hooks (`-KSUITestTouchID`, `-KSUITestBrowsers`),
+    ///     for the scenarios that need them.
+    ///   - seedDefaults: further preferences written into the scratch suite before launch.
     @discardableResult
     func launch(
         biometrics: String? = "allow",
         appearance: String? = nil,
         autoLockMinutes: Int = 0,
-        pasteboardSeconds: Int = 60
+        pasteboardSeconds: Int = 60,
+        extraArguments: [String] = [],
+        seedDefaults: [String: Any] = [:]
     ) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment["KAGISECURE_HOME"] = scratch.path
@@ -151,7 +190,7 @@ class UITestCase: XCTestCase {
         if let appearance {
             arguments += ["-KSUITestAppearance", appearance]
         }
-        app.launchArguments = arguments
+        app.launchArguments = arguments + extraArguments
 
         // The two preferences the suite needs a known value for, seeded into the scratch suite
         // *before* launch rather than clicked into the Settings pane by every scenario that
@@ -159,6 +198,7 @@ class UITestCase: XCTestCase {
         let defaults = UserDefaults(suiteName: defaultsSuite!)
         defaults?.set(autoLockMinutes, forKey: "autoLockIdleMinutes")
         defaults?.set(pasteboardSeconds, forKey: "pasteboardClearSeconds")
+        for (key, value) in seedDefaults { defaults?.set(value, forKey: key) }
 
         // Anything left over from the previous scenario goes first, and this waits for it to be
         // gone. `terminate()` returns before the process does, and the app keeps a `MenuBarExtra`

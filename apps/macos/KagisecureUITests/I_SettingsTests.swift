@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 /// The Settings window (⌘,, ui-spec.md §17): the General pane's clipboard interval and Quick
@@ -194,6 +195,98 @@ final class I_SettingsTests: UITestCase {
                     + "\(String(describing: suite?.object(forKey: Self.autoLockMinutesKey)))",
                 "The preferences the Settings pane wrote, read back out of the throwaway suite")
         }
+    }
+
+    /// Settings › General: the System/Light/Dark switch repaints the app at once, and a new
+    /// language says it needs a restart (without the scenario taking it up on that).
+    func testTheAppearanceSwitchAppliesAndTheLanguagePickerAsksForARestart() throws {
+        try openSeededVault()
+        openSettings()
+        waitFor("ks.settings.appearance")
+
+        step("Dark repaints the Settings window dark and is stored") {
+            chooseFromPicker("ks.settings.appearance", "Dark")
+            assertStringPreference("appearance", becomes: "dark")
+            XCTAssertTrue(
+                waitUntil("the Settings window turns dark") { self.settingsLuminance() < 0.4 },
+                "choosing Dark should apply immediately; mean luminance \(settingsLuminance())")
+            capture("settings-appearance-dark", "Appearance: Dark")
+        }
+
+        step("Light repaints it light") {
+            chooseFromPicker("ks.settings.appearance", "Light")
+            assertStringPreference("appearance", becomes: "light")
+            XCTAssertTrue(
+                waitUntil("the Settings window turns light") { self.settingsLuminance() > 0.6 },
+                "choosing Light should apply immediately; mean luminance \(settingsLuminance())")
+            capture("settings-appearance-light", "Appearance: Light")
+        }
+
+        step("System is stored as system") {
+            chooseFromPicker("ks.settings.appearance", "System")
+            assertStringPreference("appearance", becomes: "system")
+            record(
+                "settings-appearance-system", "mean luminance: \(settingsLuminance())",
+                "The Settings window following the Mac's own appearance")
+        }
+
+        step("a different language shows the restart notice") {
+            XCTAssertFalse(element("ks.settings.relaunchNotice").exists)
+            // 日本語 ships alongside English; its native name is what the picker lists.
+            chooseFromPicker("ks.settings.language", "日本語")
+            waitFor("ks.settings.relaunchNotice")
+            XCTAssertTrue(element("ks.settings.relaunch").exists)
+            let stored = UserDefaults.standard.persistentDomain(forName: defaultsSuite)?["AppleLanguages"]
+            XCTAssertEqual(stored as? [String], ["ja"], "the choice should be stored for the next launch")
+            capture("settings-language-restart", "Language changed: restart notice")
+        }
+
+        step("going back to the launch language removes the notice") {
+            // Relaunch is deliberately not pressed: it would quit the app under test.
+            // The launch language is English when `-AppleLanguages (en)` is visible through the
+            // suite, or "System default" when it is not; whichever it was, one of them clears it.
+            chooseFromPicker("ks.settings.language", "English")
+            if !waitUntil("the notice goes", { !self.element("ks.settings.relaunchNotice").exists }) {
+                chooseFromPicker("ks.settings.language", "System default")
+            }
+            waitForDisappearance("ks.settings.relaunchNotice")
+        }
+    }
+
+    /// Mean luminance (0…1) of the Settings window, from a screenshot downsampled to 16×16.
+    private func settingsLuminance() -> Double {
+        let window = app.windows.containing(.any, identifier: Self.generalPane).firstMatch
+        let image = (window.exists ? window : app.windows.firstMatch).screenshot().image
+        guard let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return -1 }
+        let side = 16
+        var pixels = [UInt8](repeating: 0, count: side * side * 4)
+        guard
+            let context = CGContext(
+                data: &pixels, width: side, height: side, bitsPerComponent: 8, bytesPerRow: side * 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return -1 }
+        context.interpolationQuality = .medium
+        context.draw(cg, in: CGRect(x: 0, y: 0, width: side, height: side))
+        var total = 0.0
+        for i in stride(from: 0, to: pixels.count, by: 4) {
+            total += 0.2126 * Double(pixels[i]) + 0.7152 * Double(pixels[i + 1]) + 0.0722 * Double(pixels[i + 2])
+        }
+        return total / Double(side * side) / 255
+    }
+
+    /// Like `assertPreference`, for a string value.
+    private func assertStringPreference(
+        _ key: String, becomes expected: String, file: StaticString = #filePath, line: UInt = #line
+    ) {
+        let landed = waitUntil("\(key) becomes \(expected)") {
+            UserDefaults(suiteName: self.defaultsSuite)?.string(forKey: key) == expected
+        }
+        XCTAssertTrue(
+            landed,
+            "\(key) should be \(expected); the suite holds "
+                + "\(String(describing: UserDefaults(suiteName: defaultsSuite)?.object(forKey: key)))",
+            file: file, line: line)
     }
 
     // MARK: - Getting to the main window

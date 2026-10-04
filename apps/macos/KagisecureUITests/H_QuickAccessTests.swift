@@ -133,6 +133,66 @@ final class H_QuickAccessTests: UITestCase {
         }
     }
 
+    /// ↓ and ↑ move the highlight from row to row, and the copy goes to the row they landed on.
+    ///
+    /// Proved by what ⌘⏎ copies rather than by reading a highlight: a SwiftUI `List` row does not
+    /// reliably report `isSelected` to XCUITest, but the username that lands on the clipboard
+    /// cannot lie about which row was selected. The highlight is recorded as evidence.
+    func testQuickAccessArrowKeysMoveTheSelection() throws {
+        try Harness.seedVault(at: vaultPath)
+        launch(biometrics: "allow")
+        unlock()
+
+        // The seeded items that carry a username, by title.
+        let usernames = ["Acme production database": "svc_deploy", "GitHub": Self.githubUsername]
+
+        var titles: [String] = []
+        step("an empty query lists every item, the first one selected") {
+            openQuickAccess()
+            waitFor("ks.quickAccess.list")
+            XCTAssertTrue(waitUntil("all three seeded items are listed") { self.panelTitles().count >= 3 })
+            titles = panelTitles()
+            capture("quick-access-arrows-start", "Quick Access, nothing typed yet")
+        }
+
+        // The first row below the top one that has a username to copy.
+        let target = try XCTUnwrap(
+            titles.indices.dropFirst().first { usernames[titles[$0]] != nil },
+            "no row below the first has a username; the panel listed \(titles)")
+        let expected = usernames[titles[target]]!
+
+        step("↓ moves the selection down \(target) row(s), and ⌘⏎ copies that row") {
+            for _ in 0..<target { app.typeKey(XCUIKeyboardKey.downArrow, modifierFlags: []) }
+            record(
+                "quick-access-arrows-selected",
+                "selected (as reported): \(selectedPanelTitle() ?? "not exposed")\nexpected: \(titles[target])",
+                "Which row XCUITest reports as selected after ↓")
+            capture("quick-access-arrows-down", "Quick Access after ↓")
+            NSPasteboard.general.clearContents()
+            app.typeKey(XCUIKeyboardKey.return, modifierFlags: .command)
+            waitForDisappearance("ks.quickAccess.search")
+            XCTAssertEqual(
+                waitForPasteboard(where: { $0 == expected }), expected,
+                "↓ should have selected \(titles[target]); the clipboard held "
+                    + "\(NSPasteboard.general.string(forType: .string) ?? "nothing")")
+        }
+
+        step("↓ past it and ↑ back lands on the same row") {
+            openQuickAccess()
+            waitFor("ks.quickAccess.list")
+            // One past, unless the target is the last row (the selection stops at either end).
+            let overshoot = target + 1 < titles.count ? 1 : 0
+            for _ in 0..<(target + overshoot) { app.typeKey(XCUIKeyboardKey.downArrow, modifierFlags: []) }
+            for _ in 0..<overshoot { app.typeKey(XCUIKeyboardKey.upArrow, modifierFlags: []) }
+            NSPasteboard.general.clearContents()
+            app.typeKey(XCUIKeyboardKey.return, modifierFlags: .command)
+            waitForDisappearance("ks.quickAccess.search")
+            XCTAssertEqual(
+                waitForPasteboard(where: { $0 == expected }), expected,
+                "↑ should have moved back to \(titles[target])")
+        }
+    }
+
     func testQuickAccessSaysSoWhenTheVaultIsLocked() throws {
         try Harness.seedVault(at: vaultPath)
         launch()
@@ -266,6 +326,18 @@ final class H_QuickAccessTests: UITestCase {
     /// (`itemListTitles()`), which sits behind it unchanged whatever the panel is searching for.
     private func panelTitles() -> [String] {
         elements("ks.quickAccess.rowTitle").allElementsBoundByIndex.map { text(of: $0) }
+    }
+
+    /// The title of the row XCUITest reports as selected, if it reports one.
+    private func selectedPanelTitle() -> String? {
+        let list = element("ks.quickAccess.list")
+        for cell in list.cells.allElementsBoundByIndex + list.outlineRows.allElementsBoundByIndex
+        where cell.isSelected {
+            let title = cell.descendants(matching: .any).matching(identifier: "ks.quickAccess.rowTitle")
+                .firstMatch
+            if title.exists { return text(of: title) }
+        }
+        return nil
     }
 
     /// Empty the search field.

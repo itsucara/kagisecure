@@ -13,7 +13,7 @@ import PackageDescription
 
 let package = Package(
     name: "KagisecureFFI",
-    platforms: [.macOS(.v15)],
+    platforms: [.macOS(.v15), .iOS(.v18)],
     products: [
         .library(name: "KagisecureFFI", targets: ["KagisecureFFI"])
     ],

@@ -98,7 +98,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationSplitView {
             sidebar
-                .navigationSplitViewColumnWidth(min: 215, ideal: 225, max: 260)
+                .navigationSplitViewColumnWidth(min: 230, ideal: 250, max: 320)
             .toolbar(removing: .sidebarToggle)
         } detail: {
             detail(selection.wrappedValue ?? .general)
@@ -130,7 +130,7 @@ struct SettingsView: View {
             }
             .padding(.horizontal, 10)
             .padding(.top, 52)
-            .frame(width: 225)
+            .frame(width: 250)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .background(Color(nsColor: .windowBackgroundColor))
             .ignoresSafeArea()
@@ -331,6 +331,7 @@ private struct GeneralSettings: View {
                 } else {
                     LabeledContent("Shortcut") {
                         KeyCaps(keys: ["⇧", "⌘", "Space"])
+                            .accessibilityElement(children: .ignore)
                             .accessibilityLabel("Shift Command Space")
                             .accessibilityIdentifier("ks.settings.quickAccessShortcut")
                     }
@@ -361,8 +362,12 @@ private struct GeneralSettings: View {
 
             Section {
                 Picker("Appearance", selection: $appearanceRaw) {
+                    // Plain text rows: a `Label` (title + symbol) inside a menu-style picker gave
+                    // the popup button a label that SwiftUI resolved through the popup's own role,
+                    // which asked for the label again — an accessibility client reading General
+                    // recursed until the stack overflowed (0.1.4 crash, 2026-10-04).
                     ForEach(AppAppearance.allCases) { choice in
-                        Label(choice.title, systemImage: choice.symbol).tag(choice.rawValue)
+                        Text(choice.title).tag(choice.rawValue)
                     }
                 }
                 .accessibilityIdentifier("ks.settings.appearance")
@@ -389,6 +394,9 @@ private struct GeneralSettings: View {
                         Button("Relaunch") { AppLanguage.relaunch(model: model) }
                             .accessibilityIdentifier("ks.settings.relaunch")
                     }
+                    // `.contain` keeps the Relaunch button's own identifier; without it the
+                    // container's identifier is stamped onto every child.
+                    .accessibilityElement(children: .contain)
                     .accessibilityIdentifier("ks.settings.relaunchNotice")
                 }
             } header: {
@@ -629,8 +637,7 @@ private struct AutoFillSettings: View {
     }
 
     private func refreshNative() async {
-        let state = await ASCredentialIdentityStore.shared.state()
-        nativeEnabled = state.isEnabled
+        nativeEnabled = await IdentityStoreCalls.isEnabled()
     }
 }
 
@@ -657,7 +664,7 @@ private struct BrowsersOnThisMacSection: View {
                     } else {
                         StatusBadge(text: "Not connected", tone: .off)
                         Toggle("Ask to connect", isOn: Binding(
-                            get: { !prompt.silenced.contains(browser.id) },
+                            get: { prompt.asksToConnect(browser.id) },
                             set: { prompt.allowPrompt(for: browser.id, $0) }))
                             .toggleStyle(.checkbox)
                             .accessibilityIdentifier("ks.settings.browserPrompt.ask.\(browser.id)")

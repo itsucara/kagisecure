@@ -53,7 +53,7 @@ SIGN_FLAGS := CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=
 EMBED_IDENTITY := -
 endif
 
-.PHONY: all check test fmt clippy deny version bindgen helpers icon project signing-check macos \
+.PHONY: all check test fmt clippy deny version bindgen bindgen-ios helpers icon project signing-check macos \
 	macos-test app run release chrome-package clean-macos e2e clean-e2e
 
 all: check
@@ -90,6 +90,10 @@ version:
 # on 2026-09-19; run it locally now).
 bindgen:
 	$(CARGO) xtask bindgen
+
+# The same, plus the iPhone and simulator slices the iOS app links.
+bindgen-ios:
+	$(CARGO) xtask bindgen --ios
 
 # The three binaries the app bundle carries: kagisecure-mcp, kagisecure-nmhost and the CLI
 # (ADR-0026). Staged into target/helpers/$(CONFIG)/, which is where the app's embed build phase
@@ -205,3 +209,18 @@ e2e:
 
 clean-e2e:
 	rm -rf e2e/report e2e/tmp
+
+# ---- iPhone app ----
+IOS_DIR := apps/ios
+IOS_XCODEPROJ := $(IOS_DIR)/KagisecureiOS.xcodeproj
+IOS_DESTINATION ?= platform=iOS Simulator,name=iPhone 18 Pro
+
+.PHONY: ios-project ios ios-test
+ios-project:
+	cd $(IOS_DIR) && $(XCODEGEN) generate
+
+ios: ios-project
+	$(XCODEBUILD) -project $(IOS_XCODEPROJ) -scheme KagisecureiOS -destination '$(IOS_DESTINATION)' build
+
+ios-test: ios-project
+	$(XCODEBUILD) -project $(IOS_XCODEPROJ) -scheme KagisecureiOS -destination '$(IOS_DESTINATION)' test

@@ -78,6 +78,9 @@ final class PlatformKeyService: Sendable {
 
     /// Whether the machine has an Enclave and an enrolled biometric.
     func availability() -> PlatformKeyAvailability {
+        #if DEBUG
+            if let double = ScriptedPlatformKey.shared { return double.availability() }
+        #endif
         var error: NSError?
         let context = LAContext()
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error) else {
@@ -101,6 +104,9 @@ final class PlatformKeyService: Sendable {
     ///   every other caller — the tests, and any future one that does not route through the app's
     ///   presence machinery — so a fresh, uncancellable context is used instead.
     func enroll(vaultKey: Data, context: LAContext = LAContext()) throws -> EnrolledPlatformKey {
+        #if DEBUG
+            if let double = ScriptedPlatformKey.shared { return try double.enroll(vaultKey: vaultKey) }
+        #endif
         deleteKey()
         let privateKey = try createKey(context: context)
         guard let publicKey = SecKeyCopyPublicKey(privateKey) else {
@@ -128,6 +134,9 @@ final class PlatformKeyService: Sendable {
     /// no place to put a reason string, and a `SecAccessControl`-protected key picked up without a
     /// context shows the system's generic wording instead. Verified on macOS 26.1.
     func unwrap(_ wrappedKey: Data) throws -> Data {
+        #if DEBUG
+            if let double = ScriptedPlatformKey.shared { return try double.unwrap() }
+        #endif
         let context = LAContext()
         context.localizedReason = String(localized: "unlock your kagisecure vault")
         context.localizedCancelTitle = String(localized: "Use Password")
@@ -147,6 +156,9 @@ final class PlatformKeyService: Sendable {
     /// The query asks for the key's attributes rather than a usable reference, which is not an
     /// operation the access control gates, so nothing appears on screen.
     func hasKey() -> Bool {
+        #if DEBUG
+            if let double = ScriptedPlatformKey.shared { return double.hasKey() }
+        #endif
         var query = Self.baseQuery()
         query[kSecReturnAttributes as String] = true
         var result: CFTypeRef?
@@ -155,6 +167,9 @@ final class PlatformKeyService: Sendable {
 
     /// Remove the Enclave key. Called when the user turns Touch ID off.
     func deleteKey() {
+        #if DEBUG
+            if let double = ScriptedPlatformKey.shared { return double.deleteKey() }
+        #endif
         SecItemDelete(Self.baseQuery() as CFDictionary)
     }
 

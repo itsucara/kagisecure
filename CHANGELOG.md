@@ -10,6 +10,33 @@ what it means for a vault written by an earlier build — see
 
 ## Unreleased
 
+## 0.1.5 — 2026-10-04
+
+A bug fix release for the macOS app.
+
+Fixes:
+
+- **The app no longer crashes shortly after unlocking.** Replies from Safari and from the system
+  AutoFill service arrive on a background queue, and handling them tripped Swift's actor-isolation
+  check, which stops the app. This affected 0.1.3 and 0.1.4.
+- **The app no longer crashes when an accessibility client such as VoiceOver reads Settings.**
+  A cycle in the accessibility labels of the General pane is gone.
+- **Chrome and other Chromium browsers show as connected once their extension has actually talked
+  to the app.** The previous check read the browser's profile folder, which macOS blocks, so a
+  working connection could show as missing.
+- The Settings sidebar keeps a minimum width, so its labels are no longer cut off.
+- The list of browsers the "Connect your browsers" prompt has been told not to ask about is read
+  again when the Settings page refreshes.
+- The master password field on the lock screen no longer offers macOS Passwords AutoFill.
+- At launch, the app reads its own team identifier off the main thread.
+- Errors while asking Safari for the extension's state are now logged.
+
+Also in this snapshot of the source: an early iPhone app under `apps/ios`. It is not released or
+distributed, and it is not part of this version's download.
+
+Known issue: Safari may show the extension as "not connected" when stale registrations of the
+extension (for example from older or development builds) are still present on the Mac.
+
 ## 0.1.4 — 2026-10-04
 
 A security fix release. Nothing changes in how the app looks or behaves day to day.

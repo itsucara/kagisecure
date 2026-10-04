@@ -33,6 +33,9 @@ struct BrowserConnectSheet: View {
         }
         .frame(width: 480)
         .onAppear { prompt.sheetAppeared() }
+        // `.contain` keeps the children's identifiers (title, Later, Connect…); without it the
+        // container's identifier is stamped onto every child.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier("ks.browserPrompt")
     }
 

@@ -467,7 +467,35 @@ struct PeerCodeSignature: Sendable {
     ///
     /// Comparing against our own team rather than a hardcoded one means a fork that signs both
     /// halves with its own identity works, and a stranger's signed binary does not.
+    ///
+    /// Read once and cached: our own signature cannot change while we run, and the read goes
+    /// through Security.framework's code-signing checks, which log "This method should not be
+    /// called on the main thread" when they run there. `warmOwnTeamIdentifier()` does the first
+    /// read on a background queue at launch, so the main-thread callers (unlock starts the
+    /// extension server, the AutoFill socket path) only ever see the cached value.
     static func ownTeamIdentifier() -> String? {
+        cachedOwnTeamIdentifier
+    }
+
+    /// Start the one-time read of `ownTeamIdentifier()` off the main thread.
+    static func warmOwnTeamIdentifier() {
+        DispatchQueue.global(qos: .userInitiated).async { _ = cachedOwnTeamIdentifier }
+    }
+
+    /// `ownTeamIdentifier()`, guaranteed to do its first (uncached) read off the main thread.
+    static func ownTeamIdentifierOffMain() async -> String? {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                continuation.resume(returning: cachedOwnTeamIdentifier)
+            }
+        }
+    }
+
+    /// `static let` is initialised exactly once, thread-safely, by whichever thread touches it
+    /// first.
+    private static let cachedOwnTeamIdentifier: String? = readOwnTeamIdentifier()
+
+    static func readOwnTeamIdentifier() -> String? {
         var selfCode: SecCode?
         guard SecCodeCopySelf([], &selfCode) == errSecSuccess, let selfCode else { return nil }
         var infoRef: CFDictionary?

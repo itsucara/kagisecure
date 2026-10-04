@@ -157,6 +157,7 @@ final class AppModel {
     private var enrollmentContext: LAContext?
 
     init(vaultPath: String? = nil) {
+        PeerCodeSignature.warmOwnTeamIdentifier()
         self.vaultPath = vaultPath ?? defaultVaultPath()
         let presence = PresenceCoordinator()
         self.presence = presence
@@ -214,8 +215,14 @@ final class AppModel {
         if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] == nil {
             unattended.launch(vaultPath: self.vaultPath)
             // Bound at launch, not at unlock, so an AutoFill request can bring a locked app
-            // forward to be unlocked (ADR-0045).
-            credentialProvider.start()
+            // forward to be unlocked (ADR-0045). The socket path needs our team identifier, whose
+            // first read runs Security.framework code-signing checks that must stay off the main
+            // thread; once read it is cached for every later main-thread caller.
+            let credentialProvider = self.credentialProvider
+            Task { @MainActor in
+                _ = await PeerCodeSignature.ownTeamIdentifierOffMain()
+                credentialProvider.start()
+            }
         }
         // The light/dark choice from Settings › General. Before the test hook below, so a test
         // that pins the appearance still wins.

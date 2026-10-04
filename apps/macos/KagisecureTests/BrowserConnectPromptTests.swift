@@ -77,6 +77,23 @@ final class BrowserConnectPromptTests: XCTestCase {
         XCTAssertEqual(BrowserConnectPrompt.snoozedUntil(in: defaults), [:])
     }
 
+    func testAskToConnectBoxIsCheckedForEveryBrowserNotSilenced() async {
+        let suite = "BrowserConnectPromptTests-\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        BrowserConnectPrompt.setSilenced(["bravebrowser"], in: defaults)
+        let model = BrowserConnectModel(defaults: defaults)
+        XCTAssertFalse(model.asksToConnect("bravebrowser"))
+        for id in ["googlechrome", "microsoftedge", "safari"] {
+            XCTAssertTrue(model.asksToConnect(id), id)
+        }
+        // A change to the stored set made elsewhere is picked up on the next refresh.
+        BrowserConnectPrompt.setSilenced(["safari"], in: defaults)
+        await model.refresh()
+        XCTAssertTrue(model.asksToConnect("bravebrowser"))
+        XCTAssertFalse(model.asksToConnect("safari"))
+    }
+
     func testDismissSilencesCheckedAndSnoozesTheRest() {
         let suite = "BrowserConnectPromptTests-\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suite)!
@@ -89,6 +106,26 @@ final class BrowserConnectPromptTests: XCTestCase {
         XCTAssertEqual(BrowserConnectPrompt.silenced(in: defaults), ["brave"])
         XCTAssertNotNil(BrowserConnectPrompt.snoozedUntil(in: defaults)["chrome"])
         XCTAssertNil(BrowserConnectPrompt.snoozedUntil(in: defaults)["brave"])
+    }
+
+    /// Chrome's profile files are unreadable to us (EPERM), so a live native-host connection is
+    /// what marks a running browser connected — and the mark outlives the connection.
+    func testAConnectedHostMarksRunningBrowsersWithAManifestAsSeen() {
+        let defaults = UserDefaults(suiteName: "seen-\(UUID().uuidString)")!
+        let manifests = ["Google Chrome", "Microsoft Edge"]
+        let running: Set<String> = ["com.google.Chrome", "com.brave.Browser"]
+        XCTAssertEqual(
+            BrowserConnectPrompt.recordSeen(
+                connectedHosts: 0, running: running, installedManifests: manifests, in: defaults),
+            [])
+        XCTAssertEqual(
+            BrowserConnectPrompt.recordSeen(
+                connectedHosts: 1, running: running, installedManifests: manifests, in: defaults),
+            ["Google Chrome"])
+        XCTAssertEqual(
+            BrowserConnectPrompt.recordSeen(
+                connectedHosts: 0, running: [], installedManifests: manifests, in: defaults),
+            ["Google Chrome"])
     }
 
     func testIdIsStableSlug() {
