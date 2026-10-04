@@ -157,6 +157,7 @@ final class M_ImportTests: UITestCase {
             "-KSUITestDefaultsSuite", defaultsSuite!,
             "-KSUITestBiometrics", "allow",
             "-KSUITestImportFile", path,
+            "-AppleLanguages", "(en)", "-AppleLocale", "en_US",
         ]
 
         let defaults = UserDefaults(suiteName: defaultsSuite!)

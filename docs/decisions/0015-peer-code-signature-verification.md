@@ -101,3 +101,16 @@ sheet as one of the facts a human weighs.
   deliberately.
 - The verdict crosses the FFI as a Swift-supplied claim. A compromised app could lie to its own
   Rust — but a compromised app already holds the vault key, so this adds no attacker capability.
+
+## Amendment 2026-10-04: audit tokens instead of pids
+
+The deferred `kSecGuestAttributeAudit` variant is now in place for every peer that reaches the app
+over a socket. The kernel's audit token for the connection (`LOCAL_PEERTOKEN`, which carries the
+pid *version*) is read at accept time — by Swift for the AutoFill socket, by
+`kagisecure_ipc::kernel_peer::peer_audit_token` for the Rust listeners — and the Swift
+`PeerCodeSignature` checks resolve the `SecCode` from it, so a peer that exited and had its pid
+reused can no longer be mistaken for the process that connected. The pid is kept for display and
+as a fallback when no token is available (non-macOS, or a request with no socket peer). The browser
+and "started by" checks remain pid-based: those processes are found by walking process ancestry
+and have no socket of their own. Details in
+[ADR-0045's amendment](0045-system-wide-autofill-credential-provider.md#amendment-2026-10-04-security-review-fixes).

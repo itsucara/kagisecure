@@ -49,8 +49,8 @@ settings:
     # Cargo.toml (ADR-0028). Both are the same string on purpose: kagisecure ships one artifact
     # per version and has no separate build number to count. Override on the xcodebuild command
     # line if a rebuild of the same version ever has to be distinguishable.
-    MARKETING_VERSION: "0.1.3"
-    CURRENT_PROJECT_VERSION: "0.1.3"
+    MARKETING_VERSION: "0.1.4"
+    CURRENT_PROJECT_VERSION: "0.1.4"
     CODE_SIGN_STYLE: Manual
     CODE_SIGN_IDENTITY: "-"
     DEVELOPMENT_TEAM: ""
@@ -389,6 +389,12 @@ schemes:
       # `Endpoint::discover`) and opens a window on this Mac's real vault and its real IPC socket.
       # `KagisecureUITests` does not need this: it launches the app itself, per scenario
       # (`UITestCase.setUpWithError`), with its own fresh scratch paths every time.
+      # Pinned so the tests read the English source strings whatever this Mac prefers. The test
+      # host shares the app's bundle id, so an in-app Language choice (`AppleLanguages` in the
+      # com.kagisecure.app domain) would otherwise localise the hosted tests too. The scheme's
+      # language becomes an `-AppleLanguages` launch argument, which outranks the app domain.
+      language: en
+      region: US
       environmentVariables:
         KAGISECURE_HOME: /tmp/kagisecure-xctest-home
         KAGISECURE_SOCKET: /tmp/kagisecure-xctest.sock
@@ -416,3 +422,6 @@ schemes:
       config: Debug
       targets:
         - KagisecureUITests
+      # Same as the `Kagisecure` scheme; `UITestCase` also passes `-AppleLanguages (en)` itself.
+      language: en
+      region: US

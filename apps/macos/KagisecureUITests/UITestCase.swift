@@ -141,7 +141,9 @@ class UITestCase: XCTestCase {
         // or a real agent.
         app.launchEnvironment["KAGISECURE_UITEST"] = "1"
 
-        var arguments = ["-KSUITestDefaultsSuite", defaultsSuite!]
+        // English regardless of the owner's in-app Language choice in com.kagisecure.app: the
+        // argument domain outranks the app domain, and the suite asserts English strings.
+        var arguments = ["-KSUITestDefaultsSuite", defaultsSuite!, "-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
         if let biometrics {
             arguments += ["-KSUITestBiometrics", biometrics]
             arguments += ["-KSUITestPresenceLog", presenceLogPath]

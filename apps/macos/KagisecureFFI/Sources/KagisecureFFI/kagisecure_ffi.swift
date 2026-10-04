@@ -5328,6 +5328,10 @@ public struct AgentFillFactsView: Equatable, Hashable {
      */
     public var sidecarExecutable: String?
     /**
+     * The sidecar's kernel audit token (hex), for the signature check.
+     */
+    public var sidecarAuditToken: String?
+    /**
      * The sidecar's parent pid, from the kernel — what the "started by" signature check runs on.
      */
     public var parentPid: UInt32?
@@ -5387,6 +5391,10 @@ public struct AgentFillFactsView: Equatable, Hashable {
      */
     public var hostPid: UInt32?
     /**
+     * The native messaging host's kernel audit token (hex), for the signature check.
+     */
+    public var hostAuditToken: String?
+    /**
      * The native messaging host's executable.
      */
     public var hostExecutable: String?
@@ -5407,6 +5415,9 @@ public struct AgentFillFactsView: Equatable, Hashable {
         /**
          * The sidecar's executable.
          */sidecarExecutable: String?, 
+        /**
+         * The sidecar's kernel audit token (hex), for the signature check.
+         */sidecarAuditToken: String? = nil, 
         /**
          * The sidecar's parent pid, from the kernel — what the "started by" signature check runs on.
          */parentPid: UInt32?, 
@@ -5453,6 +5464,9 @@ public struct AgentFillFactsView: Equatable, Hashable {
          * The native messaging host's pid — "our helper".
          */hostPid: UInt32?, 
         /**
+         * The native messaging host's kernel audit token (hex), for the signature check.
+         */hostAuditToken: String? = nil, 
+        /**
          * The native messaging host's executable.
          */hostExecutable: String?, 
         /**
@@ -5461,6 +5475,7 @@ public struct AgentFillFactsView: Equatable, Hashable {
         self.agentName = agentName
         self.sidecarPid = sidecarPid
         self.sidecarExecutable = sidecarExecutable
+        self.sidecarAuditToken = sidecarAuditToken
         self.parentPid = parentPid
         self.parentExecutable = parentExecutable
         self.itemId = itemId
@@ -5475,6 +5490,7 @@ public struct AgentFillFactsView: Equatable, Hashable {
         self.browserExecutable = browserExecutable
         self.browserIsAppExtension = browserIsAppExtension
         self.hostPid = hostPid
+        self.hostAuditToken = hostAuditToken
         self.hostExecutable = hostExecutable
         self.extensionId = extensionId
     }
@@ -5498,6 +5514,7 @@ public struct FfiConverterTypeAgentFillFactsView: FfiConverterRustBuffer {
                 agentName: FfiConverterString.read(from: &buf), 
                 sidecarPid: FfiConverterUInt32.read(from: &buf), 
                 sidecarExecutable: FfiConverterOptionString.read(from: &buf), 
+                sidecarAuditToken: FfiConverterOptionString.read(from: &buf), 
                 parentPid: FfiConverterOptionUInt32.read(from: &buf), 
                 parentExecutable: FfiConverterOptionString.read(from: &buf), 
                 itemId: FfiConverterString.read(from: &buf), 
@@ -5512,6 +5529,7 @@ public struct FfiConverterTypeAgentFillFactsView: FfiConverterRustBuffer {
                 browserExecutable: FfiConverterOptionString.read(from: &buf), 
                 browserIsAppExtension: FfiConverterBool.read(from: &buf), 
                 hostPid: FfiConverterOptionUInt32.read(from: &buf), 
+                hostAuditToken: FfiConverterOptionString.read(from: &buf), 
                 hostExecutable: FfiConverterOptionString.read(from: &buf), 
                 extensionId: FfiConverterOptionString.read(from: &buf)
         )
@@ -5521,6 +5539,7 @@ public struct FfiConverterTypeAgentFillFactsView: FfiConverterRustBuffer {
         FfiConverterString.write(value.agentName, into: &buf)
         FfiConverterUInt32.write(value.sidecarPid, into: &buf)
         FfiConverterOptionString.write(value.sidecarExecutable, into: &buf)
+        FfiConverterOptionString.write(value.sidecarAuditToken, into: &buf)
         FfiConverterOptionUInt32.write(value.parentPid, into: &buf)
         FfiConverterOptionString.write(value.parentExecutable, into: &buf)
         FfiConverterString.write(value.itemId, into: &buf)
@@ -5535,6 +5554,7 @@ public struct FfiConverterTypeAgentFillFactsView: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.browserExecutable, into: &buf)
         FfiConverterBool.write(value.browserIsAppExtension, into: &buf)
         FfiConverterOptionUInt32.write(value.hostPid, into: &buf)
+        FfiConverterOptionString.write(value.hostAuditToken, into: &buf)
         FfiConverterOptionString.write(value.hostExecutable, into: &buf)
         FfiConverterOptionString.write(value.extensionId, into: &buf)
     }
@@ -5823,6 +5843,11 @@ public struct ApprovalRequestView: Equatable, Hashable {
      */
     public var clientPidFromKernel: Bool
     /**
+     * The peer's kernel audit token (macOS `LOCAL_PEERTOKEN`, 64 hex digits). The macOS app runs
+     * its code-signature check on this when present, because a pid can be reused.
+     */
+    public var clientAuditToken: String?
+    /**
      * The executable behind that pid — what the app checks the code signature of.
      */
     public var clientExecutable: String?
@@ -6007,6 +6032,10 @@ public struct ApprovalRequestView: Equatable, Hashable {
          * Whether that pid came from the kernel rather than from the caller's own word.
          */clientPidFromKernel: Bool, 
         /**
+         * The peer's kernel audit token (macOS `LOCAL_PEERTOKEN`, 64 hex digits). The macOS app runs
+         * its code-signature check on this when present, because a pid can be reused.
+         */clientAuditToken: String? = nil, 
+        /**
          * The executable behind that pid — what the app checks the code signature of.
          */clientExecutable: String?, 
         /**
@@ -6142,6 +6171,7 @@ public struct ApprovalRequestView: Equatable, Hashable {
         self.clientName = clientName
         self.clientPid = clientPid
         self.clientPidFromKernel = clientPidFromKernel
+        self.clientAuditToken = clientAuditToken
         self.clientExecutable = clientExecutable
         self.clientCwd = clientCwd
         self.environmentId = environmentId
@@ -6198,6 +6228,7 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
                 clientName: FfiConverterString.read(from: &buf), 
                 clientPid: FfiConverterOptionUInt32.read(from: &buf), 
                 clientPidFromKernel: FfiConverterBool.read(from: &buf), 
+                clientAuditToken: FfiConverterOptionString.read(from: &buf), 
                 clientExecutable: FfiConverterOptionString.read(from: &buf), 
                 clientCwd: FfiConverterOptionString.read(from: &buf), 
                 environmentId: FfiConverterOptionString.read(from: &buf), 
@@ -6240,6 +6271,7 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
         FfiConverterString.write(value.clientName, into: &buf)
         FfiConverterOptionUInt32.write(value.clientPid, into: &buf)
         FfiConverterBool.write(value.clientPidFromKernel, into: &buf)
+        FfiConverterOptionString.write(value.clientAuditToken, into: &buf)
         FfiConverterOptionString.write(value.clientExecutable, into: &buf)
         FfiConverterOptionString.write(value.clientCwd, into: &buf)
         FfiConverterOptionString.write(value.environmentId, into: &buf)
@@ -17855,6 +17887,22 @@ public func agentTakeLockRequest() -> Bool  {
 })
 }
 /**
+ * Whether a saved website covers a host macOS password AutoFill asked about (ADR-0045 §4).
+ *
+ * The same public-suffix rule the browser extension fills by
+ * (`kagisecure_extension_ipc::origin::host_match`): same registrable domain, or the exact host
+ * when there is none. Shared-hosting sites (`alice.github.io`, `bob.github.io`) do not match.
+ */
+public func autofillHostMatches(saved: String, requested: String) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_autofill_host_matches(
+        FfiConverterString.lower(saved),
+        FfiConverterString.lower(requested),uniffiCallStatus
+    )
+})
+}
+/**
  * Live fill leases, for the Leases table.
  */
 public func extensionFillLeases() -> [FillLeaseView]  {
@@ -18780,6 +18828,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_agent_take_lock_request() != 39611) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_autofill_host_matches() != 37763) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_extension_fill_leases() != 14094) {

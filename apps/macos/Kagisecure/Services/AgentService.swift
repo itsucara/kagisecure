@@ -469,7 +469,8 @@ final class AgentService {
                 verified: false, evidence: "the agent fill arrived without its facts")
         } else if request.action == .fillCredential {
             let fill = signer.checkFill(
-                hostPid: request.clientPid, browserPid: request.browserPid,
+                hostPid: request.clientPid, hostAuditToken: request.clientAuditToken,
+                browserPid: request.browserPid,
                 isAppExtension: request.browserIsAppExtension)
             currentFillSignature = fill
             fillSignatures[request.id] = fill
@@ -483,7 +484,8 @@ final class AgentService {
                     .joined(separator: "; "))
         } else {
             currentFillSignature = nil
-            currentSignature = signer.check(pid: request.clientPid)
+            currentSignature = signer.check(
+                pid: request.clientPid, auditToken: request.clientAuditToken)
         }
         signatures[request.id] = currentSignature
     }

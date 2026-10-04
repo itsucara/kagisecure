@@ -96,6 +96,15 @@ inside a local encrypted vault and never enter the model's context window.
 > fill has yet been performed in real Safari by a human** — everything below Safari is tested,
 > including across a real App Sandbox boundary, but the last hop is not
 > ([docs/browser-extension.md](docs/browser-extension.md) §8).
+> Convenience is chosen over two protections on purpose. While the grace window is open, an AI
+> agent you have connected can fill every agent-visible login with no sheet, no Touch ID and no
+> rate limit — and an agent that can also run script in the page (browser automation) can then
+> read each filled value, so a prompt-injected agent could collect them all within minutes; only
+> the notices and the audit log record it
+> ([ADR-0036](docs/decisions/0036-agent-requested-browser-fill.md)). And inside the app, revealing
+> or copying a value needs no prompt until the vault locks, so anyone at your unlocked Mac can
+> read the vault in the UI; sleep, screen lock and the idle timeout (10 minutes by default; do not
+> set it to "never" with "Until locked") are what end that window.
 >
 > The vault format is not frozen and interfaces will still change. See
 > [CHANGELOG.md](CHANGELOG.md) and [docs/roadmap.md](docs/roadmap.md).

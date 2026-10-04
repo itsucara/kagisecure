@@ -293,11 +293,22 @@ final class CredentialProviderViewController: ASCredentialProviderViewController
 
     /// Exchange off the main thread; answer on it. A socket failure reads as "locked", which is
     /// what it almost always means: the app is not running.
+    /// `KAGISECURE_AUTOFILL_SOCKET`, honoured in DEBUG builds only: in a release build it would
+    /// let any same-user process point the extension at a socket of its own (ADR-0045,
+    /// 2026-10-04 amendment).
+    private static var socketOverride: String? {
+        #if DEBUG
+            return ProcessInfo.processInfo.environment["KAGISECURE_AUTOFILL_SOCKET"]
+        #else
+            return nil
+        #endif
+    }
+
     private func send(_ request: AutoFillRequest, then: @escaping @MainActor (AutoFillResponse) -> Void) {
         let group = Self.appGroup
         DispatchQueue.global(qos: .userInitiated).async {
             let response: AutoFillResponse
-            if let path = ProcessInfo.processInfo.environment["KAGISECURE_AUTOFILL_SOCKET"]
+            if let path = Self.socketOverride
                 ?? group.flatMap({ AutoFillChannel.socketPath(groupIdentifier: $0) })
             {
                 do {

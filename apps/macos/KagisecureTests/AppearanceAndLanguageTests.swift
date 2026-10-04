@@ -50,10 +50,14 @@ final class AppearanceAndLanguageTests: XCTestCase {
     }
 
     func testLanguageStoreWritesListOrRemovesKey() throws {
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: "ks-language-\(UUID())"))
+        let suite = "ks-language-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
         AppLanguage.store("ja", in: defaults)
-        XCTAssertEqual(defaults.array(forKey: AppLanguage.defaultsKey) as? [String], ["ja"])
-        XCTAssertEqual(AppLanguage.stored(in: defaults), "ja")
+        // Read the suite's own domain: the test scheme pins `-AppleLanguages (en)`, and the
+        // argument domain would shadow the value through `defaults.array(forKey:)`.
+        let persisted = defaults.persistentDomain(forName: suite)?[AppLanguage.defaultsKey]
+        XCTAssertEqual(persisted as? [String], ["ja"])
+        XCTAssertEqual(AppLanguage.selection(from: persisted), "ja")
         AppLanguage.store(nil, in: defaults)
         XCTAssertNil(defaults.persistentDomain(forName: "unused")?[AppLanguage.defaultsKey])
         XCTAssertNil(AppLanguage.storedValue(for: nil))

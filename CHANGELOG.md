@@ -10,6 +10,31 @@ what it means for a vault written by an earlier build — see
 
 ## Unreleased
 
+## 0.1.4 — 2026-10-04
+
+A security fix release. Nothing changes in how the app looks or behaves day to day.
+
+Security fixes:
+
+- **The AutoFill socket test override no longer weakens release builds.** The environment variable
+  that points the AutoFill extension at a test socket used to skip the check of who is calling.
+  That shortcut now exists only in Debug and test builds; a release build always verifies the
+  caller's code signature.
+- **Callers are verified by audit token instead of process ID.** The AutoFill extension, the MCP
+  sidecar, the native messaging host and the Safari extension are now identified by the kernel's
+  audit token for their socket connection, so a process that reuses the PID of one that exited can
+  no longer be mistaken for it. The checks on a caller's *parent* processes (which browser, or what
+  started an agent) are still PID-based, because those processes have no socket of their own
+  ([ADR-0015](docs/decisions/0015-peer-code-signature-verification.md) amendment).
+- **System-wide AutoFill matches sites by registrable domain**, the same rule the browser extension
+  already used. Sites on shared hosting such as `*.github.io` no longer match each other's
+  logins ([ADR-0045](docs/decisions/0045-system-wide-autofill-credential-provider.md) amendment).
+
+Known, and kept on purpose (see the caveats in the [README](README.md)): while the grace window is
+open, a connected AI agent can fill every agent-visible login with no prompt and no rate limit, and
+an agent that can also run script in the page can read the filled values; inside the app, revealing
+or copying a value needs no prompt until the vault locks.
+
 ## 0.1.3 — 2026-10-04
 
 What changed for you:

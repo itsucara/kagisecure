@@ -45,6 +45,9 @@ pub struct PeerIdentity {
     pub executable: Option<String>,
     /// The peer's self-reported description, display-only.
     pub reported: Option<ClientInfo>,
+    /// The peer's kernel audit token (macOS `LOCAL_PEERTOKEN`, 32 bytes as hex), when the platform has
+    /// one. What a code-signature check should be run on instead of the pid, which can be reused.
+    pub audit_token: Option<String>,
 }
 
 impl PeerIdentity {
@@ -384,6 +387,7 @@ fn peer_identity(stream: &Stream) -> PeerIdentity {
         euid,
         pid_from_kernel: pid.is_some(),
         reported: None,
+        audit_token: crate::kernel_peer::peer_audit_token(stream),
     }
 }
 
@@ -592,6 +596,7 @@ mod tests {
                 argv0: "kagisecure-mcp".to_owned(),
                 cwd: None,
             }),
+            audit_token: None,
         };
         assert!(!identity.verified());
         let described = identity.describe();
@@ -611,6 +616,7 @@ mod tests {
             pid_from_kernel: true,
             executable: Some("/sbin/launchd".to_owned()),
             reported: None,
+            audit_token: None,
         };
         assert!(identity.verified());
         assert!(identity.describe().contains("verified"));

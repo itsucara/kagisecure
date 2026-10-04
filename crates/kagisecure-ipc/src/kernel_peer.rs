@@ -27,6 +27,62 @@ pub fn peer_pid(stream: &Stream) -> Option<u32> {
     imp::peer_pid(stream)
 }
 
+/// The peer's **audit token**, straight from the kernel: macOS `LOCAL_PEERTOKEN`.
+///
+/// Thirty-two bytes as 64 lowercase hex digits (memory order): the `audit_token_t` the kernel recorded for the process that connected,
+/// including its pid *version*. Unlike a bare pid it cannot come to name a different process:
+/// `SecCodeCopyGuestWithAttributes(kSecGuestAttributeAudit)` refuses a token whose process has
+/// exited, even if the pid has since been handed to someone else. This is what the app's code
+/// signature checks are run on (ADR-0045, 2026-10-04 amendment); the pid stays for display.
+///
+/// `None` on every other platform and when the syscall fails; callers then fall back to the pid,
+/// which is exactly what they did before.
+#[must_use]
+pub fn peer_audit_token(stream: &Stream) -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::os::unix::io::AsRawFd;
+        let Stream::UdSocket(inner) = stream;
+        audit_token_for_fd(inner.inner().as_raw_fd())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = stream;
+        None
+    }
+}
+
+/// [`peer_audit_token`] for a raw local-domain socket descriptor.
+#[cfg(target_os = "macos")]
+#[must_use]
+pub fn audit_token_for_fd(fd: std::os::unix::io::RawFd) -> Option<String> {
+    let mut token = [0_u32; 8];
+    let mut len = std::mem::size_of_val(&token) as libc::socklen_t;
+    // SAFETY: `fd` is a descriptor the caller holds open for the duration of the call. `token`
+    // is stack storage of exactly `len` bytes — the size of `audit_token_t` (`<bsm/audit.h>`,
+    // eight `unsigned int`s) — which is what `LOCAL_PEERTOKEN` writes back, and `len` tells the
+    // kernel that size up front as `getsockopt(2)` requires.
+    let ret = unsafe {
+        libc::getsockopt(
+            fd,
+            libc::SOL_LOCAL,
+            libc::LOCAL_PEERTOKEN,
+            token.as_mut_ptr().cast::<libc::c_void>(),
+            &mut len,
+        )
+    };
+    if ret != 0 || len as usize != std::mem::size_of_val(&token) {
+        return None;
+    }
+    Some(
+        token
+            .iter()
+            .flat_map(|w| w.to_ne_bytes())
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    )
+}
+
 /// This process's own effective uid, straight from the kernel.
 ///
 /// `geteuid(2)` reads a field of this process's credentials. It takes no arguments, touches no
@@ -418,6 +474,21 @@ mod tests {
         // can be wrapped directly without going through a listener/connect round trip.
         let stream = Stream::UdSocket(a.into());
         assert_eq!(peer_pid(&stream), Some(std::process::id()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_socket_connected_to_itself_reports_this_processs_audit_token() {
+        let (a, _b) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+        let stream = Stream::UdSocket(a.into());
+        let token = peer_audit_token(&stream).expect("LOCAL_PEERTOKEN");
+        assert_eq!(token.len(), 64);
+        // `audit_token_t.val[5]` is the pid.
+        let bytes: Vec<u8> = (0..32)
+            .map(|i| u8::from_str_radix(&token[i * 2..i * 2 + 2], 16).expect("hex"))
+            .collect();
+        let pid = u32::from_ne_bytes(bytes[20..24].try_into().expect("four bytes"));
+        assert_eq!(pid, std::process::id());
     }
 
     #[cfg(target_os = "macos")]

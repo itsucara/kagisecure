@@ -228,6 +228,26 @@ pub fn origin_match(saved: &Origin, page: &Origin) -> bool {
     }
 }
 
+/// Whether a saved website covers a host the system asked about, ignoring scheme and port.
+///
+/// The host-level half of [`origin_match`], for front ends that are handed a bare domain rather
+/// than an origin — macOS password AutoFill's service identifiers (ADR-0045 §4). Both arguments
+/// are parsed the way [`Origin::parse`] parses a Websites field, so a bare `example.com`, a URL
+/// and `example.com:8443/login` all work. Same registrable domain (eTLD+1 by the public suffix
+/// list) matches, so `www.` and ordinary subdomains are covered; where either side has none — an
+/// IP literal, a single label, a host that is itself a public suffix — only the exact host does.
+/// Two sites on shared hosting (`alice.github.io`, `bob.github.io`) therefore never match.
+#[must_use]
+pub fn host_match(saved: &str, requested: &str) -> bool {
+    let (Ok(saved), Ok(requested)) = (Origin::parse(saved), Origin::parse(requested)) else {
+        return false;
+    };
+    match (saved.registrable_domain(), requested.registrable_domain()) {
+        (Some(a), Some(b)) => a == b,
+        _ => saved.host().eq_ignore_ascii_case(&requested.host()),
+    }
+}
+
 /// Whether an item, described by its saved website strings, may be filled into a page.
 ///
 /// `frame_origin` is `None` for a top-frame fill. When it is `Some` and differs from
@@ -535,6 +555,30 @@ pub fn continues_same_site(first: &str, next: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn host_match_uses_the_registrable_domain() {
+        use super::host_match;
+        assert!(host_match("example.com", "www.example.com"));
+        assert!(host_match("www.example.com", "example.com"));
+        assert!(host_match("example.com", "login.example.com"));
+        assert!(host_match("login.example.com", "example.com"));
+        assert!(host_match("https://example.com/login", "example.com"));
+        assert!(!host_match("example.com", "badexample.com"));
+        assert!(!host_match("example.com", "example.com.evil.net"));
+        // Shared hosting: each site is its own registrable domain.
+        assert!(!host_match("alice.github.io", "bob.github.io"));
+        assert!(!host_match("github.io", "alice.github.io"));
+        assert!(host_match("alice.github.io", "www.alice.github.io"));
+        // Multi-label public suffixes.
+        assert!(host_match("shop.example.co.uk", "example.co.uk"));
+        assert!(!host_match("alice.co.uk", "bob.co.uk"));
+        assert!(!host_match("co.uk", "alice.co.uk"));
+        // No registrable domain: exact host only.
+        assert!(host_match("127.0.0.1", "127.0.0.1"));
+        assert!(!host_match("localhost", "a.localhost"));
+        assert!(!host_match("", "example.com"));
+    }
+
     use super::*;
 
     fn o(s: &str) -> Origin {

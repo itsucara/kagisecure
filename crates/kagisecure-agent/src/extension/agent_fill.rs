@@ -431,6 +431,9 @@ pub(crate) struct Sidecar {
     /// That parent's executable: what "this agent" means on the sheet, and the key every limit
     /// and block is kept under (§5, §9.3).
     parent_executable: String,
+    /// Its kernel audit token (macOS), for the app's code-signature check: unlike the pid it
+    /// cannot come to name a later process.
+    audit_token: Option<String>,
 }
 
 impl Sidecar {
@@ -454,6 +457,7 @@ impl Sidecar {
             actor: actor_for(identity),
             parent_pid,
             parent_executable,
+            audit_token: identity.audit_token.clone(),
         })
     }
 
@@ -2444,6 +2448,7 @@ impl FlowSlot {
             agent_name: call.sidecar.name.clone(),
             sidecar_pid: call.sidecar.pid,
             sidecar_executable: Some(call.sidecar.executable.clone()),
+            sidecar_audit_token: call.sidecar.audit_token.clone(),
             parent_pid: Some(call.sidecar.parent_pid),
             parent_executable: Some(call.sidecar.parent_executable.clone()),
             item_id: call.item_id.clone(),
@@ -2461,6 +2466,7 @@ impl FlowSlot {
             browser_executable: session.identity.browser_executable.clone(),
             browser_is_app_extension: session.identity.app_extension,
             host_pid: session.identity.pid,
+            host_audit_token: session.identity.audit_token.clone(),
             host_executable: session.identity.executable.clone(),
             extension_id: Some(session.extension_id.clone()),
         };
@@ -3237,6 +3243,7 @@ mod tests {
             actor: "mcp \"example-agent\"".to_owned(),
             parent_pid: 1,
             parent_executable: "/sbin/launchd".to_owned(),
+            audit_token: None,
         }
     }
 

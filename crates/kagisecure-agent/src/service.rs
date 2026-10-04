@@ -2604,6 +2604,7 @@ mod tests {
                 argv0: "kagisecure-mcp".to_owned(),
                 cwd: None,
             }),
+            audit_token: None,
         };
         let described = describe_with_verification(
             &identity,

@@ -45,7 +45,8 @@ AutoFill & Passwords.
    item id, never a value. It is **kept on lock** (convenience first): QuickType still offers the
    login, and picking it brings the app forward to unlock.
 6. **List UI.** `prepareCredentialList` shows a searchable list, logins matching the requested
-   service identifiers first (host equal or subdomain either way, `www.` ignored).
+   service identifiers first (host equal or subdomain either way, `www.` ignored). *Superseded
+   by the 2026-10-04 amendment below: same registrable domain by the public suffix list.*
 7. **Policy hook.** `nativeAutofillRequiresConfirmation` (Settings › Security › "Always show the
    AutoFill sheet in other apps", off): when on, no-UI requests are always answered
    `interaction_required`, so every fill goes through the sheet.
@@ -76,3 +77,38 @@ AutoFill & Passwords.
    alone, pluginkit showed it registered and enabled but Settings listed only Apple Passwords.
 4. Install the app, open it once, then enable **Kagisecure** under System Settings › General ›
    AutoFill & Passwords.
+
+## Amendment 2026-10-04: security review fixes
+
+Three findings of the 2026-10-04 security review are fixed; convenience is otherwise unchanged.
+
+1. **The socket override no longer disables the peer check in a release build.**
+   `KAGISECURE_AUTOFILL_SOCKET` moved the socket *and* skipped the signature check, so a same-user
+   process could `launchctl setenv` it before the app started, connect as the "extension" and ask
+   for every password during the grace window. The app now honours it only in a DEBUG build, or
+   when XCTest's configuration variable is set **and** XCTest is actually loaded
+   (`AutoFillTestOverride`); the extension honours it in DEBUG builds only. The other overrides
+   (`KAGISECURE_SOCKET`, `KAGISECURE_EXTENSION_SOCKET`, `KAGISECURE_SAFARI_SOCKET`) only move a
+   socket; every peer check still runs on them.
+2. **Peer signature checks run on the kernel audit token, not the pid.** The AutoFill socket reads
+   `LOCAL_PEERTOKEN` and checks the `.appex` with `kSecGuestAttributeAudit`, refusing a peer with
+   no token. The Rust listeners (MCP socket, extension socket) record the same token
+   (`kernel_peer::peer_audit_token`) and it crosses the FFI as `client_audit_token`,
+   `sidecar_audit_token` and `host_audit_token` (64 hex digits), so the sidecar, native messaging
+   host and Safari extension checks use it too. The pid remains for display and as a fallback
+   where no token exists. Two checks stay pid-based because no socket vouches for those
+   processes: the browser above a native messaging host and the program that started a sidecar,
+   both found by walking process ancestry. See also the
+   [ADR-0015](0015-peer-code-signature-verification.md) amendment of the same date.
+3. **Host matching uses the public suffix list** (supersedes §6 above and the "Matching is by
+   host only" consequence). A saved website serves a requested host when both have the same
+   registrable domain (eTLD+1), otherwise only on an exact host match
+   (`kagisecure_extension_ipc::origin::host_match`, exposed as `autofill_host_matches`), the same
+   rule the browser extension fills by. `www.` and subdomains of one site still match;
+   `alice.github.io` and `bob.github.io`, or `alice.co.uk` and `bob.co.uk`, do not. The app ranks
+   the list (it answers `logins`); the extension does not link the Rust library and does no
+   matching.
+
+Not changed, by the owner's decision: an agent can fill every agent-visible login during the
+grace window without a sheet (ADR-0036), and in-app reveal and copy need no prompt until the
+vault locks. Both are stated in the README's caveats.

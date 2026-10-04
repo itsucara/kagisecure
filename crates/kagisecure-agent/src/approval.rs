@@ -114,6 +114,9 @@ pub struct ApprovalRequest {
     pub client_pid: Option<u32>,
     /// Whether that pid came from the kernel rather than from the peer's own word.
     pub client_pid_from_kernel: bool,
+    /// The peer's kernel audit token (macOS `LOCAL_PEERTOKEN`), when there is one. The app runs
+    /// its code-signature check on this rather than on the pid, which can be reused.
+    pub client_audit_token: Option<String>,
     /// The executable behind that pid, resolved from the pid.
     pub client_executable: Option<String>,
     /// The directory the sidecar was started in — usually the project root. Self-reported.
@@ -253,6 +256,8 @@ pub struct AgentFillFacts {
     pub sidecar_pid: u32,
     /// The sidecar's executable, resolved from that pid.
     pub sidecar_executable: Option<String>,
+    /// The sidecar's kernel audit token (macOS), what the app runs its signature check on.
+    pub sidecar_audit_token: Option<String>,
     /// The sidecar's parent pid, resolved from the kernel — never the one the sidecar reports.
     /// What the app checks the code signature of, for "started by".
     pub parent_pid: Option<u32>,
@@ -291,6 +296,8 @@ pub struct AgentFillFacts {
     pub browser_is_app_extension: bool,
     /// The native messaging host's pid — "our helper" on the sheet.
     pub host_pid: Option<u32>,
+    /// The native messaging host's kernel audit token (macOS), for the signature check.
+    pub host_audit_token: Option<String>,
     /// The native messaging host's executable.
     pub host_executable: Option<String>,
     /// The extension's **self-reported** id. Only ever the pinned one.
@@ -311,6 +318,7 @@ impl ApprovalRequest {
             client_name: facts.agent_name.clone(),
             client_pid: Some(facts.sidecar_pid),
             client_pid_from_kernel: true,
+            client_audit_token: facts.sidecar_audit_token.clone(),
             client_executable: facts.sidecar_executable.clone(),
             origin: Some(facts.page_origin.ascii()),
             item_id: Some(facts.item_id.clone()),
@@ -339,6 +347,7 @@ impl ApprovalRequest {
             .map_or_else(|| "unknown".to_owned(), |c| c.name.clone());
         self.client_pid = identity.pid;
         self.client_pid_from_kernel = identity.pid_from_kernel;
+        self.client_audit_token = identity.audit_token.clone();
         self.client_executable = identity.executable.clone();
         self.client_cwd = identity.reported.as_ref().and_then(|c| c.cwd.clone());
         self
@@ -353,6 +362,7 @@ impl Default for ApprovalRequest {
             client_name: "unknown".to_owned(),
             client_pid: None,
             client_pid_from_kernel: false,
+            client_audit_token: None,
             client_executable: None,
             client_cwd: None,
             environment_id: None,
@@ -1103,6 +1113,7 @@ mod tests {
             agent_name: "example-agent".to_owned(),
             sidecar_pid: 51_234,
             sidecar_executable: Some("/usr/local/bin/kagisecure-mcp".to_owned()),
+            sidecar_audit_token: None,
             parent_pid: Some(51_200),
             parent_executable: Some("/path/to/client".to_owned()),
             item_id: "item-1".to_owned(),
@@ -1117,6 +1128,7 @@ mod tests {
             browser_executable: Some("/Applications/Google Chrome.app".to_owned()),
             browser_is_app_extension: false,
             host_pid: Some(401),
+            host_audit_token: None,
             host_executable: Some("/Applications/Kagisecure.app/kagisecure-nmhost".to_owned()),
             extension_id: Some("abcdefghijklmnopabcdefghijklmnop".to_owned()),
         }
@@ -1191,6 +1203,7 @@ mod tests {
             agent_name,
             sidecar_pid,
             sidecar_executable,
+            sidecar_audit_token,
             parent_pid,
             parent_executable,
             item_id,
@@ -1205,6 +1218,7 @@ mod tests {
             browser_executable,
             browser_is_app_extension,
             host_pid,
+            host_audit_token,
             host_executable,
             extension_id,
         } = agent_fill_facts();
@@ -1221,6 +1235,7 @@ mod tests {
             type_of(&agent_name),
             type_of(&sidecar_pid),
             type_of(&sidecar_executable),
+            type_of(&sidecar_audit_token),
             type_of(&parent_pid),
             type_of(&parent_executable),
             type_of(&item_id),
@@ -1234,6 +1249,7 @@ mod tests {
             type_of(&browser_executable),
             type_of(&browser_is_app_extension),
             type_of(&host_pid),
+            type_of(&host_audit_token),
             type_of(&host_executable),
             type_of(&extension_id),
             type_of(&scheme),

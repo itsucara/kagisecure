@@ -132,6 +132,10 @@ pub struct ApprovalRequestView {
     pub client_pid: Option<u32>,
     /// Whether that pid came from the kernel rather than from the caller's own word.
     pub client_pid_from_kernel: bool,
+    /// The peer's kernel audit token (macOS `LOCAL_PEERTOKEN`, 64 hex digits). The macOS app runs
+    /// its code-signature check on this when present, because a pid can be reused.
+    #[uniffi(default = None)]
+    pub client_audit_token: Option<String>,
     /// The executable behind that pid — what the app checks the code signature of.
     pub client_executable: Option<String>,
     /// The directory the sidecar was started in. Self-reported.
@@ -316,6 +320,9 @@ pub struct AgentFillFactsView {
     pub sidecar_pid: u32,
     /// The sidecar's executable.
     pub sidecar_executable: Option<String>,
+    /// The sidecar's kernel audit token (hex), for the signature check.
+    #[uniffi(default = None)]
+    pub sidecar_audit_token: Option<String>,
     /// The sidecar's parent pid, from the kernel — what the "started by" signature check runs on.
     pub parent_pid: Option<u32>,
     /// The sidecar's parent executable, from the kernel: what "this agent" means for blocking.
@@ -348,6 +355,9 @@ pub struct AgentFillFactsView {
     pub browser_is_app_extension: bool,
     /// The native messaging host's pid — "our helper".
     pub host_pid: Option<u32>,
+    /// The native messaging host's kernel audit token (hex), for the signature check.
+    #[uniffi(default = None)]
+    pub host_audit_token: Option<String>,
     /// The native messaging host's executable.
     pub host_executable: Option<String>,
     /// The extension's self-reported id.
@@ -360,6 +370,7 @@ impl From<AgentFillFacts> for AgentFillFactsView {
             agent_name: f.agent_name,
             sidecar_pid: f.sidecar_pid,
             sidecar_executable: f.sidecar_executable,
+            sidecar_audit_token: f.sidecar_audit_token,
             parent_pid: f.parent_pid,
             parent_executable: f.parent_executable,
             item_id: f.item_id,
@@ -374,6 +385,7 @@ impl From<AgentFillFacts> for AgentFillFactsView {
             browser_executable: f.browser_executable,
             browser_is_app_extension: f.browser_is_app_extension,
             host_pid: f.host_pid,
+            host_audit_token: f.host_audit_token,
             host_executable: f.host_executable,
             extension_id: f.extension_id,
         }
@@ -389,6 +401,7 @@ impl From<ApprovalRequest> for ApprovalRequestView {
             client_name: r.client_name,
             client_pid: r.client_pid,
             client_pid_from_kernel: r.client_pid_from_kernel,
+            client_audit_token: r.client_audit_token,
             client_executable: r.client_executable,
             client_cwd: r.client_cwd,
             environment_id: r.environment_id,
@@ -920,6 +933,17 @@ pub fn verify_peer_code_signature(
         verified: verdict.verified,
         evidence: verdict.evidence,
     }
+}
+
+/// Whether a saved website covers a host macOS password AutoFill asked about (ADR-0045 §4).
+///
+/// The same public-suffix rule the browser extension fills by
+/// (`kagisecure_extension_ipc::origin::host_match`): same registrable domain, or the exact host
+/// when there is none. Shared-hosting sites (`alice.github.io`, `bob.github.io`) do not match.
+#[uniffi::export]
+#[must_use]
+pub fn autofill_host_matches(saved: String, requested: String) -> bool {
+    kagisecure_extension_ipc::origin::host_match(&saved, &requested)
 }
 
 /// Live leases, for the Leases table.
@@ -1637,6 +1661,7 @@ pub(crate) mod tests {
             agent_name: "example-agent".to_owned(),
             sidecar_pid: 51_234,
             sidecar_executable: Some("/usr/local/bin/kagisecure-mcp".to_owned()),
+            sidecar_audit_token: Some("00".repeat(32)),
             parent_pid: Some(51_200),
             parent_executable: Some("/path/to/client".to_owned()),
             item_id: "item-1".to_owned(),
@@ -1651,6 +1676,7 @@ pub(crate) mod tests {
             browser_executable: Some("/Applications/Google Chrome.app".to_owned()),
             browser_is_app_extension: false,
             host_pid: Some(401),
+            host_audit_token: Some("11".repeat(32)),
             host_executable: Some("/Applications/Kagisecure.app/kagisecure-nmhost".to_owned()),
             extension_id: Some("abcdefghijklmnopabcdefghijklmnop".to_owned()),
         }
@@ -1677,6 +1703,7 @@ pub(crate) mod tests {
             agent_name,
             sidecar_pid,
             sidecar_executable,
+            sidecar_audit_token,
             parent_pid,
             parent_executable,
             item_id,
@@ -1691,12 +1718,15 @@ pub(crate) mod tests {
             browser_executable,
             browser_is_app_extension,
             host_pid,
+            host_audit_token,
             host_executable,
             extension_id,
         } = crossed;
         assert_eq!(agent_name, facts.agent_name);
         assert_eq!(sidecar_pid, facts.sidecar_pid);
         assert_eq!(sidecar_executable, facts.sidecar_executable);
+        assert_eq!(sidecar_audit_token, facts.sidecar_audit_token);
+        assert_eq!(view.client_audit_token, facts.sidecar_audit_token);
         assert_eq!(parent_pid, facts.parent_pid);
         assert_eq!(parent_executable, facts.parent_executable);
         assert_eq!(item_id, facts.item_id);
@@ -1714,6 +1744,7 @@ pub(crate) mod tests {
         assert_eq!(browser_executable, facts.browser_executable);
         assert_eq!(browser_is_app_extension, facts.browser_is_app_extension);
         assert_eq!(host_pid, facts.host_pid);
+        assert_eq!(host_audit_token, facts.host_audit_token);
         assert_eq!(host_executable, facts.host_executable);
         assert_eq!(extension_id, facts.extension_id);
 

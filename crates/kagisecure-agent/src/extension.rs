@@ -1625,6 +1625,7 @@ impl ExtensionService {
                 .to_owned(),
             client_pid: self.identity.pid,
             client_pid_from_kernel: self.identity.pid.is_some(),
+            client_audit_token: self.identity.audit_token.clone(),
             client_executable: self.identity.executable.clone(),
             origin: Some(origin.clone()),
             // The disclosure keys off "the browser did not tell us this was frame 0", not off a

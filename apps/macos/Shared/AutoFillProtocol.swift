@@ -321,25 +321,16 @@ enum AutoFillMatching {
         return head.split(separator: ":").first.map(String.init)
     }
 
-    /// Whether `domain` (a saved website's host) serves `host` (what the system asked for):
-    /// equal, or one is a subdomain of the other's registrable part. Deliberately loose —
-    /// convenience first (ADR-0045 §4); the person still picks the login.
-    static func matches(domain: String, host: String) -> Bool {
-        let d = strip(domain)
-        let h = strip(host)
-        guard !d.isEmpty, !h.isEmpty else { return false }
-        return d == h || h.hasSuffix("." + d) || d.hasSuffix("." + h)
-    }
-
-    private static func strip(_ value: String) -> String {
-        let lower = value.lowercased()
-        return lower.hasPrefix("www.") ? String(lower.dropFirst(4)) : lower
-    }
-
     /// `logins` filtered by `query` and ordered with those matching `services` first, each group
     /// by title.
+    ///
+    /// `matches(domain, host)` decides whether a saved website serves a requested host. It is
+    /// passed in because the rule lives in Rust (the public-suffix list, the same rule the browser
+    /// extension fills by), which only the app links; the `.appex` never ranks (ADR-0045 §4,
+    /// 2026-10-04 amendment).
     static func rank(
-        _ logins: [AutoFillLogin], query: String?, services: [String]
+        _ logins: [AutoFillLogin], query: String?, services: [String],
+        matches: (_ domain: String, _ host: String) -> Bool
     ) -> [AutoFillLogin] {
         let hosts = services.compactMap(host(of:))
         let needle = query?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
@@ -350,7 +341,7 @@ enum AutoFillMatching {
                 || login.domains.contains { $0.contains(needle) }
         }
         func isMatch(_ login: AutoFillLogin) -> Bool {
-            login.domains.contains { domain in hosts.contains { matches(domain: domain, host: $0) } }
+            login.domains.contains { domain in hosts.contains { matches(domain, $0) } }
         }
         return filtered.enumerated().sorted { a, b in
             let am = isMatch(a.element)

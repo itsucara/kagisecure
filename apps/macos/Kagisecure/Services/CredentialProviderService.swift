@@ -96,8 +96,16 @@ final class CredentialProviderService {
 
     // MARK: - Helpers
 
+    /// `KAGISECURE_AUTOFILL_SOCKET` moves the socket and skips the peer's signature check, so the
+    /// unit tests can talk to the server without our signed `.appex`. Honoured only in a DEBUG
+    /// build or while XCTest is actually running: in a release build any same-user process can
+    /// `launchctl setenv` it before the app starts, and with the check gone it could then ask for
+    /// every password during the grace window (ADR-0045, 2026-10-04 amendment).
     private static func socketOverride() -> String? {
-        ProcessInfo.processInfo.environment["KAGISECURE_AUTOFILL_SOCKET"]
+        AutoFillTestOverride.value(
+            isDebugBuild: AutoFillTestOverride.isDebugBuild,
+            xcTestLoaded: AutoFillTestOverride.xcTestLoaded,
+            environment: ProcessInfo.processInfo.environment)
     }
 
     static func socketPath() -> String? {
@@ -117,7 +125,12 @@ final class CredentialProviderService {
         guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &size) == 0, pid > 0 else {
             return false
         }
-        return PeerCodeSignature().checkCredentialProvider(pid: UInt32(pid)).verified
+        // The audit token, not the pid, is what the signature check runs on: a pid can be handed
+        // to another process between the connect and the check; a token cannot. No token, no
+        // answer — the kernel always supplies one on a local socket.
+        guard let token = PeerCodeSignature.auditToken(socket: fd) else { return false }
+        return PeerCodeSignature().checkCredentialProvider(pid: UInt32(pid), auditToken: token)
+            .verified
     }
 }
 
@@ -158,7 +171,9 @@ final class CredentialProviderHandler {
             return .status(unlocked: vault != nil, graceOpen: vault != nil && presence.graceIsOpen)
         case .logins(let query, let services):
             guard let vault else { return locked(raise: false) }
-            return .logins(AutoFillMatching.rank(vault.logins(), query: query, services: services))
+            return .logins(AutoFillMatching.rank(
+                vault.logins(), query: query, services: services,
+                matches: autofillHostMatches(saved:requested:)))
         case .credential(let itemId, let interactive):
             guard let vault else { return locked(raise: interactive) }
             if let refusal = gate(interactive: interactive) { return refusal }
@@ -400,5 +415,34 @@ final class AutoFillSocketServer: @unchecked Sendable {
             try? AutoFillWire.write(response, to: client)
             close(client)
         }
+    }
+}
+
+/// When the AutoFill socket's test override (`KAGISECURE_AUTOFILL_SOCKET`) may be honoured.
+///
+/// A pure decision so the release-build answer can be unit-tested from a DEBUG test run.
+enum AutoFillTestOverride {
+    static let environmentKey = "KAGISECURE_AUTOFILL_SOCKET"
+
+    #if DEBUG
+        static let isDebugBuild = true
+    #else
+        static let isDebugBuild = false
+    #endif
+
+    /// Whether XCTest is really loaded in this process — not merely named in the environment,
+    /// which a same-user process can set as easily as the override itself.
+    static var xcTestLoaded: Bool { NSClassFromString("XCTestCase") != nil }
+
+    /// The override path, or `nil` when it must be ignored. Outside a DEBUG build it takes both
+    /// XCTest's configuration variable *and* XCTest actually loaded; a hardened-runtime release
+    /// build cannot have XCTest injected, so there the override is dead.
+    static func value(
+        isDebugBuild: Bool, xcTestLoaded: Bool, environment: [String: String]
+    ) -> String? {
+        guard let path = environment[environmentKey], !path.isEmpty else { return nil }
+        if isDebugBuild { return path }
+        let underXCTest = environment["XCTestConfigurationFilePath"] != nil && xcTestLoaded
+        return underXCTest ? path : nil
     }
 }

@@ -312,6 +312,9 @@ pub struct HostIdentity {
     /// code-signature check against the app-extension requirement rather than the browser-vendor
     /// one — the appex is signed by *us*, and Safari itself is never the process on the socket.
     pub app_extension: bool,
+    /// The peer's kernel audit token (macOS `LOCAL_PEERTOKEN`), when there is one: what the app
+    /// runs the native host's / app extension's code-signature check on, instead of the pid.
+    pub audit_token: Option<String>,
 }
 
 impl HostIdentity {
@@ -354,6 +357,7 @@ impl HostIdentity {
             browser_pid: is_ours.then_some(pid).flatten(),
             browser_executable: is_ours.then_some(executable).flatten(),
             app_extension: is_ours,
+            audit_token: None,
         }
     }
 
@@ -386,6 +390,7 @@ impl HostIdentity {
             browser_pid: browser.as_ref().map(|(_, p, _)| *p),
             browser_executable: browser.map(|(_, _, path)| path),
             app_extension: false,
+            audit_token: None,
         }
     }
 

@@ -173,9 +173,89 @@ struct CredentialProviderTests {
     @Test func domainMatching() {
         #expect(AutoFillMatching.host(of: "https://Login.Example.com:443/x") == "login.example.com")
         #expect(AutoFillMatching.host(of: "example.com/path") == "example.com")
-        #expect(AutoFillMatching.matches(domain: "www.example.com", host: "example.com"))
-        #expect(AutoFillMatching.matches(domain: "example.com", host: "login.example.com"))
-        #expect(!AutoFillMatching.matches(domain: "example.com", host: "badexample.com"))
+    }
+
+    /// Host matching is the Rust public-suffix rule the browser extension fills by (ADR-0045 §4,
+    /// 2026-10-04 amendment), not a suffix test: `www.` and subdomains of one site match, two
+    /// sites on shared hosting or under a multi-label public suffix do not.
+    @Test func hostMatchingUsesTheRegistrableDomain() {
+        let m = autofillHostMatches(saved:requested:)
+        #expect(m("www.example.com", "example.com"))
+        #expect(m("example.com", "www.example.com"))
+        #expect(m("example.com", "login.example.com"))
+        #expect(m("login.example.com", "example.com"))
+        #expect(!m("example.com", "badexample.com"))
+        #expect(!m("example.com", "example.com.evil.net"))
+        #expect(!m("alice.github.io", "bob.github.io"))
+        #expect(!m("github.io", "alice.github.io"))
+        #expect(m("alice.github.io", "www.alice.github.io"))
+        #expect(m("shop.example.co.uk", "example.co.uk"))
+        #expect(!m("alice.co.uk", "bob.co.uk"))
+        #expect(!m("co.uk", "alice.co.uk"))
+    }
+
+    @Test func sharedHostingSitesDoNotRankEachOtherFirst() {
+        let logins = [
+            AutoFillLogin(id: "bob", title: "A Bob", username: nil, domains: ["bob.github.io"], hasOneTimeCode: false),
+            AutoFillLogin(id: "alice", title: "B Alice", username: nil, domains: ["alice.github.io"], hasOneTimeCode: false),
+        ]
+        let ranked = AutoFillMatching.rank(
+            logins, query: nil, services: ["https://alice.github.io/login"],
+            matches: autofillHostMatches(saved:requested:))
+        #expect(ranked.map(\.id) == ["alice", "bob"])
+    }
+
+    // MARK: - The socket override (finding: env var disabled the peer check in release)
+
+    @Test func autofillSocketOverrideIsIgnoredInARelease() {
+        let env = [AutoFillTestOverride.environmentKey: "/tmp/x.sock"]
+        // Release build, XCTest not loaded: ignored even with XCTest's variable set by an attacker.
+        #expect(AutoFillTestOverride.value(isDebugBuild: false, xcTestLoaded: false, environment: env) == nil)
+        var withVar = env
+        withVar["XCTestConfigurationFilePath"] = "/tmp/fake.xctestconfiguration"
+        #expect(AutoFillTestOverride.value(isDebugBuild: false, xcTestLoaded: false, environment: withVar) == nil)
+        // XCTest loaded but not configured: ignored.
+        #expect(AutoFillTestOverride.value(isDebugBuild: false, xcTestLoaded: true, environment: env) == nil)
+        // Really under XCTest, or a DEBUG build: honoured.
+        #expect(AutoFillTestOverride.value(isDebugBuild: false, xcTestLoaded: true, environment: withVar) == "/tmp/x.sock")
+        #expect(AutoFillTestOverride.value(isDebugBuild: true, xcTestLoaded: false, environment: env) == "/tmp/x.sock")
+        // Nothing set: nothing to honour.
+        #expect(AutoFillTestOverride.value(isDebugBuild: true, xcTestLoaded: true, environment: [:]) == nil)
+    }
+
+    // MARK: - Audit token (finding: peer checks ran on a reusable pid)
+
+    @Test func auditTokenHexRoundTripsAndRejectsGarbage() {
+        let hex = String(repeating: "0a", count: 32)
+        #expect(PeerCodeSignature.auditToken(hex: hex) == Data(repeating: 0x0a, count: 32))
+        #expect(PeerCodeSignature.auditToken(hex: nil) == nil)
+        #expect(PeerCodeSignature.auditToken(hex: "0a") == nil)
+        #expect(PeerCodeSignature.auditToken(hex: String(repeating: "zz", count: 32)) == nil)
+    }
+
+    @Test func socketAuditTokenNamesThisProcessAndDrivesTheCheck() throws {
+        var fds: [Int32] = [0, 0]
+        #expect(socketpair(AF_UNIX, SOCK_STREAM, 0, &fds) == 0)
+        defer { close(fds[0]); close(fds[1]) }
+        let token = try #require(PeerCodeSignature.auditToken(socket: fds[0]))
+        #expect(token.count == 32)
+        // `audit_token_t.val[5]` is the pid.
+        let pid = token.withUnsafeBytes { $0.load(fromByteOffset: 20, as: UInt32.self) }
+        #expect(pid == UInt32(getpid()))
+        // The token resolves to a SecCode (this test runner), which is not our AutoFill provider.
+        let verdict = PeerCodeSignature().checkCredentialProvider(pid: pid, auditToken: token)
+        #expect(!verdict.verified)
+        #expect(!verdict.evidence.contains("would not inspect"), "\(verdict.evidence)")
+        // A token for a process that no longer matches (pid version bumped) is refused, where a
+        // pid lookup would have described whoever holds the pid now.
+        var stale = token
+        stale.withUnsafeMutableBytes { raw in
+            let v = raw.load(fromByteOffset: 28, as: UInt32.self)
+            raw.storeBytes(of: v &+ 1, toByteOffset: 28, as: UInt32.self)
+        }
+        let staleVerdict = PeerCodeSignature().checkCredentialProvider(pid: pid, auditToken: stale)
+        #expect(!staleVerdict.verified)
+        #expect(staleVerdict.evidence.contains("would not inspect"), "\(staleVerdict.evidence)")
     }
 
     @Test func identityKeysNeverCarryAValue() {

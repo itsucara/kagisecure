@@ -150,7 +150,8 @@ impl Listener {
                 .and_then(interprocess::local_socket::PeerCreds::pid)
                 .and_then(|p| u32::try_from(p).ok())
         });
-        let identity = HostIdentity::resolve_kind(self.kind, pid, euid);
+        let mut identity = HostIdentity::resolve_kind(self.kind, pid, euid);
+        identity.audit_token = kagisecure_ipc::kernel_peer::peer_audit_token(stream);
         let reader = {
             use interprocess::TryClone;
             Closing::new(TryClone::try_clone(stream)?)

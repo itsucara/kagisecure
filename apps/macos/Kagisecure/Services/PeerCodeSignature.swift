@@ -199,9 +199,21 @@ struct PeerCodeSignature: Sendable {
     ///
     /// Shared by all three checks below, so "the process exists, is inspectable, and its pages
     /// match its signature" is established once and worded once.
-    private func inspect(pid: UInt32) -> Inspection {
+    ///
+    /// When the kernel's **audit token** for the connection is known it is used instead of the
+    /// pid (ADR-0045, 2026-10-04 amendment): a token carries the pid *version*, so the lookup
+    /// fails if the process that connected has exited — a pid alone would describe whichever
+    /// process was handed that number next, which is the reuse race a same-user attacker could
+    /// otherwise try to win. The pid lookup remains only for peers no socket vouches for (the
+    /// browser and the "started by" program, found by walking process ancestry).
+    private func inspect(pid: UInt32, auditToken: Data? = nil) -> Inspection {
         var code: SecCode?
-        let attributes = [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary
+        let attributes: CFDictionary
+        if let auditToken, auditToken.count == Self.auditTokenSize {
+            attributes = [kSecGuestAttributeAudit: auditToken as NSData] as CFDictionary
+        } else {
+            attributes = [kSecGuestAttributePid: NSNumber(value: pid)] as CFDictionary
+        }
         let status = SecCodeCopyGuestWithAttributes(nil, attributes, [], &code)
         guard status == errSecSuccess, let code else {
             return .refused(
@@ -241,23 +253,56 @@ struct PeerCodeSignature: Sendable {
                 adhoc: ((info[kSecCodeInfoFlags as String] as? UInt32 ?? 0) & 2) != 0))
     }
 
+    /// `audit_token_t` is eight `unsigned int`s.
+    static let auditTokenSize = 32
+
+    /// The kernel audit token as it crosses the FFI — 64 hex digits, memory order — decoded back
+    /// into the bytes `kSecGuestAttributeAudit` takes. `nil` for anything else.
+    static func auditToken(hex: String?) -> Data? {
+        guard let hex, hex.count == auditTokenSize * 2 else { return nil }
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(auditTokenSize)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            bytes.append(byte)
+            index = next
+        }
+        return Data(bytes)
+    }
+
+    /// The audit token of the process on the other end of a local socket (`LOCAL_PEERTOKEN`).
+    static func auditToken(socket fd: Int32) -> Data? {
+        var token = audit_token_t()
+        var size = socklen_t(MemoryLayout<audit_token_t>.size)
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &size) == 0,
+            Int(size) == auditTokenSize
+        else { return nil }
+        return withUnsafeBytes(of: &token) { Data($0) }
+    }
+
     /// Check the process behind `pid` against the sidecar requirement.
-    func check(pid: UInt32?) -> PeerSignature {
-        checkOurs(pid: pid, isKnown: Self.isKnown, what: "a kagisecure sidecar")
+    func check(pid: UInt32?, auditToken: String? = nil) -> PeerSignature {
+        checkOurs(
+            pid: pid, auditToken: Self.auditToken(hex: auditToken), isKnown: Self.isKnown,
+            what: "a kagisecure sidecar")
     }
 
     /// Check the process behind `pid` against the native-messaging-host requirement (M6).
-    func checkHost(pid: UInt32?) -> PeerSignature {
-        checkOurs(pid: pid, isKnown: Self.isKnownHost, what: "a kagisecure native messaging host")
+    func checkHost(pid: UInt32?, auditToken: String? = nil) -> PeerSignature {
+        checkOurs(
+            pid: pid, auditToken: Self.auditToken(hex: auditToken), isKnown: Self.isKnownHost,
+            what: "a kagisecure native messaging host")
     }
 
     /// The shared body of the two checks above: one of ours, signed by us, not ad-hoc.
     private func checkOurs(
-        pid: UInt32?, isKnown: (String) -> Bool, what: String
+        pid: UInt32?, auditToken: Data? = nil, isKnown: (String) -> Bool, what: String
     ) -> PeerSignature {
         guard let pid else { return .noPeer }
         let info: SigningInfo
-        switch inspect(pid: pid) {
+        switch inspect(pid: pid, auditToken: auditToken) {
         case .signed(let value): info = value
         case .refused(let refusal): return refusal
         }
@@ -331,18 +376,19 @@ struct PeerCodeSignature: Sendable {
     /// the native messaging host are. That means a Developer-ID-signed build can report the Safari
     /// front end **verified** on both halves, which no Chromium build of ours can — there, our own
     /// native messaging host is the half that cannot be attributed (ADR-0024 §5).
-    func checkSafariExtension(pid: UInt32?) -> PeerSignature {
+    func checkSafariExtension(pid: UInt32?, auditToken: String? = nil) -> PeerSignature {
         checkOurs(
-            pid: pid,
+            pid: pid, auditToken: Self.auditToken(hex: auditToken),
             isKnown: { $0 == Self.safariExtensionIdentifier },
             what: "this app's Safari extension")
     }
 
     /// Check the process behind `pid` against the **AutoFill credential provider** requirement
-    /// (ADR-0045): our own `.appex`, signed by our own team, never ad-hoc.
-    func checkCredentialProvider(pid: UInt32?) -> PeerSignature {
+    /// (ADR-0045): our own `.appex`, signed by our own team, never ad-hoc. `auditToken` is the
+    /// socket's `LOCAL_PEERTOKEN`, which the check runs on whenever it is available.
+    func checkCredentialProvider(pid: UInt32?, auditToken: Data? = nil) -> PeerSignature {
         checkOurs(
-            pid: pid,
+            pid: pid, auditToken: auditToken,
             isKnown: { $0 == AutoFillChannel.providerBundleIdentifier },
             what: "this app's AutoFill credential provider")
     }
@@ -356,14 +402,19 @@ struct PeerCodeSignature: Sendable {
     /// On the Safari front end there is only **one** process: the app extension. Safari itself is
     /// never on the socket, so there is no second pid to inspect and the sheet says so rather than
     /// inventing a verdict about a process nobody looked at.
-    func checkFill(hostPid: UInt32?, browserPid: UInt32?, isAppExtension: Bool) -> FillSignature {
+    func checkFill(
+        hostPid: UInt32?, hostAuditToken: String? = nil, browserPid: UInt32?,
+        isAppExtension: Bool
+    ) -> FillSignature {
         if isAppExtension {
             return FillSignature(
-                peer: .appExtension, host: checkSafariExtension(pid: hostPid), browser: nil)
+                peer: .appExtension,
+                host: checkSafariExtension(pid: hostPid, auditToken: hostAuditToken),
+                browser: nil)
         }
         return FillSignature(
             peer: .nativeMessagingHost,
-            host: checkHost(pid: hostPid),
+            host: checkHost(pid: hostPid, auditToken: hostAuditToken),
             browser: browserPid.map { checkBrowser(pid: $0) })
     }
 
@@ -404,10 +455,11 @@ struct PeerCodeSignature: Sendable {
     /// Every verdict an agent fill's sheet shows: the agent's side and the browser's.
     func checkAgentFill(_ facts: AgentFillFactsView) -> AgentFillSignature {
         AgentFillSignature(
-            sidecar: check(pid: facts.sidecarPid),
+            sidecar: check(pid: facts.sidecarPid, auditToken: facts.sidecarAuditToken),
             startedBy: checkStartedBy(pid: facts.parentPid),
             browser: checkFill(
-                hostPid: facts.hostPid, browserPid: facts.browserPid,
+                hostPid: facts.hostPid, hostAuditToken: facts.hostAuditToken,
+                browserPid: facts.browserPid,
                 isAppExtension: facts.browserIsAppExtension))
     }
 
