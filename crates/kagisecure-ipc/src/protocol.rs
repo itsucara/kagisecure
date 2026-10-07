@@ -49,7 +49,18 @@ use kagisecure_core::proto::{
 ///   The sidecar, the app, the extension and the native-messaging host ship together.
 /// * 5 — storing a command's output (ADR-0049): [`Request::StoreCommandOutput`] and
 ///   [`Response::StoredCommandOutput`].
-pub const PROTOCOL_VERSION: u32 = 5;
+/// * 6 — auto-type into native apps (ADR-0050): [`Request::RequestType`], [`Response::Typed`],
+///   `NO_MATCHING_TARGET` and `TYPE_UNAVAILABLE`.
+pub const PROTOCOL_VERSION: u32 = 6;
+
+/// Longest bundle identifier `request_type` accepts as its target, in characters (ADR-0050 §1).
+pub const MAX_TYPE_BUNDLE_ID_CHARS: usize = 255;
+
+/// Longest window title `request_type` accepts as its target, in characters (ADR-0050 §1).
+pub const MAX_TYPE_WINDOW_TITLE_CHARS: usize = 256;
+
+/// Longest `request_type` reason, in characters (ADR-0050 §1). One line.
+pub const MAX_TYPE_REASON_CHARS: usize = 200;
 
 /// Longest `store_command_output` field label, in characters (ADR-0049 §1). One line, not empty.
 pub const MAX_STORED_FIELD_LABEL_CHARS: usize = 64;
@@ -276,6 +287,19 @@ pub enum ErrorCode {
     /// retrying cannot help until the user turns the switch on.
     #[serde(rename = "TEST_LOGINS_OFF")]
     TestLoginsOff,
+    /// `request_type` found the target it named not in front: another app is frontmost, its
+    /// signing team or window title differs, no text field has keyboard focus, a password's field
+    /// is not a secure text field, or focus moved while kagisecure typed (ADR-0050 §3). One code
+    /// for every one of those reasons, so it is not an oracle for which check failed. The message
+    /// says whether anything was typed before typing stopped.
+    #[serde(rename = "NO_MATCHING_TARGET")]
+    NoMatchingTarget,
+    /// `request_type` cannot type at all right now: this host has no app that types (the CLI
+    /// daemon, Windows), the user has not granted kagisecure the Accessibility permission, or
+    /// another app holds secure keyboard input (ADR-0050 §4). Nothing was typed; the message says
+    /// which, and retrying cannot help until it changes.
+    #[serde(rename = "TYPE_UNAVAILABLE")]
+    TypeUnavailable,
     /// A bug.
     #[serde(rename = "INTERNAL")]
     Internal,
@@ -305,6 +329,8 @@ impl ErrorCode {
             Self::UnattendedPaused => "UNATTENDED_PAUSED",
             Self::NotPopulated => "NOT_POPULATED",
             Self::TestLoginsOff => "TEST_LOGINS_OFF",
+            Self::NoMatchingTarget => "NO_MATCHING_TARGET",
+            Self::TypeUnavailable => "TYPE_UNAVAILABLE",
             Self::Internal => "INTERNAL",
         }
     }
@@ -452,6 +478,92 @@ pub fn agent_fill_fields_ok(fields: &[AgentFillField]) -> bool {
             || fields
                 .iter()
                 .all(|f| matches!(f, AgentFillField::NewPassword | AgentFillField::Username)))
+}
+
+/// A **name**, not a value: which of an item's fields `request_type` asks kagisecure to type into
+/// the focused field of a native app (ADR-0050). Nothing on any message here carries what is typed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeField {
+    /// The login's username.
+    Username,
+    /// The login's password, typed only into a secure text field.
+    Password,
+    /// A one-time code generated from the item's one-time-password field. Always on its own.
+    OneTimeCode,
+}
+
+impl TypeField {
+    /// The wire spelling, which is also the name `request_type`'s schema uses.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Username => "username",
+            Self::Password => "password",
+            Self::OneTimeCode => "one_time_code",
+        }
+    }
+}
+
+/// Whether `fields` is a combination `request_type` accepts (ADR-0050 §1): at least one field,
+/// none twice, and a one-time code only on its own — the same rule as `request_fill`'s, for the
+/// same reason (ADR-0036 §7.4). The order they are typed in is fixed: username, Tab, password.
+#[must_use]
+pub fn type_fields_ok(fields: &[TypeField]) -> bool {
+    let distinct: std::collections::BTreeSet<_> = fields.iter().collect();
+    !fields.is_empty()
+        && distinct.len() == fields.len()
+        && (!fields.contains(&TypeField::OneTimeCode) || fields.len() == 1)
+}
+
+/// The fields of `fields` in the order they are typed: username, then password; a one-time code
+/// alone.
+#[must_use]
+pub fn type_order(fields: &[TypeField]) -> Vec<TypeField> {
+    let mut ordered = fields.to_vec();
+    ordered.sort();
+    ordered.dedup();
+    ordered
+}
+
+/// The app `request_type` expects in front (ADR-0050 §1, §3). A claim the app checks right before
+/// it types, never trusted on its own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypeTarget {
+    /// The frontmost app's bundle identifier, e.g. `com.apple.Terminal`.
+    pub bundle_id: String,
+    /// The Apple Developer team that must have signed it, when the agent knows it: ten upper-case
+    /// letters and digits.
+    #[serde(default)]
+    pub team_id: Option<String>,
+    /// A substring the focused window's title must contain, when the agent wants one.
+    #[serde(default)]
+    pub window_title: Option<String>,
+}
+
+/// Whether `target` breaks none of `request_type`'s rules (ADR-0050 §1): a reverse-DNS bundle id
+/// of letters, digits, `.`, `-` and `_`; a team id of ten upper-case letters and digits; a window
+/// title on one line.
+#[must_use]
+pub fn type_target_ok(target: &TypeTarget) -> bool {
+    let bundle = &target.bundle_id;
+    let bundle_ok = !bundle.is_empty()
+        && bundle.chars().count() <= MAX_TYPE_BUNDLE_ID_CHARS
+        && bundle
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        && !bundle.starts_with('.')
+        && !bundle.ends_with('.');
+    let team_ok = target.team_id.as_deref().is_none_or(|t| {
+        t.len() == 10
+            && t.chars()
+                .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    });
+    let title_ok = target
+        .window_title
+        .as_deref()
+        .is_none_or(|t| !t.is_empty() && display_text_ok(t, MAX_TYPE_WINDOW_TITLE_CHARS, false));
+    bundle_ok && team_ok && title_ok
 }
 
 /// How a test login's password is generated (ADR-0048 §4): a length from a fixed menu, and two
@@ -748,6 +860,20 @@ pub enum Request {
         #[serde(default)]
         reason: Option<String>,
     },
+    /// Ask the user to let kagisecure type `fields` of an item into the focused field of the app
+    /// `target` names (ADR-0050). The reply is [`Response::Typed`] — which fields were typed,
+    /// never what.
+    RequestType {
+        /// The item, by the id `list_items` returned.
+        item_id: ItemId,
+        /// The fields to type. See [`type_fields_ok`].
+        fields: Vec<TypeField>,
+        /// The app the agent expects in front.
+        target: TypeTarget,
+        /// Why, for the sheet. One line.
+        #[serde(default)]
+        reason: Option<String>,
+    },
     /// Read the audit log, newest last.
     Audit {
         /// Maximum number of entries, taken from the end.
@@ -781,6 +907,7 @@ impl Request {
             Self::ListTestLogins { .. } => "list_test_logins",
             Self::TrashTestLogins { .. } => "trash_test_logins",
             Self::StoreCommandOutput { .. } => "store_command_output",
+            Self::RequestType { .. } => "request_type",
             Self::Audit { .. } => "audit",
             Self::ListLeases => "list_leases",
             Self::Lock => "lock",
@@ -1033,6 +1160,14 @@ pub enum Response {
         /// Whether standard error hit the cap.
         stderr_truncated: bool,
     },
+    /// `request_type` typed into the target app. Field **names** only: no member a value could
+    /// occupy.
+    Typed {
+        /// The fields typed, in the order they were typed.
+        fields_typed: Vec<TypeField>,
+        /// The bundle id of the app they were typed into.
+        bundle_id: String,
+    },
     /// Files were shredded and leases dropped.
     Revoked {
         /// Paths that were removed.
@@ -1124,6 +1259,8 @@ mod tests {
             (ErrorCode::UnattendedPaused, "UNATTENDED_PAUSED"),
             (ErrorCode::NotPopulated, "NOT_POPULATED"),
             (ErrorCode::TestLoginsOff, "TEST_LOGINS_OFF"),
+            (ErrorCode::NoMatchingTarget, "NO_MATCHING_TARGET"),
+            (ErrorCode::TypeUnavailable, "TYPE_UNAVAILABLE"),
             (ErrorCode::Internal, "INTERNAL"),
         ] {
             assert_eq!(code.as_str(), spelling);

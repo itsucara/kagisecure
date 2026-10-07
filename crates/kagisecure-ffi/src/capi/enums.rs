@@ -285,6 +285,12 @@ pub enum KgsApprovalAction {
     /// `store_command_output` on Windows before anything is asked, so a Windows host never
     /// receives this tag in practice. A host that does receive it denies it.
     StoreCommandOutput = 7,
+    /// An agent asks for a login to be typed into a native app (ADR-0050).
+    ///
+    /// Here only because the conversion from [`ApprovalAction`] is exhaustive. The agent refuses
+    /// `request_type` on Windows before anything is asked, so a Windows host never receives this
+    /// tag in practice. A host that does receive it denies it.
+    AutoType = 8,
 }
 tags!(
     KgsApprovalAction,
@@ -298,6 +304,7 @@ tags!(
         AgentFill,
         CreateTestLogin,
         StoreCommandOutput,
+        AutoType,
     }
 );
 

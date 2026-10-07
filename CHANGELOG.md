@@ -8,6 +8,24 @@ Versions before 1.0.0 may change the vault format. When they do, the change is l
 what it means for a vault written by an earlier build — see
 [docs/vault-format.md](docs/vault-format.md) §9 for the compatibility rules the format follows.
 
+## 0.4.0 — 2026-10-07
+
+New:
+
+- **`kagisecure-host`** ([ADR-0043](docs/decisions/0043-unattended-access-on-headless-hosts.md),
+  accepted for deploy keys): on a headless Linux host, releases a machine-vault credential to one
+  exact granted command, on its standard input, from a bundle signed on the Mac
+  (`kagisecure host-bundle owner-key` / `export`). See
+  [docs/unattended-credentials.md](docs/unattended-credentials.md) §5.
+- **Auto-type into native apps** ([ADR-0050](docs/decisions/0050-auto-type-into-native-apps.md)):
+  kagisecure types a login as keystrokes into the field focused in another app — from Quick
+  Access (⇧⏎), Item ▸ Type Login into Previous App (⇧⌘T), or an agent's `request_type`. Needs the
+  Accessibility permission (Settings ▸ Auto-type).
+
+Changed:
+
+- The IPC protocol is now version 6.
+
 ## 0.3.0 — 2026-10-07
 
 New:

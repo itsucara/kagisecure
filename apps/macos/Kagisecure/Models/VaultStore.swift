@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import SwiftUI
 
 import KagisecureFFI
 
@@ -537,6 +538,28 @@ final class VaultStore {
         }
     }
 
+    /// Item ▸ Type Login into Previous App (⇧⌘T, ADR-0050 §7): the selected item's username, Tab
+    /// and password, as keystrokes into the app that comes forward when kagisecure hides. One
+    /// presence prompt, which rides the grace window.
+    func autoTypeSelection() {
+        guard let item = selectedItem, let field = item.passwordField else { return }
+        notifyActivity()
+        Task { @MainActor in
+            let password: String? = await attemptReleaseValue {
+                let release = try await self.session.releaseField(
+                    itemId: item.id, fieldId: field.id, purpose: .autoType)
+                defer { release.close() }
+                return try release.value()
+            }
+            guard let password else { return }
+            var values: [(AutoTypeFieldView, String)] = []
+            if let username = item.username, !username.isEmpty { values.append((.username, username)) }
+            values.append((.password, password))
+            let outcome = await AutoTypeService.shared.typeIntoFrontmost(values)
+            if outcome != .typed { AutoTypeService.notifyFailure(outcome) }
+        }
+    }
+
     /// `attemptRelease`, for a release whose value the caller needs back — the edit sheet's
     /// "Show". `nil` when there is none (cancelled, locked, refused), having reported anything
     /// that is an error.
@@ -586,6 +609,12 @@ final class VaultStore {
     /// Whether the first logical vault is shared with agents (threat-model M-9).
     var vaultAgentVisible: Bool {
         session.vaults().first?.agentVisible ?? false
+    }
+
+    /// One binding for every "Share this vault" switch (main window and Settings), so they cannot
+    /// disagree: both read and write the same vault state.
+    var vaultAgentVisibleBinding: Binding<Bool> {
+        Binding(get: { self.vaultAgentVisible }, set: { self.setVaultAgentVisible($0) })
     }
 
     func setVaultAgentVisible(_ visible: Bool) {

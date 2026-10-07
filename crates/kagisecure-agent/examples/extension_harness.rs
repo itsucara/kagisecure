@@ -331,6 +331,7 @@ fn main() {
                 queue: Some(Arc::clone(&queue)),
                 agent_fill: Some(Arc::clone(&broker)),
                 test_logins: test_logins.then(|| Arc::new(TestLoginBroker::new())),
+                auto_type: None,
             },
         )
         .expect("MCP agent")

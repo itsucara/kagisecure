@@ -562,6 +562,16 @@ fn every_request(shared: &Shared) -> Vec<Request> {
             stdin_environment: None,
             reason: None,
         },
+        Request::RequestType {
+            item_id: shared.item_id,
+            fields: vec![kagisecure_ipc::protocol::TypeField::Password],
+            target: kagisecure_ipc::protocol::TypeTarget {
+                bundle_id: "com.apple.Terminal".to_owned(),
+                team_id: None,
+                window_title: None,
+            },
+            reason: None,
+        },
         Request::Audit {
             limit: 10,
             verify: false,
@@ -591,6 +601,7 @@ fn every_request(shared: &Shared) -> Vec<Request> {
             | Request::ListTestLogins { .. }
             | Request::TrashTestLogins { .. }
             | Request::StoreCommandOutput { .. }
+            | Request::RequestType { .. }
             | Request::Audit { .. }
             | Request::ListLeases
             | Request::Lock => {}

@@ -50,9 +50,10 @@ import { recordText } from "../../lib/artifacts.mjs";
 const PASSWORD = "correct horse battery staple";
 
 /**
- * The fourteen tools, and no fifteenth. `docs/mcp-server.md` §2 and the pinned list in
+ * The fifteen tools, and no sixteenth. `docs/mcp-server.md` §2 and the pinned list in
  * `crates/kagisecure-mcp/src/server.rs` are what this is held to. ADR-0048 added the three
- * `*_test_login*` tools; ADR-0049 added `store_command_output`.
+ * `*_test_login*` tools; ADR-0049 added `store_command_output`; ADR-0050 added
+ * `request_type`.
  */
 const EXPECTED_TOOLS = [
   "add_variables",
@@ -64,6 +65,7 @@ const EXPECTED_TOOLS = [
   "list_test_logins",
   "list_vaults",
   "request_fill",
+  "request_type",
   "revoke_env_file",
   "run_with_env",
   "store_command_output",
@@ -203,7 +205,7 @@ async function fixture(
 // The tool surface
 // -------------------------------------------------------------------------------------------
 
-test("the sidecar exposes exactly fourteen tools, and none of them can take a value", async (t) => {
+test("the sidecar exposes exactly fifteen tools, and none of them can take a value", async (t) => {
   const fx = await fixture(t, { label: "tools" });
 
   const tools = await fx.sidecar.tools();
@@ -211,7 +213,7 @@ test("the sidecar exposes exactly fourteen tools, and none of them can take a va
   assert.deepEqual(
     names,
     EXPECTED_TOOLS,
-    "the tool surface is a fixed list; a fourteenth tool is a design change, not a patch",
+    "the tool surface is a fixed list; a sixteenth tool is a design change, not a patch",
   );
 
   // The invariant ADR-0002 exists for: there is no property anywhere in any schema that a secret
@@ -254,7 +256,7 @@ test("the sidecar exposes exactly fourteen tools, and none of them can take a va
     t.name,
     "tools.txt",
     tools.map((tool) => `${tool.name}\n  ${tool.description}`).join("\n\n"),
-    "the fourteen tools as the model sees them",
+    "the fifteen tools as the model sees them",
   );
   fx.assertNoLeak(schemas);
 });

@@ -198,7 +198,9 @@ final class AgentService {
             // ADR-0048 §9: a run bound only to sealed test logins, inside the window.
             return presenceGraceCovers(request)
         }
-        guard request.action == .agentFill, !agentFillRequiresSheet() else { return false }
+        // An auto-type rides the window exactly as an agent fill does (ADR-0050 §2).
+        guard request.action == .agentFill || request.action == .autoType, !agentFillRequiresSheet()
+        else { return false }
         return presenceGraceCovers(request)
     }
 
@@ -214,7 +216,8 @@ final class AgentService {
     /// person learns which site, which item and which agent, and a bare Touch ID prompt for it
     /// would be a fingerprint on a question nobody read.
     static func needsSheet(_ request: ApprovalRequestView) -> Bool {
-        request.action == .agentFill || request.action == .storeCommandOutput || !request.presenceOnly
+        request.action == .agentFill || request.action == .storeCommandOutput
+            || request.action == .autoType || !request.presenceOnly
     }
 
     /// The presence prompt that is on screen, if one is.
@@ -294,7 +297,7 @@ final class AgentService {
                             decision: .deny,
                             verification: ClientVerificationView(
                                 verified: false,
-                                evidence: "the vault locked before the request reached a human"))
+                                evidence: String(localized: "the vault locked before the request reached a human")))
                     }
                     return
                 }
@@ -334,6 +337,7 @@ final class AgentService {
         presence.cancelInFlight()
         agentStop()
         queue.removeAll()
+        syncApprovalNotice()
         signatures.removeAll()
         fillSignatures.removeAll()
         agentFillSignatures.removeAll()
@@ -386,6 +390,7 @@ final class AgentService {
             adoptSignature(for: request)
             confirmPresenceIfNeeded()
         }
+        syncApprovalNotice()
         return true
     }
 
@@ -395,7 +400,14 @@ final class AgentService {
     /// and Kagisecure's own window — raised for the sheet — is what would otherwise still be in
     /// front of it. Everything else grants no browser-facing thing that visibility could gate.
     static func returnsFocusOnApproval(_ request: ApprovalRequestView) -> Bool {
-        request.action == .agentFill || request.action == .fillCredential
+        // An auto-type types into whatever is frontmost, so the app it names has to be in front
+        // again before the job arrives (ADR-0050 §3).
+        request.action == .agentFill || request.action == .fillCredential || request.action == .autoType
+    }
+
+    /// The running app with `bundleId`, for an auto-type's target. Injected in tests.
+    var runningApplicationWithBundleId: (String) -> FocusTarget? = {
+        NSRunningApplication.runningApplications(withBundleIdentifier: $0).first
     }
 
     /// Hand activation back to the browser a fill is going into, so it lands on a visible tab (a
@@ -415,8 +427,13 @@ final class AgentService {
     private func returnFocusBeforeDelivery(for request: ApprovalRequestView) {
         guard Self.returnsFocusOnApproval(request) else { return }
         let captured = frontmostBeforeFill.removeValue(forKey: request.id)
-        let target =
-            request.browserPid.flatMap { Int32(exactly: $0) }.flatMap(runningApplication) ?? captured
+        let named: FocusTarget? =
+            if let bundleId = request.autoType?.bundleId {
+                runningApplicationWithBundleId(bundleId)
+            } else {
+                request.browserPid.flatMap { Int32(exactly: $0) }.flatMap(runningApplication)
+            }
+        let target = named ?? captured
         guard let target else {
             hideSelf()
             return
@@ -474,7 +491,7 @@ final class AgentService {
             // to name, and the verdict says exactly that.
             currentFillSignature = nil
             currentSignature = PeerSignature(
-                verified: false, evidence: "the agent fill arrived without its facts")
+                verified: false, evidence: String(localized: "the agent fill arrived without its facts"))
         } else if request.action == .fillCredential {
             let fill = signer.checkFill(
                 hostPid: request.clientPid, hostAuditToken: request.clientAuditToken,
@@ -500,11 +517,51 @@ final class AgentService {
 
     /// Point `currentSignature`/`currentFillSignature` at whatever is now on screen.
     private func refreshHead() {
+        defer { syncApprovalNotice() }
         currentSignature = nil
         currentFillSignature = nil
         currentAgentFillSignature = nil
         if let head = queue.first { adoptSignature(for: head) }
         confirmPresenceIfNeeded()
+    }
+
+    // MARK: - Approval notice
+
+    /// Notifies the owner (and brings the app forward) for each approval sheet, and withdraws the
+    /// notice when that sheet is no longer the one on screen — answered, timed out, or locked away.
+    /// Sheet-less requests (presence-only fills, grace-window grants) never reach this: it keys on
+    /// `sheetRequest`.
+    /// Inert until `AppModel` wires the real notifier and window handling in, so a unit test that
+    /// enqueues a request never touches the notification center or activates the test host.
+    var approvalNotifier: AgentFillNotifier = InertApprovalNotifier()
+
+    /// Activates the app and makes the approval sheet's window key.
+    var bringApprovalForward: () -> Void = {}
+
+    static func activateAndFocusSheet() {
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async {
+            let window = NSApp.windows.first { $0.attachedSheet != nil } ?? NSApp.mainWindow
+            (window?.attachedSheet ?? window)?.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    private var notifiedApprovalId: String?
+
+    private func syncApprovalNotice() {
+        let sheetId = sheetRequest?.id
+        if let old = notifiedApprovalId, old != sheetId {
+            approvalNotifier.withdrawApproval(id: old)
+            notifiedApprovalId = nil
+        }
+        guard let request = sheetRequest, notifiedApprovalId != request.id else { return }
+        notifiedApprovalId = request.id
+        // Names only, never a value: the same one-line sentence the sheet leads with.
+        approvalNotifier.postApproval(
+            id: request.id,
+            title: String(localized: "Approval needed"),
+            body: ApprovalSheet.sentence(for: request))
+        bringApprovalForward()
     }
 
     // MARK: - Presence prompts
@@ -560,7 +617,7 @@ final class AgentService {
     /// Retire anything whose 60-second window closed, answering it on the way out. The wire side
     /// has normally answered `APPROVAL_TIMEOUT` already; leaving the sheet up would invite an
     /// answer nobody is listening for.
-    private func dropExpired() {
+    func dropExpired() {
         let cutoff = UInt64(now.timeIntervalSince1970)
         let expired = queue.filter { $0.expiresAt <= cutoff }
         guard !expired.isEmpty else { return }
@@ -573,7 +630,7 @@ final class AgentService {
                 request.id, .deny,
                 ClientVerificationView(
                     verified: false,
-                    evidence: "the request expired before it was answered"))
+                    evidence: String(localized: "the request expired before it was answered")))
             forget(request.id)
         }
         queue.removeAll { $0.expiresAt <= cutoff }
@@ -600,9 +657,10 @@ final class AgentService {
     ///
     /// Rust keys the block on the program the kernel says started the sidecar, never on the name
     /// the agent reported. On any request but an agent fill it is a plain `.deny` — the button
-    /// only exists on the agent-fill sheet, and Rust would treat it as one anyway.
+    /// only exists on the agent-fill and auto-type sheets, and Rust would treat it as one anyway.
     func denyAndBlock(_ request: ApprovalRequestView) {
-        let decision: ApprovalDecision = request.action == .agentFill ? .denyAndBlock : .deny
+        let decision: ApprovalDecision =
+            request.action == .agentFill || request.action == .autoType ? .denyAndBlock : .deny
         _ = resolver(request.id, decision, verification(for: request))
         advance(resolved: request.id)
         // The new block shows in Agent access now rather than on the next tick.
@@ -636,7 +694,8 @@ final class AgentService {
         // one that arrives here anyway stays a denial rather than becoming an allow.
         let decision: ApprovalDecision =
             switch decision {
-            case .allowOnce, .allowSession: request.action == .agentFill ? .allowOnce : decision
+            case .allowOnce, .allowSession:
+                request.action == .agentFill || request.action == .autoType ? .allowOnce : decision
             case .deny, .denyAndBlock: decision
             }
         return await allow(request, decision: decision, ticket: ticket)
@@ -680,7 +739,7 @@ final class AgentService {
     /// actually established about the caller rather than what the sheet happened to show.
     private func verification(for request: ApprovalRequestView) -> ClientVerificationView {
         guard let signature = signatures[request.id] else {
-            return ClientVerificationView(verified: false, evidence: "code signature not checked")
+            return ClientVerificationView(verified: false, evidence: String(localized: "code signature not checked"))
         }
         return ClientVerificationView(
             verified: signature.verified, evidence: signature.evidence)
@@ -737,7 +796,7 @@ final class AgentService {
                 ? String(localized: "approve writing \(request.variables.count) variable to a .env file")
                 : String(localized: "approve writing \(request.variables.count) variables to a .env file")
         case .runWithEnv where request.stdinDelivery:
-            "approve passing \(request.variables.count) value\(request.variables.count == 1 ? "" : "s") from \(ApprovalSheet.safe(request.environmentName ?? "an environment")) to \(ApprovalSheet.safe(request.command.first.map { ($0 as NSString).lastPathComponent } ?? "a command")) on its standard input, once"
+            stdinReason(for: request)
         case .runWithEnv:
             String(localized: "approve running \(ApprovalSheet.safe(request.command.first ?? String(localized: "a command"))) with secrets in its environment")
         case .createEnvironment:
@@ -754,11 +813,23 @@ final class AgentService {
         case .agentFill:
             agentFillReason(for: request)
         case .storeCommandOutput:
-            "store what \(ApprovalSheet.safe(request.command.first.map { ($0 as NSString).lastPathComponent } ?? "a command")) prints as a secret in \(StoreCommandOutputFactsBlock.leadTarget(request.storeOutput)). Continue only if you asked an agent to"
+            String(localized: "store what \(ApprovalSheet.safe(request.command.first.map { ($0 as NSString).lastPathComponent } ?? String(localized: "a command"))) prints as a secret in \(StoreCommandOutputFactsBlock.leadTarget(request.storeOutput)). Continue only if you asked an agent to")
+        case .autoType:
+            AutoTypeFactsBlock.reason(for: request)
         case .createTestLogin:
             // The site first, as the sheet leads with it; the agent's name is not in it.
-            "let an agent create a test login for \(ApprovalSheet.safe(request.testLogin.map(TestLoginFactsBlock.leadDomain) ?? String(localized: "a site"), limit: 120)). Continue only if you asked an agent to"
+            String(localized: "let an agent create a test login for \(ApprovalSheet.safe(request.testLogin.map(TestLoginFactsBlock.leadDomain) ?? String(localized: "a site"), limit: 120)). Continue only if you asked an agent to")
         }
+    }
+
+    private static func stdinReason(for request: ApprovalRequestView) -> String {
+        let count = request.variables.count
+        let environment = ApprovalSheet.safe(request.environmentName ?? String(localized: "an environment"))
+        let command = ApprovalSheet.safe(
+            request.command.first.map { ($0 as NSString).lastPathComponent } ?? String(localized: "a command"))
+        return count == 1
+            ? String(localized: "approve passing \(count) value from \(environment) to \(command) on its standard input, once")
+            : String(localized: "approve passing \(count) values from \(environment) to \(command) on its standard input, once")
     }
 
     /// The sentence above an agent fill's Touch ID prompt (ADR-0036 §5, §7.3, §7.4).

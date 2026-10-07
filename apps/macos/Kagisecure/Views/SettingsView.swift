@@ -104,7 +104,9 @@ struct SettingsView: View {
             detail(selection.wrappedValue ?? .general)
                 .navigationTitle(selection.wrappedValue?.title ?? "General")
         }
-        .frame(minWidth: 760, idealWidth: 800, minHeight: 520, idealHeight: 600)
+        .frame(
+            minWidth: 760, idealWidth: 800, maxWidth: .infinity,
+            minHeight: 520, idealHeight: 600, maxHeight: .infinity)
     }
 
     @ViewBuilder
@@ -254,7 +256,7 @@ struct StatusBadge: View {
 }
 
 /// A footnote under a group of rows.
-private struct Caption: View {
+struct Caption: View {
     let text: LocalizedStringKey
     init(_ text: LocalizedStringKey) { self.text = text }
 
@@ -779,6 +781,20 @@ private struct AgentSettings: View {
                 } label: {
                     Label("Agent connection (MCP)", systemImage: "point.3.connected.trianglepath.dotted")
                 }
+                if let store = model.store {
+                    Toggle(isOn: store.vaultAgentVisibleBinding) {
+                        Text("Share this vault")
+                        Text("Agents see titles and field names only, never values. Nothing in a vault that is not shared is reachable.")
+                    }
+                    .accessibilityIdentifier("ks.settings.shareVault")
+                } else {
+                    Toggle(isOn: .constant(false)) {
+                        Text("Share this vault")
+                        Text("Unlock the vault to change this.")
+                    }
+                    .disabled(true)
+                    .accessibilityIdentifier("ks.settings.shareVault")
+                }
                 MainWindowLink(title: "Set up your agent…", symbol: "sparkles", selection: .agentSetup)
             } header: {
                 Text("Connection")
@@ -820,6 +836,8 @@ private struct AgentSettings: View {
                     "An agent that can run script in that page could still read what was typed. Blocked agents and recent notices are in Environments."
                 )
             }
+
+            AutoTypeSettingsSection()
 
             if model.store != nil {
                 AgentTestLoginsSection()

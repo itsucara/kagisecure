@@ -148,6 +148,7 @@ pub fn run(path: &Path, args: &RunArgs, input: &mut SecretInput) -> Result<u8> {
         // The terminal's own process group, so Ctrl-C and a closed window reach the child as they
         // would a command typed at the prompt — see `RunRequest::new_process_group`.
         new_process_group: false,
+        run_as: None,
     };
 
     // Step 2 — act. The lock is already released.

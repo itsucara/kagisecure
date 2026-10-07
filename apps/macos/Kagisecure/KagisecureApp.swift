@@ -8,13 +8,16 @@ import SwiftUI
 /// itself owns nothing but the scenes.
 @main
 struct KagisecureApp: App {
-    @State private var model = AppModel()
+    @State private var model: AppModel
     /// Sparkle (ADR-0044). Started here, before any window: an old build must be able to update
     /// itself even when nothing else in it works.
     @State private var updater: AppUpdater
 
     init() {
+        let model = AppModel()
+        _model = State(initialValue: model)
         let updater = AppUpdater()
+        updater.onWillPresentUpdateUI = { [weak model] in model?.quickAccess.close() }
         updater.start()
         _updater = State(initialValue: updater)
     }
@@ -36,6 +39,8 @@ struct KagisecureApp: App {
                 .environment(model)
                 .environment(updater)
         }
+        // Content declares a minimum and no maximum, so the window can be resized larger.
+        .windowResizability(.contentMinSize)
 
         // The menu-bar status item (ui-spec.md §6.3). Minimal on purpose: lock state, Quick
         // Access, how many agents are waiting on you, how much is granted right now, and one
@@ -239,6 +244,10 @@ struct KagisecureCommands: Commands {
             // shown (ADR-0038); "password" is `ItemView.passwordField`, designated by id.
             Button("Copy Password") { model.store?.copyPasswordForShortcut() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(model.store?.selectedItem?.passwordField == nil)
+            // ADR-0050 §7: type the selected login into the app used before kagisecure.
+            Button("Type Login into Previous App") { model.store?.autoTypeSelection() }
+                .keyboardShortcut("t", modifiers: [.command, .shift])
                 .disabled(model.store?.selectedItem?.passwordField == nil)
             Divider()
             // The list's selection — several items, or the one shown (ADR-0007 amendment

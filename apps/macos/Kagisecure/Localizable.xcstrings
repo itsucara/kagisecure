@@ -1491,6 +1491,16 @@
         }
       }
     },
+    "Approval needed": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "承認が必要です"
+          }
+        }
+      }
+    },
     "Allow once": {
       "localizations": {
         "ja": {
@@ -9030,6 +9040,106 @@
         }
       }
     },
+    "Agents see titles and field names only, never values. Nothing in a vault that is not shared is reachable.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントに見えるのはタイトルとフィールド名だけで、値は見えません。共有していない保管庫の中身には一切アクセスできません。"
+          }
+        }
+      }
+    },
+    "Unlock the vault to change this.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "変更するには保管庫のロックを解除してください。"
+          }
+        }
+      }
+    },
+    "approve passing %lld value from %@ to %@ on its standard input, once": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@ から %3$@ の標準入力へ、%1$lld 個の値を一度だけ渡すことを承認します"
+          }
+        }
+      }
+    },
+    "approve passing %lld values from %@ to %@ on its standard input, once": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%2$@ から %3$@ の標準入力へ、%1$lld 個の値を一度だけ渡すことを承認します"
+          }
+        }
+      }
+    },
+    "the vault locked before the request reached a human": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リクエストが人に届く前に保管庫がロックされました"
+          }
+        }
+      }
+    },
+    "the agent fill arrived without its facts": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントの入力リクエストに詳細情報が付いていませんでした"
+          }
+        }
+      }
+    },
+    "the request expired before it was answered": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "リクエストは応答される前に期限切れになりました"
+          }
+        }
+      }
+    },
+    "code signature not checked": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コード署名は確認していません"
+          }
+        }
+      }
+    },
+    "This passes %@ to this one run of the command. The next run asks again.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%@ をこのコマンドの今回の実行にだけ渡します。次の実行では再度確認します。"
+          }
+        }
+      }
+    },
+    "The values are written to this command's standard input, once, and are not placed in its environment or arguments. Allow it only if this is the command you expect: it can do anything with what it reads.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "値はこのコマンドの標準入力に一度だけ書き込まれ、環境変数や引数には入りません。想定どおりのコマンドの場合のみ許可してください。コマンドは読み取った内容を何にでも使えます。"
+          }
+        }
+      }
+    },
     "approve writing %lld variable to a .env file": {
       "localizations": {
         "ja": {
@@ -10833,6 +10943,596 @@
           "stringUnit": {
             "state": "translated",
             "value": "ロック解除後、まだ接続されていないブラウザへの接続を提案します。提案は起動ごとに最大1回で、「あとで」を選ぶと1週間は表示しません。"
+          }
+        }
+      }
+    },
+    "Agent test logins": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェント用テストログイン"
+          }
+        }
+      }
+    },
+    "Let agents create test logins": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントによるテストログインの作成を許可"
+          }
+        }
+      }
+    },
+    "kagisecure generates and keeps the password; the agent never receives it.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "パスワードは kagisecure が生成して保管し、エージェントには渡されません。"
+          }
+        }
+      }
+    },
+    "localhost, *.localhost and *.test are always allowed": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "localhost、*.localhost、*.test は常に許可されます"
+          }
+        }
+      }
+    },
+    "Allowed without a sheet": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "確認シートなしで許可"
+          }
+        }
+      }
+    },
+    "Add a domain, e.g. example.com": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ドメインを追加（例: example.com）"
+          }
+        }
+      }
+    },
+    "Add…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "追加…"
+          }
+        }
+      }
+    },
+    "kagisecure never returns the password through any tool, so a well-behaved agent keeps it out of its transcript. But the agent types it into a page it drives, or pipes it to a command it chose, and the app under test receives it: an agent that runs script in that page, chooses that command, or controls that app can read it. That is accepted because the value is random, protects only a test account on a site you allowed, and is never anyone's real password.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kagisecure はどのツールを通じてもパスワードを返さないため、適切に動作するエージェントはパスワードを会話の記録に残しません。ただしエージェントは、操作中のページにパスワードを入力するか、自分で選んだコマンドに渡し、テスト対象のアプリがそれを受け取ります。そのページでスクリプトを実行するエージェント、そのコマンドを選んだエージェント、そのアプリを制御するエージェントは、パスワードを読み取れます。これは、値がランダムで、許可したサイト上のテストアカウントだけを守るものであり、誰かの本物のパスワードではないため、許容しています。"
+          }
+        }
+      }
+    },
+    "Username": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ユーザ名"
+          }
+        }
+      }
+    },
+    "Purpose, as written by the agent": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "目的（エージェントの記述）"
+          }
+        }
+      }
+    },
+    "Reason, as written by the agent": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "理由（エージェントの記述）"
+          }
+        }
+      }
+    },
+    "Store in": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保存先"
+          }
+        }
+      }
+    },
+    "Time limit": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "制限時間"
+          }
+        }
+      }
+    },
+    "Not encrypted. This test login would be saved for an http site.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "暗号化されていません。このテストログインは http のサイト用に保存されます。"
+          }
+        }
+      }
+    },
+    "This name mixes writing systems, or has a part that does not decode. That is how one site's name is made to look like another's.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この名前には複数の文字体系が混在しているか、デコードできない部分があります。これは、あるサイトの名前を別のサイトに見せかける手口です。"
+          }
+        }
+      }
+    },
+    "You already have a login for this domain: “%@”. A test login here is a different account.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このドメインには既にログイン「%@」があります。ここでのテストログインは別のアカウントです。"
+          }
+        }
+      }
+    },
+    "Generated by kagisecure: %@. The agent never receives it.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kagisecure が生成: %@。エージェントには渡されません。"
+          }
+        }
+      }
+    },
+    "an unknown site": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "不明なサイト"
+          }
+        }
+      }
+    },
+    "a site": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "サイト"
+          }
+        }
+      }
+    },
+    "%@ and %lld more": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ ほか %2$lld 件"
+          }
+        }
+      }
+    },
+    "%@ wants to create a test login for %@": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ が %2$@ のテストログインを作成しようとしています"
+          }
+        }
+      }
+    },
+    "This saves a new login in the Agent test logins vault with a password kagisecure generates. The agent never receives the password, and each create here asks for Touch ID.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「エージェント用テストログイン」保管庫に、kagisecure が生成したパスワードで新しいログインを保存します。エージェントにパスワードは渡されず、ここでの作成のたびに Touch ID を求めます。"
+          }
+        }
+      }
+    },
+    "%@ wants to run %@ and store its output in “%@”": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ が %2$@ を実行し、その出力を「%3$@」に保存しようとしています"
+          }
+        }
+      }
+    },
+    "This runs the command once and stores what it prints as a secret. The agent never receives the output, and each run asks for Touch ID.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "コマンドを 1 回実行し、その出力をシークレットとして保存します。エージェントに出力は渡されず、実行のたびに Touch ID を求めます。"
+          }
+        }
+      }
+    },
+    "What this command prints becomes a stored secret. The agent will not see it.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このコマンドの出力は保存されるシークレットになります。エージェントには見えません。"
+          }
+        }
+      }
+    },
+    "New item “%@” (%@) in vault “%@”": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保管庫「%3$@」の新規項目「%1$@」（%2$@）"
+          }
+        }
+      }
+    },
+    "Existing item “%@” in vault “%@”": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "保管庫「%2$@」の既存項目「%1$@」"
+          }
+        }
+      }
+    },
+    "“%@” (new, concealed)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「%@」（新規・非表示）"
+          }
+        }
+      }
+    },
+    "“%@” (existing, empty — will be filled)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「%@」（既存・空 — 入力されます）"
+          }
+        }
+      }
+    },
+    "“%@” (new, concealed — will be added)": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "「%@」（新規・非表示 — 追加されます）"
+          }
+        }
+      }
+    },
+    "1 second": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "1 秒"
+          }
+        }
+      }
+    },
+    "let agents create test logins": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントによるテストログインの作成を許可"
+          }
+        }
+      }
+    },
+    "let agents create test logins for %@ without asking": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントが %@ のテストログインを確認なしで作成することを許可"
+          }
+        }
+      }
+    },
+    "Agent test login created": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントがテストログインを作成しました"
+          }
+        }
+      }
+    },
+    "%@ created test login “%@” for %@": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ が %3$@ のテストログイン「%2$@」を作成しました"
+          }
+        }
+      }
+    },
+    "1 test login created by agents": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントが作成したテストログイン 1 件"
+          }
+        }
+      }
+    },
+    "%lld test logins created by agents": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントが作成したテストログイン %lld 件"
+          }
+        }
+      }
+    },
+    ", %lld test login(s) created by agents": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "、エージェントが作成したテストログイン %lld 件"
+          }
+        }
+      }
+    },
+    "store what %@ prints as a secret in %@. Continue only if you asked an agent to": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ の出力をシークレットとして %2$@ に保存します。エージェントに依頼した場合にのみ続行してください"
+          }
+        }
+      }
+    },
+    "let an agent create a test login for %@. Continue only if you asked an agent to": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントが %@ のテストログインを作成することを許可します。エージェントに依頼した場合にのみ続行してください"
+          }
+        }
+      }
+    },
+    "kagisecure will type this into the app named here, right where its keyboard focus is. That app receives the value, and an agent that can read that app can read it too.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kagisecure はここに示したアプリの、キーボードフォーカスがある場所へこれを入力します。値はそのアプリに渡り、そのアプリを読み取れるエージェントも読み取れます。"
+          }
+        }
+      }
+    },
+    "This types the login once, only if this app is in front with a text field focused. The agent receives only which fields were typed.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "このアプリが前面にあり、テキストフィールドにフォーカスがある場合に限り、ログインを一度だけ入力します。エージェントに伝わるのは、どの項目を入力したかだけです。"
+          }
+        }
+      }
+    },
+    "an app": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アプリ"
+          }
+        }
+      }
+    },
+    "A one-time code": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワンタイムコード"
+          }
+        }
+      }
+    },
+    "Username, Tab, password": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ユーザ名、Tab、パスワード"
+          }
+        }
+      }
+    },
+    "Types": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "入力内容"
+          }
+        }
+      }
+    },
+    "Signed by team": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "署名チーム"
+          }
+        }
+      }
+    },
+    "Window title contains": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ウインドウタイトルに含む文字列"
+          }
+        }
+      }
+    },
+    "%@ wants kagisecure to type “%@” into %@": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%1$@ が「%2$@」を %3$@ に入力するよう kagisecure に求めています"
+          }
+        }
+      }
+    },
+    "let an agent type “%@” into %@. Continue only if you asked an agent to sign in there": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントに「%1$@」を %2$@ へ入力させます。そこでのサインインをエージェントに頼んだ場合のみ続けてください"
+          }
+        }
+      }
+    },
+    "Deny and block this agent": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "拒否してこのエージェントをブロック"
+          }
+        }
+      }
+    },
+    "Type Login into Previous App": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "直前のアプリにログインを入力"
+          }
+        }
+      }
+    },
+    "Accessibility permission granted": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アクセシビリティの許可があります"
+          }
+        }
+      }
+    },
+    "Accessibility permission needed": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "アクセシビリティの許可が必要です"
+          }
+        }
+      }
+    },
+    "Open System Settings…": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "システム設定を開く…"
+          }
+        }
+      }
+    },
+    "Let agents ask kagisecure to type logins": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "エージェントがログインの入力を依頼できるようにする"
+          }
+        }
+      }
+    },
+    "Each request rides the confirmation period like an agent fill; outside it you approve with Touch ID.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "各依頼はエージェントの自動入力と同じく確認済み期間内なら承認不要で、期間外は Touch ID で承認します。"
+          }
+        }
+      }
+    },
+    "Auto-type": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "自動タイプ"
+          }
+        }
+      }
+    },
+    "kagisecure types a login as keystrokes into the field focused in another app, for apps its browser extension cannot reach. macOS requires the Accessibility permission for that. The app you type into receives the value.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "kagisecure は、ブラウザ拡張機能が届かないアプリ向けに、別のアプリでフォーカスされているフィールドへログインをキー入力として打ち込みます。これには macOS のアクセシビリティの許可が必要です。入力先のアプリは値を受け取ります。"
           }
         }
       }

@@ -6,9 +6,9 @@ such a credential belongs, what kind of credential to use, and what kagisecure o
 that have to run on your Mac. The design is
 [ADR-0042](decisions/0042-unattended-agent-access.md) (accepted for macOS on 2026-09-27).
 
-> **Status.** Built on macOS (ADR-0042 Phases 1 to 3): the machine vault, the engine that runs
-> jobs, and the app's screens, under Agent access → Unattended jobs. Unattended sign-ins are not
-> built yet (Phase 5).
+> **Status.** Built on macOS (ADR-0042 Phases 0 to 5): the machine vault, the engine that runs
+> jobs, the app's screens under Agent access → Unattended jobs, shared-vault copies, and unattended
+> sign-ins (`request_fill` from a run, in a headless run browser, under a login grant).
 
 ## 1. First choice: keep it off this Mac
 
@@ -17,10 +17,9 @@ If the job does not have to run on this Mac, do not bring its credential here.
 - **A job on a CI service or a hosted platform** should use that platform's own secret store —
   or, better, its **workload identity**: a short-lived token the platform mints for the job,
   which the target service trusts through federation. Nothing is stored anywhere to be stolen.
-- **A build server, a CI runner or another headless host** is not covered by kagisecure yet.
-  Unattended use on such hosts is proposed separately
-  ([ADR-0043](decisions/0043-unattended-access-on-headless-hosts.md)); until it is accepted, use
-  the platform's store or workload identity there.
+- **A CI runner** is not covered by kagisecure: use the platform's store or workload identity.
+- **A headless Linux host you run yourself** (a build box, a home server) can get a deploy key or
+  similar credential from kagisecure for one exact command: see §5.
 
 kagisecure gives nothing up this way, and the credential never touches this Mac.
 
@@ -135,3 +134,92 @@ In more detail:
 
 The full list of what this weakens is in [threat-model.md](threat-model.md) (W-23 to W-29, and
 "Unattended jobs: limits of the convenience-first choices").
+
+## 5. Headless hosts: `kagisecure-host`
+
+A host with no person and no app — a home server, a build box — runs `kagisecure-host`
+([ADR-0043](decisions/0043-unattended-access-on-headless-hosts.md), accepted 2026-10-07 for this
+use). It holds no personal vault and never asks anyone anything: everything it releases comes from
+a **bundle** you sign on your Mac, and it releases a value only to start one exact command you
+granted, writing the value to that command's standard input.
+
+**Built for:** a deploy script that reads its SSH key from standard input (the frame
+`NAME\0VALUE\0`, as `run_with_env`'s stdin delivery writes it), run on the host by an operator or
+by an agent there. Not built: CI runners, sign-ins, schedules on the host.
+
+### Setting it up
+
+On the Mac:
+
+1. `kagisecure host-bundle owner-key` — prints your owner key and its fingerprint (and creates
+   this Mac's device key in your personal vault if it has none).
+2. Put the credential in a personal environment and copy it to the machine vault (Agent access →
+   Unattended jobs → **Add an Environment…**).
+3. Write a grants file (JSON, kept off the repository):
+
+   ```json
+   { "grants": [ {
+       "name": "deploy-staging",
+       "variables": ["ITSUSTAR_DEPLOY_SSH_KEY"],
+       "command": ["/home/op/project/infra/deploy/deploy", "staging", "{commit}", "--key-from-stdin"],
+       "working_dir": "/home/op/project",
+       "run_as": "op",
+       "hash_from": "/Users/me/Workspace/project/infra/deploy/deploy",
+       "timeout_secs": 3600
+   } ] }
+   ```
+
+   `command` is the exact command line on the host. `{commit}` matches exactly 40 lower-case hex
+   digits and nothing else; every other argument is literal. The executable is pinned by SHA-256:
+   `executable_sha256` (hex), or `hash_from`, a copy of the same file on the Mac at the same
+   commit. Optional: `total_uses` (default 500), `expires_in_days` (default and maximum 90).
+
+On the host (Linux with systemd):
+
+4. Build and install: `cargo build --release -p kagisecure-host`, then
+   `sudo install -m 0755 target/release/kagisecure-host /usr/local/bin/`.
+5. `sudo groupadd --system kagisecure`, and `sudo usermod -aG kagisecure <operator>` for each
+   account allowed to ask.
+6. `kagisecure-host systemd-unit | sudo tee /etc/systemd/system/kagisecure-host.service`, and add
+   the operator's tool directories to its `Environment=PATH=` line if the command needs them.
+7. `sudo kagisecure-host init --owner <owner key>` — creates the host key and prints the host key
+   and fingerprint. Check that the owner fingerprint it prints is the one from step 1.
+
+On the Mac:
+
+8. `kagisecure host-bundle export --host <name> --host-key <host key> --environment <env>
+   --grants grants.json --out host.kgsb` (master password), and copy `host.kgsb` to the host.
+
+On the host:
+
+9. `sudo kagisecure-host import host.kgsb`, then `sudo systemctl enable --now kagisecure-host`.
+   `sudo kagisecure-host status` lists the grants; `sudo kagisecure-host audit` the log.
+10. The command is now run as `kagisecure-host request <grant> -- <argv...>` from its working
+    directory, by a member of `kagisecure`. The host checks the request against the grant, logs
+    it, starts the command as `run_as` with the value on its standard input, and prints its
+    masked output and exits with its code when it ends.
+
+### What it guarantees, and what it does not
+
+- **Only the owner's Mac can give a host anything.** A bundle is sealed to the host's key and
+  signed by your device key; the host refuses a bundle from any other signer, for another host,
+  altered in any byte, or not newer than the one it holds. A new bundle replaces everything and
+  resets uses and suspensions.
+- **Only what you granted travels.** A bundle carries only the variables its grants release.
+- **One exact command.** A request with another executable, another argument, an extra argument or
+  another directory is refused and **suspends** the grant; so does a change to the executable's
+  bytes. A suspended grant stays suspended until you export a new bundle. Pulling a commit that
+  changes the pinned script therefore needs a new bundle.
+- **Never in an environment, an argument, a log or the host's files.** The value is written once to
+  the command's standard input; the audit log, the state file and the response hold no value, and
+  the bundle at rest is ciphertext.
+- **The key rests in a file only root can read** (`/var/lib/kagisecure-host/host.key`, `0600`), or
+  — optionally — in a TPM-sealed systemd credential (`systemd-creds encrypt --with-key=host+tpm2`
+  to `/etc/kagisecure-host/host.key.cred`, and the unit's `LoadCredentialEncrypted=` line). **Root
+  on the host holds every value bundled for it.**
+- **The grant pins the command, not everything it runs.** The interpreter, `git`, `ssh`, the
+  operator's own configuration are files the operator or root can change; anything that can change
+  what the command does can obtain the value.
+- **The service runs as root** so that the command it starts, as the operator, keeps no
+  capability; its unit is hardened only as far as a deploy still works (read-only system, private
+  `/tmp`, no new privileges).

@@ -40,7 +40,10 @@ struct QuickAccessView: View {
         // through the responder chain while a text field holds focus, and this needs to work
         // *while the user is typing* — that is the whole interaction.
         .onKeyPress(keys: [.return], phases: .down) { press in
-            if press.modifiers.contains(.command) {
+            if press.modifiers.contains(.shift) {
+                // ⇧⏎: type the login into the app that was in front (ADR-0050 §7).
+                Task { await model.typeIntoPreviousApp() }
+            } else if press.modifiers.contains(.command) {
                 model.copyUsername()
             } else if press.modifiers.contains(.option) {
                 Task { await model.copyTotp() }

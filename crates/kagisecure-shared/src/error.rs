@@ -103,6 +103,12 @@ pub enum SharedError {
         /// The version found.
         version: u64,
     },
+
+    /// A host bundle (ADR-0043) that is well formed and correctly signed but not for this host,
+    /// or not signed by the owner this host trusts, or older than one it already holds. Says
+    /// which; never what the bundle carries.
+    #[error("host bundle refused: {0}")]
+    HostBundleRefused(&'static str),
 }
 
 #[cfg(test)]

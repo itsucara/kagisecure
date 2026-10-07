@@ -212,6 +212,11 @@ pub enum Command {
     #[command(subcommand)]
     Shared(SharedCommand),
 
+    /// Make signed bundles for headless hosts that run `kagisecure-host` (ADR-0043): the
+    /// machine-vault environment and the standing grants meant for one host.
+    #[command(subcommand, name = "host-bundle")]
+    HostBundle(HostBundleCommand),
+
     /// Not a public command: `kagisecure totp --copy` spawns this, detached, to clear the
     /// clipboard later without needing to stay alive itself. See
     /// `commands::generate::schedule_clear`.
@@ -220,6 +225,46 @@ pub enum Command {
 }
 
 /// `kagisecure test-logins ...`
+/// `kagisecure host-bundle ...`
+#[derive(Debug, Subcommand)]
+pub enum HostBundleCommand {
+    /// Print this computer's owner key, for `kagisecure-host init --owner` on a host. Creates the
+    /// device key in the personal vault if there is none yet.
+    OwnerKey,
+
+    /// Sign a bundle for one host: copies of the named machine-vault environment's variables
+    /// that the chosen grants release, and those grants, sealed to the host's key.
+    Export(HostBundleExportArgs),
+}
+
+/// `kagisecure host-bundle export`
+#[derive(Debug, Args)]
+pub struct HostBundleExportArgs {
+    /// The host's name, e.g. `build-1`.
+    #[arg(long)]
+    pub host: String,
+
+    /// The host's public key as `kagisecure-host show` prints it, or `@<file>` holding it.
+    #[arg(long)]
+    pub host_key: String,
+
+    /// The machine-vault environment the values come from.
+    #[arg(long)]
+    pub environment: String,
+
+    /// The grants file (JSON; see `docs/unattended-credentials.md` §5).
+    #[arg(long)]
+    pub grants: std::path::PathBuf,
+
+    /// Only these grants from the file (repeatable); all of them if omitted.
+    #[arg(long = "grant")]
+    pub only: Vec<String>,
+
+    /// Where to write the bundle.
+    #[arg(long)]
+    pub out: std::path::PathBuf,
+}
+
 #[derive(Debug, Subcommand)]
 pub enum TestLoginsCommand {
     /// List sealed agent test logins: id, title, username, websites, tags. Never a password.

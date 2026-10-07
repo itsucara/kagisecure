@@ -23,6 +23,22 @@ use crate::chrome_publish::{SCOPE, Secrets, TOKEN_URL, read_stdin_credentials, s
 const AUTH_URL: &str = "https://accounts.google.com/o/oauth2/v2/auth";
 const CONSENT_TIMEOUT: Duration = Duration::from_secs(300);
 
+/// Open `url` in Google Chrome, the browser the store account is signed in to, or in the default
+/// browser when Chrome is not installed (`open -a` exits non-zero when it cannot find the app).
+/// The URL is also printed by the caller, so a failure here is not fatal.
+fn open_in_chrome_or_default(url: &str) {
+    let opener = "/usr/bin/open";
+    let in_chrome = Command::new(opener)
+        .args(["-a", "Google Chrome"])
+        .arg(url)
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    if !in_chrome {
+        let _ = Command::new(opener).arg(url).status();
+    }
+}
+
 /// Run the flow and write the refresh token, alone, to standard output.
 pub fn chrome_auth() -> Result<()> {
     // Before anything else, so nothing is asked of Google for a token with nowhere safe to go.
@@ -44,7 +60,7 @@ pub fn chrome_auth() -> Result<()> {
 
     eprintln!("opening Google's consent page in the browser; sign in as the store's owner");
     eprintln!("if it does not open, visit:\n{url}");
-    let _ = Command::new("/usr/bin/open").arg(&url).status();
+    open_in_chrome_or_default(&url);
 
     let code = receive_code(&listener, &state)?;
     secrets.0.push(code.clone());

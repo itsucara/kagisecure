@@ -231,6 +231,7 @@ pub(crate) fn handle(core: &Arc<Core>, request: &Request, connection: &mut Conne
         | Request::CreateTestLogin { .. }
         | Request::TrashTestLogins { .. }
         | Request::StoreCommandOutput { .. }
+        | Request::RequestType { .. }
         | Request::Audit { .. } => {
             // Changes to the vault, and its log, are the person's: refused, not a strike — none
             // of these releases anything.
@@ -558,6 +559,7 @@ impl Ctx<'_> {
                         max_output: kagisecure_core::inject::DEFAULT_MAX_OUTPUT,
                         timeout: Some(timeout),
                         new_process_group: true,
+                        run_as: None,
                     },
                     |kill| match run.children.register(kill, template, entry_seq) {
                         Ok(id) => child.set(Some(id)),

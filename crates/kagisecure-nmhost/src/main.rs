@@ -124,7 +124,7 @@ fn main() {
     let output = Output::new(std::io::stdout());
     let mut input = watch_stdin(PORT_CLOSED_GRACE);
 
-    let code = run(&mut input, &output);
+    let code = run(&mut input, &output, Client::connect_default);
     std::process::exit(code);
 }
 
@@ -285,8 +285,16 @@ impl<W: Write> Output<W> {
 }
 
 /// The forwarding loop. Returns the process exit code.
-fn run<R: Read, W: Write + Send + 'static>(input: &mut R, output: &Output<W>) -> i32 {
-    let mut session = Session::new(output.clone());
+///
+/// `connector` opens the connection to the app. It is a parameter so that what a request meets
+/// can be chosen by the caller instead of by whatever is listening on the machine the program
+/// runs on: `main` passes [`Client::connect_default`], the tests pass a stand-in.
+fn run<R: Read, W: Write + Send + 'static>(
+    input: &mut R,
+    output: &Output<W>,
+    connector: Connector,
+) -> i32 {
+    let mut session = Session::new(output.clone(), connector);
 
     loop {
         let raw = match nm::read_bytes(input) {
@@ -321,8 +329,12 @@ fn run<R: Read, W: Write + Send + 'static>(input: &mut R, output: &Output<W>) ->
     }
 }
 
+/// How a [`Session`] opens its connection to the app.
+type Connector = fn() -> Result<Client, ClientError>;
+
 /// The forwarding loop's state from one request to the next.
 struct Session<W> {
+    connector: Connector,
     /// Where pushes go: the same port the replies do.
     output: Output<W>,
     /// The connection to the app. Opened on the first request and kept for the life of the port:
@@ -336,8 +348,9 @@ struct Session<W> {
 }
 
 impl<W: Write + Send + 'static> Session<W> {
-    fn new(output: Output<W>) -> Self {
+    fn new(output: Output<W>, connector: Connector) -> Self {
         Self {
+            connector,
             output,
             app: None,
             hello: None,
@@ -388,7 +401,7 @@ impl<W: Write + Send + 'static> Session<W> {
     /// Open a connection, start forwarding its pushes, and — unless `request` is itself a
     /// `Hello` — replay the last `Hello` on it.
     fn connect(&self, request: &Request) -> Result<DuplexClient, ClientError> {
-        let (client, pushes) = Client::connect_default()?.into_duplex()?;
+        let (client, pushes) = (self.connector)()?.into_duplex()?;
         forward_pushes(pushes, &self.output);
         if let Some(hello) = &self.hello
             && !matches!(request, Request::Hello { .. })
@@ -518,10 +531,18 @@ mod tests {
         buf
     }
 
+    /// The app is not running. Chosen explicitly rather than by resolving the real endpoint: on a
+    /// machine where Kagisecure is running, that socket is answered by the real app, which
+    /// refuses this test binary's parent (`cargo test`, not a browser) with `UntrustedHost` — so
+    /// the outcome would depend on what else is running and who launched the test.
+    fn no_app_listening() -> Result<Client, ClientError> {
+        Err(ClientError::AppNotRunning)
+    }
+
     /// Run the forwarding loop over `input` and return its exit code and everything it framed.
     fn run_collecting<R: Read>(input: &mut R) -> (i32, Vec<u8>) {
         let output = Output::new(Vec::new());
-        let code = run(input, &output);
+        let code = run(input, &output, no_app_listening);
         let bytes = output.lock().expect("no writer panicked").clone();
         (code, bytes)
     }
@@ -579,9 +600,8 @@ mod tests {
 
     #[test]
     fn with_no_app_listening_every_request_is_answered_with_vault_locked() {
-        // `connect_default()` reads `KAGISECURE_EXTENSION_SOCKET`, and the harness does not set
-        // it, so this exercises the real "the app is not running" path on a machine where it is
-        // not — which is the state a browser is usually in.
+        // The app being absent is injected, not discovered: see `no_app_listening`. The real
+        // connect path against a missing socket is covered by `tests/framing_adversarial.rs`.
         let mut input: &[u8] = &{
             let mut buf = browser_frame("a", &Request::Status);
             buf.extend_from_slice(&browser_frame(

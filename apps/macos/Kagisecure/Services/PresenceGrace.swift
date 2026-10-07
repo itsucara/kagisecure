@@ -90,6 +90,8 @@ struct PresenceGrace {
     static func applies(to request: ApprovalRequestView) -> Bool {
         switch request.action {
         case .fillCredential, .agentFill: true
+        // An agent's auto-type rides the window like an agent fill (ADR-0050 §2).
+        case .autoType: true
         // A run or a .env write whose every variable is a sealed test login rides the window
         // (ADR-0048 §9); Rust says so in `ridesGrace`. Any other run never does.
         case .writeEnvFile, .runWithEnv: request.ridesGrace

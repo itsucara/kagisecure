@@ -1,4 +1,4 @@
-//! The fourteen tools (mcp-server.md §2).
+//! The fifteen tools (mcp-server.md §2).
 //!
 //! # What this file is allowed to do
 //!
@@ -31,8 +31,8 @@ use kagisecure_ipc::protocol::{
     AgentFillField, DEFAULT_AGENT_FILL_FIELDS, Delivery, ErrorCode, FieldRef, MAX_RUN_ARGS,
     MAX_TEST_LOGIN_TAGS, MAX_TEST_LOGIN_WEBSITES, MAX_VARIABLES_PER_CALL, OutputMode,
     RUN_TIMEOUT_DEFAULT_SECONDS, Request, Response, STORE_OUTPUT_CATEGORIES, StdinEnvironment,
-    StoreStatus, StoreTarget, TEST_LOGIN_LENGTHS, TestLoginBind, TestLoginGenerator,
-    VariableRequest, agent_fill_fields_ok, clamp_run_timeout,
+    StoreStatus, StoreTarget, TEST_LOGIN_LENGTHS, TestLoginBind, TestLoginGenerator, TypeField,
+    TypeTarget, VariableRequest, agent_fill_fields_ok, clamp_run_timeout, type_fields_ok,
 };
 use kagisecure_ipc::{ClientError, Endpoint};
 
@@ -302,6 +302,60 @@ fn fill_fields(
     }
 }
 
+/// `request_type` arguments (ADR-0050). **There is no way to pass what is typed, and no way to get
+/// it back.**
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RequestTypeArgs {
+    /// The item id, from `list_items`. Titles are not accepted.
+    pub item_id: String,
+    /// Which fields to type: `username`, `password` or both (typed in that order with Tab
+    /// between), or `one_time_code` on its own. Default `["username", "password"]`.
+    #[serde(default)]
+    pub fields: Option<Vec<TypeFieldArg>>,
+    /// The app you expect in front, checked right before anything is typed.
+    pub target: TypeTargetArg,
+    /// Why, shown to the user on the approval sheet. One line, at most 200 characters.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// A field `request_type` may type, by name. **There is no way to pass what is typed.**
+#[derive(Clone, Copy, Debug, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TypeFieldArg {
+    /// The login's username.
+    Username,
+    /// The login's password; typed only into a secure text field.
+    Password,
+    /// A one-time code from the item's one-time-code field. Only on its own.
+    OneTimeCode,
+}
+
+impl From<TypeFieldArg> for TypeField {
+    fn from(field: TypeFieldArg) -> Self {
+        match field {
+            TypeFieldArg::Username => Self::Username,
+            TypeFieldArg::Password => Self::Password,
+            TypeFieldArg::OneTimeCode => Self::OneTimeCode,
+        }
+    }
+}
+
+/// `request_type`'s `target`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TypeTargetArg {
+    /// The bundle identifier of the app that must be frontmost, e.g. `com.apple.Terminal`.
+    pub bundle_id: String,
+    /// The Apple Developer team id that must have signed it (ten characters), when you know it.
+    #[serde(default)]
+    pub team_id: Option<String>,
+    /// Text the focused window's title must contain, when you want that checked too.
+    #[serde(default)]
+    pub window_title: Option<String>,
+}
+
 /// How kagisecure generates a test login's password (ADR-0048 §4): a length from a fixed menu
 /// and two switches. **There is no way to pass a password, an alphabet or a seed.**
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -501,7 +555,7 @@ fn generator(
 
 #[tool_router(router = tool_router)]
 impl Kagisecure {
-    /// A server with the fourteen tools registered.
+    /// A server with the fifteen tools registered.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -859,8 +913,8 @@ impl Kagisecure {
 
     #[tool(
         name = "request_fill",
-        description = "Ask the user to let kagisecure fill a saved login into the browser tab \
-                       they are looking at. The user approves in the kagisecure app with a \
+        description = "Ask the user to let kagisecure fill a saved login into a browser tab at the \
+                       given origin (the one in front when several qualify). The user approves in the kagisecure app with a \
                        biometric. Returns only which fields were filled: this tool never returns \
                        a secret value. Works only in a browser with the kagisecure extension, in \
                        the tab in front, when that tab's origin is exactly `origin` and is a \
@@ -1167,6 +1221,67 @@ impl Kagisecure {
             other => Ok(unexpected(other)),
         }
     }
+
+    #[tool(
+        name = "request_type",
+        description = "Ask the user to let kagisecure type a saved login into the app in front \
+                       of them, as keystrokes into the text field that has keyboard focus — for \
+                       a native app, a terminal or a dialog where request_fill cannot reach. \
+                       Name the app you expect in front in `target` (its bundle id, and \
+                       optionally its signing team and part of its window title); kagisecure \
+                       checks it, and that the focused field is a text field (a secure one for a \
+                       password), right before typing, and stops if focus moves. username and \
+                       password are typed in that order with Tab between; ask for \
+                       one_time_code on its own. The user approves in kagisecure with a \
+                       biometric, or not at all if they confirmed recently. Returns only which \
+                       fields were typed: this tool never returns a secret value. Be aware: the \
+                       app receives the value, and an agent that can read that app's screen or \
+                       memory can read it there. Errors: NO_MATCHING_TARGET when the app or field \
+                       in front is not the one named; TYPE_UNAVAILABLE when kagisecure cannot \
+                       type (no Accessibility permission, or secure keyboard input is on)."
+    )]
+    async fn request_type(
+        &self,
+        peer: Peer<RoleServer>,
+        Parameters(args): Parameters<RequestTypeArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let item_id = match parse_req::<ItemId>(&args.item_id, "item_id") {
+            Ok(v) => v,
+            Err(e) => return Ok(e),
+        };
+        let fields: Vec<TypeField> = args.fields.map_or_else(
+            || vec![TypeField::Username, TypeField::Password],
+            |fields| fields.into_iter().map(TypeField::from).collect(),
+        );
+        if !type_fields_ok(&fields) {
+            return Ok(err(
+                ErrorCode::InvalidArgument,
+                "fields must name at least one field, none twice: username, password or both, \
+                 or one_time_code on its own. Nothing was asked. Fix the argument and retry.",
+            ));
+        }
+        let request = Request::RequestType {
+            item_id,
+            fields,
+            target: TypeTarget {
+                bundle_id: args.target.bundle_id,
+                team_id: args.target.team_id,
+                window_title: args.target.window_title,
+            },
+            reason: args.reason,
+        };
+        match ask(&peer, request).await {
+            Ok(Response::Typed {
+                fields_typed,
+                bundle_id,
+            }) => Ok(ok(json!({
+                "status": "typed",
+                "fields_typed": fields_typed,
+                "bundle_id": bundle_id,
+            }))),
+            other => Ok(unexpected(other)),
+        }
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1200,7 +1315,9 @@ impl ServerHandler for Kagisecure {
                  list_test_logins, sign in with request_fill, and clean up with \
                  trash_test_logins. store_command_output runs a command and stores what it \
                  prints in a vault item after the user approves; the output is not returned to \
-                 you.",
+                 you. request_type types a saved login as keystrokes into the focused field of \
+                 the app in front, which you name; the same holds: you get no value, but the \
+                 app receives it.",
             )
     }
 }
@@ -1326,6 +1443,7 @@ mod tests {
                 "list_test_logins",
                 "list_vaults",
                 "request_fill",
+                "request_type",
                 "revoke_env_file",
                 "run_with_env",
                 "store_command_output",
@@ -1387,6 +1505,56 @@ mod tests {
             "new_item": { "title": "T", "websites": ["https://example.com"] },
         });
         assert!(serde_json::from_value::<StoreCommandOutputArgs>(nested).is_err());
+    }
+
+    #[test]
+    fn request_type_takes_names_and_a_target_and_says_who_receives_the_value() {
+        let tool = Kagisecure::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "request_type")
+            .expect("registered");
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        let mut top: Vec<String> = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        top.sort();
+        assert_eq!(top, ["fields", "item_id", "reason", "target"]);
+        let mut all = Vec::new();
+        collect_property_names(&schema, &mut all);
+        for name in ["bundle_id", "team_id", "window_title"] {
+            assert!(all.iter().any(|p| p == name), "{name} missing: {all:?}");
+        }
+        let description = tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase();
+        assert!(description.contains("never returns a secret value"));
+        assert!(description.contains("the app receives the value"));
+        assert!(description.contains("no_matching_target"));
+        assert!(description.contains("biometric"));
+    }
+
+    #[test]
+    fn request_type_arguments_refuse_an_unknown_property_and_a_bad_field_set() {
+        let bad = serde_json::json!({
+            "item_id": "x", "target": { "bundle_id": "com.example" }, "text": "hunter2",
+        });
+        assert!(serde_json::from_value::<RequestTypeArgs>(bad).is_err());
+        let nested = serde_json::json!({
+            "item_id": "x", "target": { "bundle_id": "com.example", "keys": "abc" },
+        });
+        assert!(serde_json::from_value::<RequestTypeArgs>(nested).is_err());
+        assert!(!type_fields_ok(&[
+            TypeField::OneTimeCode,
+            TypeField::Password
+        ]));
+        assert!(!type_fields_ok(&[TypeField::Username, TypeField::Username]));
+        assert!(type_fields_ok(&[TypeField::Password, TypeField::Username]));
     }
 
     #[test]

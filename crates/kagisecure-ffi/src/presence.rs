@@ -146,12 +146,15 @@ pub enum ReleasePurpose {
     QuickAccessCopy,
     /// Show one concealed value inside the edit sheet, which never prefills (user decision 4).
     EditReveal,
+    /// Type the value as keystrokes into the app that was in front before kagisecure (ADR-0050
+    /// §7). One use.
+    AutoType,
 }
 
 impl ReleasePurpose {
     /// A copy is spent by its one use; a shown value stays readable until it ends.
     pub(crate) fn is_one_use(self) -> bool {
-        matches!(self, Self::Copy | Self::QuickAccessCopy)
+        matches!(self, Self::Copy | Self::QuickAccessCopy | Self::AutoType)
     }
 
     /// Whether the value this purpose released is on screen, so copying it again is the one
@@ -636,6 +639,7 @@ pub(crate) fn reason(subject: &Subject<'_>, purpose: ReleasePurpose) -> String {
     let verb = match purpose {
         ReleasePurpose::Reveal | ReleasePurpose::EditReveal => "show",
         ReleasePurpose::Copy | ReleasePurpose::QuickAccessCopy => "copy",
+        ReleasePurpose::AutoType => "type",
     };
     let (what, it) = match subject {
         Subject::Field { noun, title, label } => (
@@ -648,6 +652,7 @@ pub(crate) fn reason(subject: &Subject<'_>, purpose: ReleasePurpose) -> String {
     let context = match purpose {
         ReleasePurpose::EditReveal => format!(" to edit {it}"),
         ReleasePurpose::QuickAccessCopy => " from Quick Access".to_owned(),
+        ReleasePurpose::AutoType => " into the app you were using".to_owned(),
         ReleasePurpose::Reveal | ReleasePurpose::Copy => String::new(),
     };
     format!("{verb} {what}{context}. Continue only if you just asked Kagisecure to {verb} {it}")

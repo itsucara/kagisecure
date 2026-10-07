@@ -37,6 +37,9 @@ pub const SIGNATURE_LEN: usize = 64;
 pub enum SigDomain {
     /// A record: `"kagisecure/shared/sig/record/v1"`, over the author's id and the body bytes.
     Record,
+    /// A host bundle (ADR-0043 §7): `"kagisecure/shared/sig/host-bundle/v1"`, over the author's
+    /// id and the bundle's header and sealed payload.
+    HostBundle,
 }
 
 impl SigDomain {
@@ -45,6 +48,7 @@ impl SigDomain {
     pub const fn as_bytes(self) -> &'static [u8] {
         match self {
             Self::Record => b"kagisecure/shared/sig/record/v1",
+            Self::HostBundle => b"kagisecure/shared/sig/host-bundle/v1",
         }
     }
 }
@@ -65,6 +69,14 @@ pub enum Signed<'a> {
         /// The body, exactly as it is in the envelope.
         body: &'a [u8],
     },
+    /// A host bundle (ADR-0043 §7): `author ‖ body`, the signing device's 32-byte key id and then
+    /// the bundle's header and sealed payload, to the end of the message.
+    HostBundle {
+        /// The device that signed the bundle.
+        author: &'a DeviceKeyId,
+        /// Everything in the bundle after the author and before the signature.
+        body: &'a [u8],
+    },
 }
 
 impl Signed<'_> {
@@ -73,6 +85,7 @@ impl Signed<'_> {
     pub const fn domain(&self) -> SigDomain {
         match self {
             Self::Record { .. } => SigDomain::Record,
+            Self::HostBundle { .. } => SigDomain::HostBundle,
         }
     }
 
@@ -81,7 +94,7 @@ impl Signed<'_> {
     pub fn to_message(&self) -> Vec<u8> {
         let domain = self.domain().as_bytes();
         match self {
-            Self::Record { author, body } => {
+            Self::Record { author, body } | Self::HostBundle { author, body } => {
                 let author = author.as_bytes();
                 let mut message = Vec::with_capacity(domain.len() + 1 + author.len() + body.len());
                 message.extend_from_slice(domain);
@@ -100,6 +113,11 @@ impl std::fmt::Debug for Signed<'_> {
         match self {
             Self::Record { author, body } => f
                 .debug_struct("Signed::Record")
+                .field("author", author)
+                .field("body_len", &body.len())
+                .finish(),
+            Self::HostBundle { author, body } => f
+                .debug_struct("Signed::HostBundle")
                 .field("author", author)
                 .field("body_len", &body.len())
                 .finish(),

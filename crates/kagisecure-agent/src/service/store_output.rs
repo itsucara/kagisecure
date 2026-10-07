@@ -348,6 +348,7 @@ impl Service {
                         max_output: MAX_STORED_OUTPUT_BYTES + 3,
                         timeout: Some(Duration::from_secs(timeout_seconds)),
                         new_process_group: true,
+                        run_as: None,
                     },
                     |kill| match children.register(kill, entry_template.clone(), entry_seq) {
                         Ok(id) => child_id.set(Some(id)),

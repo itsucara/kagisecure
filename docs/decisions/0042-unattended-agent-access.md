@@ -4,9 +4,9 @@
   acceptance: they stay in [ADR-0043](0043-unattended-access-on-headless-hosts.md), which is
   Proposed. Accepted with the owner's convenience-first priority and a change the owner made the
   same day — **arming persists across restarts, with no expiry** — recorded in "Owner's answers"
-  (answer 2, amended) and "Implementation decisions". Phases 0 to 4 are implemented (the
-  documentation page, the core, the engine, the macOS app and shared-vault copies); Phase 5 is
-  not (see "Implementation plan").
+  (answer 2, amended) and "Implementation decisions". Phases 0 to 5 are implemented (the
+  documentation page, the core, the engine, the macOS app, shared-vault copies and unattended
+  sign-ins; see "Implementation plan").
 - **Date:** 2026-09-27
 - **Deciders:** the owner
 - **Refines:** [ADR-0004](0004-biometric-key-wrapping.md) rules 3, 4 and 6;
@@ -28,7 +28,7 @@
   [ADR-0040](0040-audit-before-release.md),
   [ADR-0041](0041-anchor-the-audit-logs-freshness-outside-the-vault-file.md)
 
-> **Accepted for macOS; implemented through Phase 4.** Built: the page
+> **Accepted for macOS; implemented through Phase 5.** Built: the page
 > [unattended-credentials.md](../unattended-credentials.md) (Phase 0); in `kagisecure-core`, the
 > machine vault file, its key in the personal vault's body, its structural rules, and its job and
 > grant records (Phase 1); in `kagisecure-agent`, the engine — arming from the Keychain's bytes,
@@ -38,7 +38,7 @@
 > jobs and their grants, Agent access → Unattended jobs, the menu bar, "While you were away",
 > notifications and the machine log in the Audit view (Phase 3); and copies of shared vaults'
 > environments, the vaults' policy on them and the records that tell every member who holds one
-> (Phase 4). Not built: the unattended fills (Phase 5). Mechanisms are described in the present tense because that is how the
+> (Phase 4). The unattended fills (Phase 5) are built too. Mechanisms are described in the present tense because that is how the
 > other ADRs read, not because code exists for them. Where "Implementation decisions" below
 > changes what a section says — above all §3, whose key is no longer memory-only — the decision
 > wins, and the section is marked.

@@ -76,6 +76,7 @@ use crate::test_login::bind::{
 use crate::test_login::{self, TestLoginBroker, TestLoginNotice};
 use crate::vault::{REQUEST_LOCK_TIMEOUT, VaultHandle, WriteFailure, sync_could_not_read};
 
+mod auto_type;
 mod store_output;
 
 /// The name this process answers the handshake with.
@@ -309,6 +310,9 @@ pub struct Service {
     /// The test-login broker, when this host serves agent test logins (ADR-0048). `None` —
     /// `kagisecure daemon` — answers every test-login tool `TEST_LOGINS_OFF`.
     test_logins: Option<Arc<TestLoginBroker>>,
+    /// The auto-type broker, when this host has an app that types (ADR-0050). `None` —
+    /// `kagisecure daemon` — answers every `request_type` `TYPE_UNAVAILABLE`.
+    auto_type: Option<Arc<crate::auto_type::AutoTypeBroker>>,
 }
 
 /// Where the ordinary agent keeps the machine vault the host attached ([`Service::with_machine`]).
@@ -338,6 +342,7 @@ impl Service {
             agent_fill,
             machine: None,
             test_logins: None,
+            auto_type: None,
         }
     }
 
@@ -614,6 +619,20 @@ impl Service {
                     target,
                     field_label,
                     stdin_environment: stdin_environment.as_ref(),
+                    reason: reason.as_deref(),
+                },
+                connection,
+            ),
+            Request::RequestType {
+                item_id,
+                fields,
+                target,
+                reason,
+            } => self.request_type(
+                &auto_type::TypeArgs {
+                    item_id: *item_id,
+                    fields,
+                    target,
                     reason: reason.as_deref(),
                 },
                 connection,
@@ -2576,6 +2595,7 @@ impl Service {
                             // A group of its own: a lock or the deadline ends the command and
                             // everything it spawned, and never this process's own group.
                             new_process_group: true,
+                            run_as: None,
                         },
                         |kill| match children.register(kill, entry_template.clone(), entry_seq) {
                             Ok(id) => child_id.set(Some(id)),

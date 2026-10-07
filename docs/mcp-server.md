@@ -344,9 +344,12 @@ in the app or with `kagisecure env add-var` / `env rm`, which do replace.
 1. **Bind** (`bind_to` present): the variable references an existing field in the vault. Nothing
    is entered; the app confirms and the reference is created. This is preferred — rotate once,
    every environment follows. The target must be one `describe_item` would show — the item
-   visible to agents, in a vault visible to agents, not in the trash — and the field must itself be
-   marked visible to agents; any other target is answered `NOT_FOUND` exactly as one that does not
-   exist.
+   visible to agents, in a vault visible to agents, not in the trash — and, **at bind time**, the
+   field must itself be marked visible to agents (`Catalog::personal_field_bindable`; the item must
+   also be in the personal vault); any other target is answered `NOT_FOUND` exactly as one that does
+   not exist. The field flag is checked only then: when a release later *follows* the binding it
+   requires the item to be visible to agents but not the field (`binding_followable`, §6), so a
+   person may bind a field kept out of `describe_item` and have it injected without being listed.
 2. **Prompt** (`bind_to` absent): the app raises a *pending entry* for that variable name. The
    tool returns immediately with `status: "pending_user_input"` and a deep link
    (`kagisecure://environments/<env_id>/pending`), and the app brings its window forward with a
@@ -625,6 +628,10 @@ approval — would have zeroed the key.
 }
 ```
 
+The description string above is the one the sidecar ships; its "in the tab in front" predates the
+0.1.3 background-tab rule (below). Since 0.1.3 the app also fills a background tab at exactly
+`origin` when the tab in front does not match.
+
 Result: `{ "status": "filled", "fields_written": ["username", "password"], "fields_pending": [] }`.
 Field **names** only; `fields_pending` is non-empty only when the page asked for the username first
 and the same approval may write the password on the next page (below). Everything else is an error
@@ -728,8 +735,9 @@ At any other origin a sealed test login takes the ordinary path.
    `NOTHING_TO_FILL`.
 5. **A browser to ask**: no connected extension session that declared agent fills:
    `FILL_UNAVAILABLE`.
-6. **The tab.** Every connected browser reports the tab in front; exactly one, across all of them,
-   must be the visible top frame of the active tab, at exactly `origin`, on a site saved for the
+6. **The tab.** Every connected browser reports its candidate tab (as first designed, the tab in
+   front; since 0.1.3, a background tab at `origin` too); exactly one, across all of them,
+   must be a top frame at exactly `origin` (originally also visible and active), on a site saved for the
    item, with the fields asked for — or, for username and password, an identifier-first page one.
    For page two of an identifier-first sign-in only the browser and tab of page one are asked
    (above). Otherwise `NO_MATCHING_TAB` — one code, one message, whatever
@@ -966,6 +974,44 @@ Results:
   output. This tool keeps a value out of the transcript and the model provider's logs for an agent
   that uses it; it is not a boundary against a malicious agent.
 
+### 2.15 `request_type`
+
+*([ADR-0050](decisions/0050-auto-type-into-native-apps.md))* Ask the user to let kagisecure type a
+saved login as keystrokes into the text field focused in the app in front of them — a native app, a
+terminal, a dialog — where `request_fill` cannot reach.
+
+```json
+{
+  "item_id": "…",
+  "fields": ["username", "password"],
+  "target": { "bundle_id": "com.apple.Terminal", "team_id": "ABCDE12345", "window_title": "ssh" },
+  "reason": "sign in to the staging box"
+}
+```
+
+* `fields`: `username`, `password` or both (typed in that order, Tab between), or `one_time_code`
+  on its own. Default `["username", "password"]`.
+* `target.bundle_id` is required; `team_id` (the signing team) and `window_title` (a substring of the
+  focused window's title) are optional extra checks.
+* Approval: the app-wide presence grace window, like an agent fill; outside it, a sheet naming the
+  target app (name, icon, bundle id) and Touch ID. **Deny and block this agent** blocks it for 30
+  minutes. One auto-type at a time; at most 30 per agent in ten minutes (`RATE_LIMITED`).
+* Right before typing the app checks the frontmost app's bundle id (and team, and window title when
+  given), that a text field holds keyboard focus — a secure text field for a password — and that no
+  other app holds secure keyboard input. Focus is re-checked as it types; a change stops typing.
+* Result: `{"status": "typed", "fields_typed": [...], "bundle_id": "..."}`. Never a value.
+* Errors: `NO_MATCHING_TARGET` (one code and message for every mismatch found before typing; a
+  second message when focus moved partway), `TYPE_UNAVAILABLE` (no app that types, no
+  Accessibility permission, agent auto-type off, or secure keyboard input on), `NOTHING_TO_FILL`,
+  `NOT_FOUND`, `USER_DENIED`, `APPROVAL_TIMEOUT`, `RATE_LIMITED`. Refused on the unattended socket
+  and on Windows.
+* Audit: an `Allowed` entry `AUTO_TYPE <bundle_id>` with the agent's full identity and the field
+  names before anything is typed, and a `Failed` follow-up naming the outcome when typing did not
+  complete.
+* Be aware: kagisecure never returns the value, but the target app receives it, and an agent that
+  can read that app's screen or memory can read it there — the same stance as `request_fill`
+  (ADR-0036 §8.1).
+
 ## 3. How the invariant is enforced
 
 Not by review, not by a redaction filter. By the type system and the crate graph.
@@ -1089,7 +1135,7 @@ Rules:
 approval. A `run_with_env` with `delivery: "stdin"` is never covered by a lease and is granted for
 one run (§2.8, [ADR-0047](decisions/0047-stdin-delivery.md)).
 
-### 5.1 Standing grants and the unattended socket *(accepted for macOS; the engine is built, the app is not — [ADR-0042](decisions/0042-unattended-agent-access.md))*
+### 5.1 Standing grants and the unattended socket *(built for macOS, Phases 0 to 5 — [ADR-0042](decisions/0042-unattended-agent-access.md))*
 
 The one exception to "the whole product is the prompt" is the **machine vault**: a separate vault
 for machine credentials, armed by a person with a presence proof — arming persists across
@@ -1104,7 +1150,7 @@ no IPC message creates, widens or proposes one. The ordinary socket is unchanged
 machine vault only with the ordinary sheet and a presence proof, and only while the personal vault
 is unlocked, and there only its environments (ADR-0042 implementation decision 14). On the
 unattended socket, `run_with_env`'s reply never carries output and names the grant where a lease
-would be; `request_fill` answers `FILL_UNAVAILABLE` until unattended sign-ins are built. The
+would be; `request_fill` is served there only under a standing login grant, in the run's own browser (ADR-0042 §12, Phase 5), and is `FILL_UNAVAILABLE` otherwise. The
 engine is `kagisecure-agent`'s `unattended` module; the macOS app starts it at launch and arms it
 when the person does (Agent access → Unattended jobs). Where such credentials belong, and what unattended use costs, is in
 [unattended-credentials.md](unattended-credentials.md).
@@ -1113,7 +1159,16 @@ when the person does (Agent access → Unattended jobs). Where such credentials 
 
 Every tool call is recorded, whether it succeeded, was denied, or errored. Entries carry:
 
-`timestamp | client_identity (verified) | client_pid | tool | environment/item ids | variable names | target path | lease_id | outcome`
+`timestamp | actor | client_pid | tool | environment/item ids | variable names | target path | lease_id | outcome`
+
+What `actor` holds depends on the tool. The ordinary tools (`list_*`, `describe_item`,
+`create_environment`, `add_variables`, `write_env_file`, `run_with_env`, `revoke_env_file`) record the actor `mcp` and the **kernel-reported pid** of the sidecar's peer
+(`Service::draft`); no client name or signature is stored on them. `request_fill`,
+the test-login tools' writes (`create_test_login`, including the `create_environment` and
+`add_variables` entries of its `bind`, and `trash_test_logins`) and `store_command_output` record
+the agent in full — `mcp` followed by the
+client's self-reported name and the kernel facts (`agent_fill::actor_for`). The self-reported name
+is never what a limit or a block keys on.
 
 They never carry values. The log is part of the encrypted vault body with a hash chain
 (see [vault-format.md](vault-format.md) §8) and is browsable in the app with filters
@@ -1178,7 +1233,7 @@ message is written for the *model*, so it should say what to do next.
 | `VAULT_CONFLICT` | The vault file on disk was restored from an older copy, replaced, or removed while the vault was unlocked; the app refuses to build on it or overwrite it, so nothing is changed or released | Tell the user to open kagisecure and resolve it. Do not retry until they have. |
 | `FILL_UNAVAILABLE` | `request_fill` cannot be served at all: agent fills are turned off, or no browser with the kagisecure extension is connected. Answered before the item is looked up | Tell the user. Do not retry. |
 | `NOTHING_TO_FILL` | `request_fill` named a field the item has no value for, or an archived item; or asked for `new_password` for an item that is not a sealed test login | Check `describe_item`; for a sign-up form, use a login from `create_test_login`. |
-| `NO_MATCHING_TAB` | `request_fill` found no tab to fill: the tab in front is not at `origin`, is not a sign-in page kagisecure recognizes (for a one-time code: has no code field), is not visible, is not a site saved for this item, or changed before the fill; or more than one browser has such a tab in front; or page two of an identifier-first sign-in is not the same sign-in in the same tab | Bring the right tab to the front; retry at most once. |
+| `NO_MATCHING_TAB` | `request_fill` found no tab to fill: no tab at `origin` (the tab in front or, since 0.1.3, a background tab) is a sign-in page kagisecure recognizes (for a one-time code: has a code field), is a site saved for this item, or it changed before the fill; or more than one browser has such a tab and none is in front; or page two of an identifier-first sign-in is not the same sign-in in the same tab | Open the right site in a normal browser window; retry at most once. |
 | `RATE_LIMITED` | `request_fill` was refused without asking because another agent fill is in progress and they are served one at a time. Answered before the item is looked up. Also `create_test_login` from an agent that created 10 test logins in the last 10 minutes, or when the test vault already holds 200; nothing was created | For `request_fill`, retry once after it finishes. For `create_test_login`, reuse one (`list_test_logins`) or wait. |
 | `AUDIT_UNAVAILABLE` | `write_env_file`, `run_with_env` or `store_command_output` was about to release values, and the audit entry that must be written first could not be (a full disk, a broken or conflicting vault file, another process holding the write lock); **nothing was released** — no file written, no command run | Tell the user the vault cannot be written right now. Do not retry in a loop. |
 | `NOT_GRANTED` | Only on the unattended socket (§5.1): the request is not covered by a standing grant of the calling run's job, or does not come from a run kagisecure started. One message for every reason; a request no grant covers has suspended every grant of the job and ended the run | Stop. Do not retry or try variations; the owner has been told. |

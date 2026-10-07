@@ -14,7 +14,7 @@ import Sparkle
 /// (every build but `cargo xtask dist`'s) never update themselves.
 @MainActor
 @Observable
-final class AppUpdater: NSObject, SPUUpdaterDelegate {
+final class AppUpdater: NSObject, SPUUpdaterDelegate, @preconcurrency SPUStandardUserDriverDelegate {
     private(set) var isEnabled = false
     /// Whether Sparkle looks for an update by itself. It is Sparkle's own setting, which it keeps.
     var automaticallyChecks = false {
@@ -23,7 +23,12 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     private(set) var lastCheck: Date?
 
     @ObservationIgnored private var updater: SPUUpdater?
-    @ObservationIgnored private let userDriver = SPUStandardUserDriver(hostBundle: .main, delegate: nil)
+    @ObservationIgnored private var userDriver: SPUStandardUserDriver?
+    /// Called just before Sparkle puts any window or alert on screen. The app uses it to take the
+    /// floating Quick Access panel out of the way: that panel sits at `.floating`, above every
+    /// normal window, and does not close when another window takes key, so without this the
+    /// update window opens behind it and the prompt cannot be seen.
+    @ObservationIgnored var onWillPresentUpdateUI: (() -> Void)?
     @ObservationIgnored private let indicator = UpdateIndicator()
     /// True from launch until the launch check ends: an update it finds is installed right away.
     @ObservationIgnored private var launchCheckPending = true
@@ -38,6 +43,8 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
             Self.log.info("updates are off for this build")
             return
         }
+        let userDriver = SPUStandardUserDriver(hostBundle: .main, delegate: self)
+        self.userDriver = userDriver
         let updater = SPUUpdater(hostBundle: .main, applicationBundle: .main, userDriver: userDriver, delegate: self)
         do {
             try updater.start()
@@ -62,7 +69,27 @@ final class AppUpdater: NSObject, SPUUpdaterDelegate {
     /// “Check for Updates…” and Settings ▸ Updates: Sparkle's own window.
     func checkNow() {
         Self.log.info("update check by hand")
+        willPresentUpdateUI()
         updater?.checkForUpdates()
+    }
+
+    /// Clear Quick Access and bring the app forward so Sparkle's window opens in front.
+    private func willPresentUpdateUI() {
+        onWillPresentUpdateUI?()
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    // MARK: SPUStandardUserDriverDelegate
+
+    func standardUserDriverWillShowModalAlert() {
+        willPresentUpdateUI()
+    }
+
+    func standardUserDriverWillHandleShowingUpdate(
+        _ handleShowingUpdate: Bool, forUpdate update: SUAppcastItem, state: SPUUserUpdateState
+    ) {
+        // Background (scheduled) checks that surface an update also open a window.
+        if handleShowingUpdate { willPresentUpdateUI() }
     }
 
     // MARK: SPUUpdaterDelegate

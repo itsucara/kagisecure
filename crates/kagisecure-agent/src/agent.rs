@@ -106,6 +106,11 @@ pub struct AgentConfig {
     /// The app passes one process-wide `Arc`, so an agent's create limit survives a lock and a
     /// restart of this listener. `None` — `kagisecure daemon` — answers both `TEST_LOGINS_OFF`.
     pub test_logins: Option<Arc<TestLoginBroker>>,
+    /// The auto-type broker `request_type` is served through (ADR-0050).
+    ///
+    /// The app passes one process-wide `Arc` and polls it for jobs. `None` — `kagisecure daemon`,
+    /// which has nothing that types — answers every `request_type` with `TYPE_UNAVAILABLE`.
+    pub auto_type: Option<Arc<crate::auto_type::AutoTypeBroker>>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -115,6 +120,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("shared_queue", &self.queue.is_some())
             .field("agent_fill", &self.agent_fill.is_some())
             .field("test_logins", &self.test_logins.is_some())
+            .field("auto_type", &self.auto_type.is_some())
             .finish()
     }
 }
@@ -164,6 +170,8 @@ struct Shared {
     machine: crate::service::MachineSlot,
     /// The test-login broker, if this host serves agent test logins (ADR-0048). Process-wide.
     test_logins: Option<Arc<TestLoginBroker>>,
+    /// The auto-type broker, if this host has an app that types (ADR-0050). Process-wide.
+    auto_type: Option<Arc<crate::auto_type::AutoTypeBroker>>,
 }
 
 impl Shared {
@@ -186,6 +194,9 @@ impl Shared {
         }
         self.queue.deny_all();
         if let Some(broker) = &self.agent_fill {
+            broker.revoke_all();
+        }
+        if let Some(broker) = &self.auto_type {
             broker.revoke_all();
         }
         let entries = self
@@ -315,6 +326,7 @@ impl Agent {
             connections: LiveConnections::new(),
             agent_fill: config.agent_fill.clone(),
             test_logins: config.test_logins.clone(),
+            auto_type: config.auto_type.clone(),
             machine: Arc::new(Mutex::new(None)),
         });
         shared.queue.reopen();
@@ -624,6 +636,9 @@ fn serve_connection(shared: &Arc<Shared>, connection: &mut Connection) {
     if let Some(broker) = &shared.test_logins {
         service = service.with_test_logins(Arc::clone(broker));
     }
+    if let Some(broker) = &shared.auto_type {
+        service = service.with_auto_type(Arc::clone(broker));
+    }
 
     loop {
         if shared.stopping.load(Ordering::SeqCst) {
@@ -693,6 +708,7 @@ mod tests {
             queue: None,
             agent_fill: None,
             test_logins: None,
+            auto_type: None,
         };
         let first = Agent::start(Arc::clone(&handle), &config).expect("first agent");
 
@@ -718,6 +734,7 @@ mod tests {
                 queue: None,
                 agent_fill: None,
                 test_logins: None,
+                auto_type: None,
                 endpoint: Some(Endpoint::for_instance(dir.path(), "b.sock")),
             },
         )
@@ -759,6 +776,7 @@ mod tests {
                 queue: None,
                 agent_fill: None,
                 test_logins: None,
+                auto_type: None,
                 endpoint: Some(Endpoint::for_instance(dir.path(), "c.sock")),
             },
         )
@@ -800,6 +818,7 @@ mod tests {
                 queue: None,
                 agent_fill: None,
                 test_logins: None,
+                auto_type: None,
             },
         )
         .expect("agent");
@@ -835,6 +854,7 @@ mod tests {
                 queue: None,
                 agent_fill: None,
                 test_logins: None,
+                auto_type: None,
                 endpoint: Some(Endpoint::for_instance(dir.path(), "f.sock")),
             },
         )
@@ -910,6 +930,7 @@ mod tests {
                 queue: None,
                 agent_fill: None,
                 test_logins: None,
+                auto_type: None,
                 endpoint: Some(Endpoint::for_instance(dir.path(), "g.sock")),
             },
         )
@@ -953,6 +974,7 @@ mod tests {
                 queue: None,
                 agent_fill: None,
                 test_logins: None,
+                auto_type: None,
                 endpoint: Some(Endpoint::for_instance(dir.path(), "e.sock")),
             },
         )

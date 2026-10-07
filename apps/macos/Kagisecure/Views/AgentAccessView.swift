@@ -107,12 +107,7 @@ struct AgentAccessView: View {
             // The outermost of the three gates (threat-model M-9). With this off nothing inside
             // the vault is reachable however an individual environment is flagged, so it belongs
             // where a user looking at agent access will find it.
-            Toggle(
-                "Share this vault",
-                isOn: Binding(
-                    get: { store.vaultAgentVisible },
-                    set: { store.setVaultAgentVisible($0) })
-            )
+            Toggle("Share this vault", isOn: store.vaultAgentVisibleBinding)
             .toggleStyle(.switch)
             .help("Agents cannot see anything in a vault that is not shared")
             .accessibilityIdentifier("ks.agentAccess.shareVault")

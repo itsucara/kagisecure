@@ -33,6 +33,23 @@ struct BulkAgentVisibilityTests {
                 tags: tags, urls: [], notes: nil, revision: item.revision))
     }
 
+    @Test func shareVaultBindingAgreesWithTheStoreBothWays() throws {
+        let (store, _) = try Self.newStore()
+        // Settings → AI Agents and the Agent access page share this one binding.
+        let settings = store.vaultAgentVisibleBinding
+        let mainWindow = store.vaultAgentVisibleBinding
+        #expect(settings.wrappedValue == store.vaultAgentVisible)
+
+        settings.wrappedValue = !store.vaultAgentVisible
+        #expect(settings.wrappedValue == store.vaultAgentVisible)
+        #expect(mainWindow.wrappedValue == settings.wrappedValue)
+
+        store.setVaultAgentVisible(false)
+        #expect(!settings.wrappedValue && !mainWindow.wrappedValue)
+        mainWindow.wrappedValue = true
+        #expect(settings.wrappedValue && store.vaultAgentVisible)
+    }
+
     @Test func theSettingDefaultsOnAndCanBeTurnedOff() throws {
         let (store, path) = try Self.newStore()
         #expect(store.newItemsAgentVisible)

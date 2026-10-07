@@ -98,6 +98,7 @@ pub mod exchange;
 #[cfg(any(test, feature = "fuzzing"))]
 #[doc(hidden)]
 pub mod fuzzing;
+pub mod host_bundle;
 pub mod hpke_wrap;
 pub mod merge;
 pub mod payload;

@@ -83,6 +83,14 @@ pub enum ApprovalKind {
     /// [`ApprovalRequest::command`], the directory, and for a stdin environment its name and
     /// variables) is [`ApprovalRequest::store_output`].
     StoreCommandOutput,
+    /// An agent asks for a login to be typed as keystrokes into the focused field of a native app
+    /// (`request_type`, [ADR-0050](../../../docs/decisions/0050-auto-type-into-native-apps.md)).
+    ///
+    /// Clamped like [`Self::AgentFill`]: one review, once, no lease, never presence-only. Like an
+    /// agent fill it rides the app-wide presence grace window ([`ApprovalRequest::rides_grace`]):
+    /// inside it the app answers with no sheet. What the sheet shows beyond the common fields —
+    /// the target app — is [`ApprovalRequest::auto_type`].
+    AutoType,
 }
 
 impl ApprovalKind {
@@ -92,7 +100,7 @@ impl ApprovalKind {
     pub fn single_review(self) -> bool {
         matches!(
             self,
-            Self::AgentFill | Self::CreateTestLogin | Self::StoreCommandOutput
+            Self::AgentFill | Self::CreateTestLogin | Self::StoreCommandOutput | Self::AutoType
         )
     }
 
@@ -122,6 +130,7 @@ impl ApprovalKind {
             Self::AgentFill => "request_fill",
             Self::CreateTestLogin => "create_test_login",
             Self::StoreCommandOutput => "store_command_output",
+            Self::AutoType => "request_type",
         }
     }
 }
@@ -268,6 +277,11 @@ pub struct ApprovalRequest {
     /// What the store-output sheet shows that no other sheet does. `Some` exactly when
     /// [`Self::kind`] is [`ApprovalKind::StoreCommandOutput`].
     pub store_output: Option<StoreOutputFacts>,
+
+    // --- ADR-0050: auto-type into a native app. -----------------------------------------------
+    /// What the auto-type sheet shows that no other sheet does. `Some` exactly when
+    /// [`Self::kind`] is [`ApprovalKind::AutoType`].
+    pub auto_type: Option<AutoTypeFacts>,
     /// A `run_with_env` or `write_env_file` whose **every** selected variable is bound to a sealed
     /// test login (ADR-0048 §9): the app may answer it inside its presence grace window with no
     /// sheet and no prompt, the way it answers agent fills. Outside the window it is the ordinary
@@ -417,7 +431,53 @@ pub struct StoreOutputFacts {
     pub reason: Option<String>,
 }
 
+/// The facts an auto-type sheet states (ADR-0050 §2), beyond the common fields.
+///
+/// Metadata only: names, a bundle id, a title. Nothing here has a type a value fits in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutoTypeFacts {
+    /// The agent, as the audit log names it: self-reported name quoted, kernel facts bare.
+    pub agent: String,
+    /// The item's title.
+    pub item_title: String,
+    /// The name of the vault the item is in.
+    pub vault_name: String,
+    /// The fields to type, in the order they are typed: `username`, `password`, `one_time_code`.
+    pub fields: Vec<String>,
+    /// The target app's bundle id, as the agent named it. The app resolves its name and icon.
+    pub bundle_id: String,
+    /// The signing team the agent requires, if it named one.
+    pub team_id: Option<String>,
+    /// The window-title substring the agent requires, if it named one. Agent-written data.
+    pub window_title: Option<String>,
+    /// Why, as the agent put it. Agent-written data.
+    pub reason: Option<String>,
+}
+
 impl ApprovalRequest {
+    /// The request for an agent's auto-type described by `facts`, of item `item_id`, from the peer
+    /// behind `identity`. No lease; never presence-only; rides the presence grace window like an
+    /// agent fill (ADR-0050 §2). The grant's scope is the item, the fields and — in `origin` — the
+    /// target bundle id.
+    #[must_use]
+    pub fn for_auto_type(facts: AutoTypeFacts, item_id: String, identity: &PeerIdentity) -> Self {
+        Self {
+            kind: ApprovalKind::AutoType,
+            origin: Some(facts.bundle_id.clone()),
+            item_id: Some(item_id),
+            item_title: Some(facts.item_title.clone()),
+            fill_fields: facts.fields.clone(),
+            requested_ttl_seconds: 0,
+            requested_uses: 1,
+            max_ttl_seconds: 0,
+            presence_only: false,
+            rides_grace: true,
+            auto_type: Some(facts),
+            ..Self::default()
+        }
+        .with_identity(identity)
+    }
+
     /// The request for an agent's store-output run described by `facts`, running `argv` in
     /// `directory`, from the peer behind `identity`. No lease, so no lease life; never
     /// presence-only. A stdin environment is added by the caller on the common fields.
@@ -553,6 +613,7 @@ impl Default for ApprovalRequest {
             agent_fill: None,
             agent_test_login: None,
             store_output: None,
+            auto_type: None,
             rides_grace: false,
             shared_source: None,
             changed_since_approval: Vec::new(),
@@ -984,7 +1045,10 @@ fn outcome_for(
         Decision::Deny => return Outcome::refused(ErrorCode::UserDenied, verification),
         Decision::DenyAndBlock => {
             return Outcome {
-                block_agent: request.kind == ApprovalKind::AgentFill,
+                block_agent: matches!(
+                    request.kind,
+                    ApprovalKind::AgentFill | ApprovalKind::AutoType
+                ),
                 ..Outcome::refused(ErrorCode::UserDenied, verification)
             };
         }

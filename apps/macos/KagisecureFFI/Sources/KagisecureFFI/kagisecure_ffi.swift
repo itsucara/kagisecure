@@ -6218,6 +6218,11 @@ public struct ApprovalRequestView: Equatable, Hashable {
      */
     public var storeOutput: StoreOutputFactsView?
     /**
+     * The target app and what will be typed. `Some` exactly when [`Self::action`] is
+     * [`ApprovalAction::AutoType`].
+     */
+    public var autoType: AutoTypeFactsView?
+    /**
      * Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
      * members` — to be shown as a fact on the sheet. `None` for the personal vault.
      */
@@ -6404,6 +6409,10 @@ public struct ApprovalRequestView: Equatable, Hashable {
          * `#[uniffi(default = None)]` so hand-built views in the Swift tests keep compiling.
          */storeOutput: StoreOutputFactsView? = nil, 
         /**
+         * The target app and what will be typed. `Some` exactly when [`Self::action`] is
+         * [`ApprovalAction::AutoType`].
+         */autoType: AutoTypeFactsView? = nil, 
+        /**
          * Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
          * members` — to be shown as a fact on the sheet. `None` for the personal vault.
          */sharedSource: String? = nil, 
@@ -6453,6 +6462,7 @@ public struct ApprovalRequestView: Equatable, Hashable {
         self.testLogin = testLogin
         self.ridesGrace = ridesGrace
         self.storeOutput = storeOutput
+        self.autoType = autoType
         self.sharedSource = sharedSource
         self.changedSinceApproval = changedSinceApproval
     }
@@ -6514,6 +6524,7 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
                 testLogin: FfiConverterOptionTypeTestLoginFactsView.read(from: &buf), 
                 ridesGrace: FfiConverterBool.read(from: &buf), 
                 storeOutput: FfiConverterOptionTypeStoreOutputFactsView.read(from: &buf), 
+                autoType: FfiConverterOptionTypeAutoTypeFactsView.read(from: &buf), 
                 sharedSource: FfiConverterOptionString.read(from: &buf), 
                 changedSinceApproval: FfiConverterSequenceString.read(from: &buf)
         )
@@ -6561,6 +6572,7 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
         FfiConverterOptionTypeTestLoginFactsView.write(value.testLogin, into: &buf)
         FfiConverterBool.write(value.ridesGrace, into: &buf)
         FfiConverterOptionTypeStoreOutputFactsView.write(value.storeOutput, into: &buf)
+        FfiConverterOptionTypeAutoTypeFactsView.write(value.autoType, into: &buf)
         FfiConverterOptionString.write(value.sharedSource, into: &buf)
         FfiConverterSequenceString.write(value.changedSinceApproval, into: &buf)
     }
@@ -6807,6 +6819,314 @@ public func FfiConverterTypeAuditRowView_lift(_ buf: RustBuffer) throws -> Audit
 #endif
 public func FfiConverterTypeAuditRowView_lower(_ value: AuditRowView) -> RustBuffer {
     return FfiConverterTypeAuditRowView.lower(value)
+}
+
+
+/**
+ * [`kagisecure_agent::AutoTypeFacts`]: what an auto-type sheet states (ADR-0050 §2). Names and
+ * a bundle id only; the app resolves the target's name and icon from the bundle id.
+ */
+public struct AutoTypeFactsView: Equatable, Hashable {
+    /**
+     * The agent as the audit log names it.
+     */
+    public var agent: String
+    /**
+     * The item's title.
+     */
+    public var itemTitle: String
+    /**
+     * The vault the item is in.
+     */
+    public var vaultName: String
+    /**
+     * The fields, in typing order: `username`, `password`, `one_time_code`.
+     */
+    public var fields: [String]
+    /**
+     * The target app's bundle id, as the agent named it.
+     */
+    public var bundleId: String
+    /**
+     * The signing team the agent requires, if any.
+     */
+    public var teamId: String?
+    /**
+     * The window-title substring the agent requires, if any: agent-written data.
+     */
+    public var windowTitle: String?
+    /**
+     * Why, as the agent put it: agent-written data.
+     */
+    public var reason: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The agent as the audit log names it.
+         */agent: String, 
+        /**
+         * The item's title.
+         */itemTitle: String, 
+        /**
+         * The vault the item is in.
+         */vaultName: String, 
+        /**
+         * The fields, in typing order: `username`, `password`, `one_time_code`.
+         */fields: [String], 
+        /**
+         * The target app's bundle id, as the agent named it.
+         */bundleId: String, 
+        /**
+         * The signing team the agent requires, if any.
+         */teamId: String?, 
+        /**
+         * The window-title substring the agent requires, if any: agent-written data.
+         */windowTitle: String?, 
+        /**
+         * Why, as the agent put it: agent-written data.
+         */reason: String?) {
+        self.agent = agent
+        self.itemTitle = itemTitle
+        self.vaultName = vaultName
+        self.fields = fields
+        self.bundleId = bundleId
+        self.teamId = teamId
+        self.windowTitle = windowTitle
+        self.reason = reason
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AutoTypeFactsView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAutoTypeFactsView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AutoTypeFactsView {
+        return
+            try AutoTypeFactsView(
+                agent: FfiConverterString.read(from: &buf), 
+                itemTitle: FfiConverterString.read(from: &buf), 
+                vaultName: FfiConverterString.read(from: &buf), 
+                fields: FfiConverterSequenceString.read(from: &buf), 
+                bundleId: FfiConverterString.read(from: &buf), 
+                teamId: FfiConverterOptionString.read(from: &buf), 
+                windowTitle: FfiConverterOptionString.read(from: &buf), 
+                reason: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AutoTypeFactsView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.agent, into: &buf)
+        FfiConverterString.write(value.itemTitle, into: &buf)
+        FfiConverterString.write(value.vaultName, into: &buf)
+        FfiConverterSequenceString.write(value.fields, into: &buf)
+        FfiConverterString.write(value.bundleId, into: &buf)
+        FfiConverterOptionString.write(value.teamId, into: &buf)
+        FfiConverterOptionString.write(value.windowTitle, into: &buf)
+        FfiConverterOptionString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoTypeFactsView_lift(_ buf: RustBuffer) throws -> AutoTypeFactsView {
+    return try FfiConverterTypeAutoTypeFactsView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoTypeFactsView_lower(_ value: AutoTypeFactsView) -> RustBuffer {
+    return FfiConverterTypeAutoTypeFactsView.lower(value)
+}
+
+
+/**
+ * An approved auto-type, for the app to verify and type (ADR-0050 §3).
+ */
+public struct AutoTypeJobView: Equatable, Hashable {
+    /**
+     * Quote back to [`auto_type_finish`].
+     */
+    public var id: String
+    /**
+     * The item's title, for a notice.
+     */
+    public var itemTitle: String
+    /**
+     * The bundle id the frontmost app must have.
+     */
+    public var bundleId: String
+    /**
+     * The signing team it must have, if the agent named one.
+     */
+    public var teamId: String?
+    /**
+     * A substring the focused window's title must contain, if the agent named one.
+     */
+    public var windowTitle: String?
+    /**
+     * What to type, in order, with Tab between consecutive values.
+     */
+    public var values: [AutoTypeValueView]
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Quote back to [`auto_type_finish`].
+         */id: String, 
+        /**
+         * The item's title, for a notice.
+         */itemTitle: String, 
+        /**
+         * The bundle id the frontmost app must have.
+         */bundleId: String, 
+        /**
+         * The signing team it must have, if the agent named one.
+         */teamId: String?, 
+        /**
+         * A substring the focused window's title must contain, if the agent named one.
+         */windowTitle: String?, 
+        /**
+         * What to type, in order, with Tab between consecutive values.
+         */values: [AutoTypeValueView]) {
+        self.id = id
+        self.itemTitle = itemTitle
+        self.bundleId = bundleId
+        self.teamId = teamId
+        self.windowTitle = windowTitle
+        self.values = values
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AutoTypeJobView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAutoTypeJobView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AutoTypeJobView {
+        return
+            try AutoTypeJobView(
+                id: FfiConverterString.read(from: &buf), 
+                itemTitle: FfiConverterString.read(from: &buf), 
+                bundleId: FfiConverterString.read(from: &buf), 
+                teamId: FfiConverterOptionString.read(from: &buf), 
+                windowTitle: FfiConverterOptionString.read(from: &buf), 
+                values: FfiConverterSequenceTypeAutoTypeValueView.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AutoTypeJobView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.itemTitle, into: &buf)
+        FfiConverterString.write(value.bundleId, into: &buf)
+        FfiConverterOptionString.write(value.teamId, into: &buf)
+        FfiConverterOptionString.write(value.windowTitle, into: &buf)
+        FfiConverterSequenceTypeAutoTypeValueView.write(value.values, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoTypeJobView_lift(_ buf: RustBuffer) throws -> AutoTypeJobView {
+    return try FfiConverterTypeAutoTypeJobView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoTypeJobView_lower(_ value: AutoTypeJobView) -> RustBuffer {
+    return FfiConverterTypeAutoTypeJobView.lower(value)
+}
+
+
+/**
+ * One value of a job.
+ */
+public struct AutoTypeValueView: Equatable, Hashable {
+    /**
+     * Which field.
+     */
+    public var field: AutoTypeFieldView
+    /**
+     * The value. The one record in this module that carries a secret: type it, never store it.
+     */
+    public var value: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * Which field.
+         */field: AutoTypeFieldView, 
+        /**
+         * The value. The one record in this module that carries a secret: type it, never store it.
+         */value: String) {
+        self.field = field
+        self.value = value
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AutoTypeValueView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAutoTypeValueView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AutoTypeValueView {
+        return
+            try AutoTypeValueView(
+                field: FfiConverterTypeAutoTypeFieldView.read(from: &buf), 
+                value: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AutoTypeValueView, into buf: inout [UInt8]) {
+        FfiConverterTypeAutoTypeFieldView.write(value.field, into: &buf)
+        FfiConverterString.write(value.value, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoTypeValueView_lift(_ buf: RustBuffer) throws -> AutoTypeValueView {
+    return try FfiConverterTypeAutoTypeValueView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoTypeValueView_lower(_ value: AutoTypeValueView) -> RustBuffer {
+    return FfiConverterTypeAutoTypeValueView.lower(value)
 }
 
 
@@ -14053,6 +14373,13 @@ public enum ApprovalAction: Equatable, Hashable {
      * [`ApprovalRequestView::store_output`].
      */
     case storeCommandOutput
+    /**
+     * An agent asks for a login to be typed as keystrokes into the focused field of a native app
+     * (ADR-0050). Rides the presence grace window like an agent fill (`rides_grace` is set);
+     * outside it, the full sheet with Touch ID. Never "for this session"; mints nothing. The
+     * target app is in [`ApprovalRequestView::auto_type`].
+     */
+    case autoType
 
 
 
@@ -14089,6 +14416,8 @@ public struct FfiConverterTypeApprovalAction: FfiConverterRustBuffer {
         case 7: return .createTestLogin
         
         case 8: return .storeCommandOutput
+        
+        case 9: return .autoType
         
         default: throw UniffiInternalError.unexpectedEnumCase
         }
@@ -14128,6 +14457,10 @@ public struct FfiConverterTypeApprovalAction: FfiConverterRustBuffer {
         
         case .storeCommandOutput:
             writeInt(&buf, Int32(8))
+        
+        
+        case .autoType:
+            writeInt(&buf, Int32(9))
         
         }
     }
@@ -14257,6 +14590,202 @@ public func FfiConverterTypeApprovalDecision_lift(_ buf: RustBuffer) throws -> A
 #endif
 public func FfiConverterTypeApprovalDecision_lower(_ value: ApprovalDecision) -> RustBuffer {
     return FfiConverterTypeApprovalDecision.lower(value)
+}
+
+
+
+/**
+ * Which value a job types.
+ */
+
+public enum AutoTypeFieldView: Equatable, Hashable {
+    
+    /**
+     * The username.
+     */
+    case username
+    /**
+     * The password: typed only into a secure text field.
+     */
+    case password
+    /**
+     * A one-time code.
+     */
+    case oneTimeCode
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AutoTypeFieldView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAutoTypeFieldView: FfiConverterRustBuffer {
+    typealias SwiftType = AutoTypeFieldView
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AutoTypeFieldView {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .username
+        
+        case 2: return .password
+        
+        case 3: return .oneTimeCode
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AutoTypeFieldView, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .username:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .password:
+            writeInt(&buf, Int32(2))
+        
+        
+        case .oneTimeCode:
+            writeInt(&buf, Int32(3))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoTypeFieldView_lift(_ buf: RustBuffer) throws -> AutoTypeFieldView {
+    return try FfiConverterTypeAutoTypeFieldView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoTypeFieldView_lower(_ value: AutoTypeFieldView) -> RustBuffer {
+    return FfiConverterTypeAutoTypeFieldView.lower(value)
+}
+
+
+
+/**
+ * How typing went, as the app reports it.
+ */
+
+public enum AutoTypeOutcomeView: Equatable, Hashable {
+    
+    /**
+     * Every value typed.
+     */
+    case typed
+    /**
+     * The frontmost app, its team, its window or the focused field did not match. Nothing typed.
+     */
+    case targetMismatch
+    /**
+     * Focus moved while typing.
+     */
+    case focusChanged(
+        /**
+         * Whether some keystrokes were already sent.
+         */typedAny: Bool
+    )
+    /**
+     * Another app holds secure keyboard input. Nothing typed.
+     */
+    case secureInput
+    /**
+     * No Accessibility permission. Nothing typed.
+     */
+    case accessibilityDenied
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension AutoTypeOutcomeView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAutoTypeOutcomeView: FfiConverterRustBuffer {
+    typealias SwiftType = AutoTypeOutcomeView
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AutoTypeOutcomeView {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .typed
+        
+        case 2: return .targetMismatch
+        
+        case 3: return .focusChanged(typedAny: try FfiConverterBool.read(from: &buf)
+        )
+        
+        case 4: return .secureInput
+        
+        case 5: return .accessibilityDenied
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: AutoTypeOutcomeView, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case .typed:
+            writeInt(&buf, Int32(1))
+        
+        
+        case .targetMismatch:
+            writeInt(&buf, Int32(2))
+        
+        
+        case let .focusChanged(typedAny):
+            writeInt(&buf, Int32(3))
+            FfiConverterBool.write(typedAny, into: &buf)
+            
+        
+        case .secureInput:
+            writeInt(&buf, Int32(4))
+        
+        
+        case .accessibilityDenied:
+            writeInt(&buf, Int32(5))
+        
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoTypeOutcomeView_lift(_ buf: RustBuffer) throws -> AutoTypeOutcomeView {
+    return try FfiConverterTypeAutoTypeOutcomeView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAutoTypeOutcomeView_lower(_ value: AutoTypeOutcomeView) -> RustBuffer {
+    return FfiConverterTypeAutoTypeOutcomeView.lower(value)
 }
 
 
@@ -15822,6 +16351,11 @@ public enum ReleasePurpose: Equatable, Hashable {
      * Show one concealed value inside the edit sheet, which never prefills (user decision 4).
      */
     case editReveal
+    /**
+     * Type the value as keystrokes into the app that was in front before kagisecure (ADR-0050
+     * §7). One use.
+     */
+    case autoType
 
 
 
@@ -15851,6 +16385,8 @@ public struct FfiConverterTypeReleasePurpose: FfiConverterRustBuffer {
         
         case 4: return .editReveal
         
+        case 5: return .autoType
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -15873,6 +16409,10 @@ public struct FfiConverterTypeReleasePurpose: FfiConverterRustBuffer {
         
         case .editReveal:
             writeInt(&buf, Int32(4))
+        
+        
+        case .autoType:
+            writeInt(&buf, Int32(5))
         
         }
     }
@@ -17032,6 +17572,54 @@ fileprivate struct FfiConverterOptionTypeApprovalRequestView: FfiConverterRustBu
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterOptionTypeAutoTypeFactsView: FfiConverterRustBuffer {
+    typealias SwiftType = AutoTypeFactsView?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeAutoTypeFactsView.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeAutoTypeFactsView.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeAutoTypeJobView: FfiConverterRustBuffer {
+    typealias SwiftType = AutoTypeJobView?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeAutoTypeJobView.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeAutoTypeJobView.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterOptionTypeDivergedFileView: FfiConverterRustBuffer {
     typealias SwiftType = DivergedFileView?
 
@@ -17365,6 +17953,31 @@ fileprivate struct FfiConverterSequenceTypeAuditRowView: FfiConverterRustBuffer 
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeAuditRowView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeAutoTypeValueView: FfiConverterRustBuffer {
+    typealias SwiftType = [AutoTypeValueView]
+
+    public static func write(_ value: [AutoTypeValueView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeAutoTypeValueView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [AutoTypeValueView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [AutoTypeValueView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeAutoTypeValueView.read(from: &buf))
         }
         return seq
     }
@@ -18749,6 +19362,43 @@ public func agentTakeLockRequest() -> Bool  {
 })
 }
 /**
+ * Report how job `id` went. `false` when the id is unknown: it timed out, or a lock swept it.
+ */
+public func autoTypeFinish(id: String, outcome: AutoTypeOutcomeView) -> Bool  {
+    return try!  FfiConverterBool.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_auto_type_finish(
+        FfiConverterString.lower(id),
+        FfiConverterTypeAutoTypeOutcomeView_lower(outcome),uniffiCallStatus
+    )
+})
+}
+/**
+ * Wait up to `timeout_ms` for an approved auto-type, and take it.
+ *
+ * **This call blocks.** Call it from a background task, never from the main actor.
+ */
+public func autoTypeNextJob(timeoutMs: UInt32) -> AutoTypeJobView?  {
+    return try!  FfiConverterOptionTypeAutoTypeJobView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_auto_type_next_job(
+        FfiConverterUInt32.lower(timeoutMs),uniffiCallStatus
+    )
+})
+}
+/**
+ * Say whether this app can type for agents: it holds the Accessibility permission and the person
+ * has agent auto-type on. Until it says `true`, every `request_type` is `TYPE_UNAVAILABLE`
+ * before any sheet.
+ */
+public func autoTypeSetReady(ready: Bool)  {try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_auto_type_set_ready(
+        FfiConverterBool.lower(ready),uniffiCallStatus
+    )
+}
+}
+/**
  * Whether a saved website covers a host macOS password AutoFill asked about (ADR-0045 §4).
  *
  * The same public-suffix rule the browser extension fills by
@@ -19702,6 +20352,15 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_agent_take_lock_request() != 39611) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_auto_type_finish() != 63402) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_auto_type_next_job() != 40599) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_func_auto_type_set_ready() != 44585) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_func_autofill_host_matches() != 37763) {

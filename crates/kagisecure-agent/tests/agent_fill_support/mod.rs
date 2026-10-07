@@ -237,6 +237,7 @@ fn listen(
             queue: Some(Arc::clone(queue)),
             agent_fill: Some(Arc::clone(broker)),
             test_logins: Some(Arc::clone(test_logins)),
+            auto_type: None,
         },
     )
     .expect("agent");

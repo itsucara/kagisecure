@@ -180,6 +180,57 @@ pub fn unwrap_epoch_key(
     Ok(key)
 }
 
+/// Seal `plaintext` to `recipient` with RFC 9180 Base mode under `info`: `enc ‖ ciphertext ‖ tag`.
+/// For payloads of any length (a host bundle, ADR-0043 §7); epoch keys keep their fixed form.
+pub(crate) fn seal_bytes(
+    recipient: &DevicePublic,
+    info: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>> {
+    match recipient.suite() {
+        Suite::X25519Ed25519V1 => {}
+    }
+    let mut rng = PrefilledRng::from_core(EPHEMERAL_IKM_LEN)?;
+    let mut buffer = Zeroizing::new(plaintext.to_vec());
+    let (enc, tag) = seal_base(
+        recipient.kem_pk(),
+        info,
+        &[],
+        buffer.as_mut_slice(),
+        &mut rng,
+    )?;
+    let mut out = Vec::with_capacity(ENC_LEN + buffer.len() + TAG_LEN);
+    out.extend_from_slice(&enc);
+    out.extend_from_slice(&buffer);
+    out.extend_from_slice(&tag);
+    Ok(out)
+}
+
+/// Open what [`seal_bytes`] made, with this device's key, under the same `info`.
+pub(crate) fn open_bytes(
+    device: &DeviceSecret,
+    info: &[u8],
+    sealed: &[u8],
+) -> Result<Zeroizing<Vec<u8>>> {
+    if sealed.len() < ENC_LEN + TAG_LEN {
+        return Err(SharedError::Decrypt);
+    }
+    let (enc, rest) = sealed.split_at(ENC_LEN);
+    let (ciphertext, tag) = rest.split_at(rest.len() - TAG_LEN);
+    let enc: [u8; ENC_LEN] = enc.try_into().map_err(|_| SharedError::Decrypt)?;
+    let tag: [u8; TAG_LEN] = tag.try_into().map_err(|_| SharedError::Decrypt)?;
+    let mut buffer = Zeroizing::new(ciphertext.to_vec());
+    open_base(
+        device.x25519_secret(),
+        &enc,
+        info,
+        &[],
+        buffer.as_mut_slice(),
+        &tag,
+    )?;
+    Ok(buffer)
+}
+
 /// RFC 9180 `SealBase`, single shot, in place: `buffer` goes in as plaintext and comes out as
 /// ciphertext; returns `enc` and the tag.
 fn seal_base(

@@ -29,7 +29,7 @@ use crate::version;
 /// The kagisecure developer account's publisher id.
 pub const PUBLISHER_ID: &str = "3edd5ef8-a197-45cc-b770-5ba58afbefa3";
 /// The store item's id.
-pub const ITEM_ID: &str = "jgfpjhijkkjngmihmammolbcicgkicji";
+pub const ITEM_ID: &str = "aacppfmljihmjacphgpkbmanhbhphjgl";
 
 /// Google's OAuth 2.0 token endpoint.
 pub const TOKEN_URL: &str = "https://oauth2.googleapis.com/token";
@@ -557,12 +557,12 @@ mod tests {
         assert_eq!(
             up.url,
             "https://chromewebstore.googleapis.com/upload/v2/publishers/\
-             3edd5ef8-a197-45cc-b770-5ba58afbefa3/items/jgfpjhijkkjngmihmammolbcicgkicji:upload"
+             3edd5ef8-a197-45cc-b770-5ba58afbefa3/items/aacppfmljihmjacphgpkbmanhbhphjgl:upload"
         );
         assert!(
             publish_request("t")
                 .url
-                .ends_with("/items/jgfpjhijkkjngmihmammolbcicgkicji:publish")
+                .ends_with("/items/aacppfmljihmjacphgpkbmanhbhphjgl:publish")
         );
         assert_eq!(status_request("t").method, "GET");
         assert!(status_request("t").url.contains("/v2/publishers/"));

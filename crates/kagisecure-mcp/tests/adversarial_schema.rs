@@ -272,6 +272,7 @@ fn the_served_tool_list_is_exactly_the_documented_one() {
             "list_test_logins",
             "list_vaults",
             "request_fill",
+            "request_type",
             "revoke_env_file",
             "run_with_env",
             "store_command_output",

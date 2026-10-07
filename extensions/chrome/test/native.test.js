@@ -71,6 +71,21 @@ function loadNative() {
   return globalThis.KsNative;
 }
 
+/**
+ * Wait until `condition()` holds, instead of sleeping for a guessed time: how long the retry
+ * schedule takes to get somewhere depends on how loaded the machine is, what it gets to does not.
+ * The deadline only turns a real hang into a failure with a message.
+ */
+async function until(condition, what, deadlineMs = 5000) {
+  const start = Date.now();
+  while (!condition()) {
+    if (Date.now() - start > deadlineMs) assert.fail(`timed out waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 1));
+  }
+}
+
+const hellosSent = () => sent.filter((b) => b.ask === "hello").length;
+
 const welcome = (unlocked) => ({
   reply: "welcome",
   protocol_version: 1,
@@ -359,15 +374,14 @@ test("once enabled, a dropped port retries hello on its own, with backoff", asyn
 
     // Nothing was scripted to answer with, as if the app were still unreachable: the retry's own
     // `hello` gets the fake port's default "no reply scripted" error, so it must try again.
-    await new Promise((r) => setTimeout(r, 40));
-    const helloCount = sent.filter((b) => b.ask === "hello").length;
-    assert.ok(helloCount >= 2, `expected at least one automatic retry, saw ${helloCount}`);
-    assert.equal(native.state().status, "error", "still not connected, since nothing answered");
+    await until(
+      () => hellosSent() >= 2 && native.state().status === "error",
+      "an automatic retry that found nothing to answer it",
+    );
 
     // The app comes back: the next retry's `hello` gets a real welcome and the loop stops.
     scripted.push(welcome(true));
-    await new Promise((r) => setTimeout(r, 40));
-    assert.equal(native.state().status, "ready", "a later retry re-established the session");
+    await until(() => native.state().status === "ready", "a later retry to re-establish the session");
 
     const afterSuccess = sent.filter((b) => b.ask === "hello").length;
     await new Promise((r) => setTimeout(r, 40));

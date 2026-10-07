@@ -1,0 +1,48 @@
+# kagisecure-host (ADR-0043): releases machine credentials to granted commands on this host.
+#
+# Install:  kagisecure-host systemd-unit | sudo tee /etc/systemd/system/kagisecure-host.service
+#           sudo systemctl daemon-reload && sudo systemctl enable --now kagisecure-host
+#
+# Runs as root so that it can start a granted command as the grant's account (`run_as`): the
+# change from root to that account clears every capability, so the command keeps none. Its
+# capability bounding set is only what that needs. The key (/var/lib/kagisecure-host/host.key,
+# 0600) is readable by root alone; anything running as root holds every value bundled here.
+#
+# Who may ask: members of the group `kagisecure` (the socket is 0660 in a 0750 directory).
+#   sudo groupadd --system kagisecure && sudo usermod -aG kagisecure <operator>
+#
+# Granted commands run inside this unit, so it is hardened only as far as a deploy still works:
+# the system is read-only, /tmp is private, homes stay writable for the job account.
+
+[Unit]
+Description=kagisecure-host: machine credentials for granted commands
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/kagisecure-host serve
+Group=kagisecure
+UMask=0077
+StateDirectory=kagisecure-host
+StateDirectoryMode=0700
+RuntimeDirectory=kagisecure-host
+RuntimeDirectoryMode=0750
+# The PATH a granted command sees. Add the job account's tool directories (node, pnpm) here.
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Optional, TPM-sealed key instead of the file (see docs/unattended-credentials.md §5):
+#LoadCredentialEncrypted=kagisecure-host.key:/etc/kagisecure-host/host.key.cred
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID CAP_KILL CAP_DAC_READ_SEARCH
+NoNewPrivileges=yes
+RestrictSUIDSGID=yes
+ProtectSystem=full
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+LimitCORE=0
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

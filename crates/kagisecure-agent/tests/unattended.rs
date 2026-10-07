@@ -471,6 +471,17 @@ fn every_request(env: EnvId, cwd: &Path) -> Vec<Request> {
             }),
             reason: None,
         },
+        // Auto-type needs a person's grace window or sheet (ADR-0050 §6): refused, never granted.
+        Request::RequestType {
+            item_id: kagisecure_core::proto::ItemId::new(),
+            fields: vec![kagisecure_ipc::protocol::TypeField::Password],
+            target: kagisecure_ipc::protocol::TypeTarget {
+                bundle_id: "com.apple.Terminal".to_owned(),
+                team_id: None,
+                window_title: None,
+            },
+            reason: None,
+        },
         Request::Audit {
             limit: 5,
             verify: false,
@@ -534,6 +545,7 @@ fn covers(request: &Request) {
         | Request::ListTestLogins { .. }
         | Request::TrashTestLogins { .. }
         | Request::StoreCommandOutput { .. }
+        | Request::RequestType { .. }
         | Request::Audit { .. }
         | Request::ListLeases
         | Request::Lock => {}
@@ -874,6 +886,7 @@ fn the_ordinary_socket_serves_machine_environments_with_a_sheet_and_only_while_u
             queue: None,
             agent_fill: None,
             test_logins: None,
+            auto_type: None,
         },
     )
     .expect("agent");

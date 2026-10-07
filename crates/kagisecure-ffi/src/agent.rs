@@ -82,6 +82,13 @@ static AGENT_FILL: std::sync::LazyLock<Arc<kagisecure_agent::AgentFillBroker>> =
 static TEST_LOGINS: std::sync::LazyLock<Arc<kagisecure_agent::TestLoginBroker>> =
     std::sync::LazyLock::new(|| Arc::new(kagisecure_agent::TestLoginBroker::new()));
 
+/// The process-wide auto-type broker (ADR-0050): every agent this app starts serves
+/// `request_type` through it, and the app polls it for jobs with [`auto_type_next_job`]. Whether
+/// it is ready — the app holds the Accessibility permission and agent auto-type is on — survives
+/// a lock; the jobs do not.
+static AUTO_TYPE: std::sync::LazyLock<Arc<kagisecure_agent::auto_type::AutoTypeBroker>> =
+    std::sync::LazyLock::new(|| Arc::new(kagisecure_agent::auto_type::AutoTypeBroker::new()));
+
 fn agent() -> std::sync::MutexGuard<'static, Option<Agent>> {
     AGENT.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -120,6 +127,11 @@ pub enum ApprovalAction {
     /// [`ApprovalRequestView::stdin_delivery`]; the target is in
     /// [`ApprovalRequestView::store_output`].
     StoreCommandOutput,
+    /// An agent asks for a login to be typed as keystrokes into the focused field of a native app
+    /// (ADR-0050). Rides the presence grace window like an agent fill (`rides_grace` is set);
+    /// outside it, the full sheet with Touch ID. Never "for this session"; mints nothing. The
+    /// target app is in [`ApprovalRequestView::auto_type`].
+    AutoType,
 }
 
 impl From<ApprovalKind> for ApprovalAction {
@@ -133,6 +145,7 @@ impl From<ApprovalKind> for ApprovalAction {
             ApprovalKind::AgentFill => Self::AgentFill,
             ApprovalKind::CreateTestLogin => Self::CreateTestLogin,
             ApprovalKind::StoreCommandOutput => Self::StoreCommandOutput,
+            ApprovalKind::AutoType => Self::AutoType,
         }
     }
 }
@@ -288,6 +301,12 @@ pub struct ApprovalRequestView {
     #[uniffi(default = None)]
     pub store_output: Option<StoreOutputFactsView>,
 
+    // --- ADR-0050: auto-type into a native app. ---------------------------------------------
+    /// The target app and what will be typed. `Some` exactly when [`Self::action`] is
+    /// [`ApprovalAction::AutoType`].
+    #[uniffi(default = None)]
+    pub auto_type: Option<AutoTypeFactsView>,
+
     // --- ADR-0035 §14: values from a shared vault. Empty for the personal vault. ------------
     /// Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
     /// members` — to be shown as a fact on the sheet. `None` for the personal vault.
@@ -335,6 +354,43 @@ impl From<kagisecure_agent::StoreOutputFacts> for StoreOutputFactsView {
             field_label: f.field_label,
             fills_empty_field: f.fills_empty_field,
             timeout_seconds: f.timeout_seconds,
+            reason: f.reason,
+        }
+    }
+}
+
+/// [`kagisecure_agent::AutoTypeFacts`]: what an auto-type sheet states (ADR-0050 §2). Names and
+/// a bundle id only; the app resolves the target's name and icon from the bundle id.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AutoTypeFactsView {
+    /// The agent as the audit log names it.
+    pub agent: String,
+    /// The item's title.
+    pub item_title: String,
+    /// The vault the item is in.
+    pub vault_name: String,
+    /// The fields, in typing order: `username`, `password`, `one_time_code`.
+    pub fields: Vec<String>,
+    /// The target app's bundle id, as the agent named it.
+    pub bundle_id: String,
+    /// The signing team the agent requires, if any.
+    pub team_id: Option<String>,
+    /// The window-title substring the agent requires, if any: agent-written data.
+    pub window_title: Option<String>,
+    /// Why, as the agent put it: agent-written data.
+    pub reason: Option<String>,
+}
+
+impl From<kagisecure_agent::AutoTypeFacts> for AutoTypeFactsView {
+    fn from(f: kagisecure_agent::AutoTypeFacts) -> Self {
+        Self {
+            agent: f.agent,
+            item_title: f.item_title,
+            vault_name: f.vault_name,
+            fields: f.fields,
+            bundle_id: f.bundle_id,
+            team_id: f.team_id,
+            window_title: f.window_title,
             reason: f.reason,
         }
     }
@@ -630,6 +686,7 @@ impl From<ApprovalRequest> for ApprovalRequestView {
             test_login: r.agent_test_login.map(Into::into),
             rides_grace: r.rides_grace,
             store_output: r.store_output.map(Into::into),
+            auto_type: r.auto_type.map(Into::into),
             shared_source: r.shared_source,
             changed_since_approval: r.changed_since_approval,
         }
@@ -939,6 +996,135 @@ pub struct McpSetupView {
 // Exported functions
 // -------------------------------------------------------------------------------------------
 
+// -------------------------------------------------------------------------------------------
+// Auto-type (ADR-0050)
+// -------------------------------------------------------------------------------------------
+
+/// Which value a job types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AutoTypeFieldView {
+    /// The username.
+    Username,
+    /// The password: typed only into a secure text field.
+    Password,
+    /// A one-time code.
+    OneTimeCode,
+}
+
+impl From<kagisecure_ipc::protocol::TypeField> for AutoTypeFieldView {
+    fn from(f: kagisecure_ipc::protocol::TypeField) -> Self {
+        use kagisecure_ipc::protocol::TypeField;
+        match f {
+            TypeField::Username => Self::Username,
+            TypeField::Password => Self::Password,
+            TypeField::OneTimeCode => Self::OneTimeCode,
+        }
+    }
+}
+
+/// One value of a job.
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
+pub struct AutoTypeValueView {
+    /// Which field.
+    pub field: AutoTypeFieldView,
+    /// The value. The one record in this module that carries a secret: type it, never store it.
+    pub value: String,
+}
+
+impl std::fmt::Debug for AutoTypeValueView {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutoTypeValueView")
+            .field("field", &self.field)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An approved auto-type, for the app to verify and type (ADR-0050 §3).
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AutoTypeJobView {
+    /// Quote back to [`auto_type_finish`].
+    pub id: String,
+    /// The item's title, for a notice.
+    pub item_title: String,
+    /// The bundle id the frontmost app must have.
+    pub bundle_id: String,
+    /// The signing team it must have, if the agent named one.
+    pub team_id: Option<String>,
+    /// A substring the focused window's title must contain, if the agent named one.
+    pub window_title: Option<String>,
+    /// What to type, in order, with Tab between consecutive values.
+    pub values: Vec<AutoTypeValueView>,
+}
+
+/// How typing went, as the app reports it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AutoTypeOutcomeView {
+    /// Every value typed.
+    Typed,
+    /// The frontmost app, its team, its window or the focused field did not match. Nothing typed.
+    TargetMismatch,
+    /// Focus moved while typing.
+    FocusChanged {
+        /// Whether some keystrokes were already sent.
+        typed_any: bool,
+    },
+    /// Another app holds secure keyboard input. Nothing typed.
+    SecureInput,
+    /// No Accessibility permission. Nothing typed.
+    AccessibilityDenied,
+}
+
+impl From<AutoTypeOutcomeView> for kagisecure_agent::auto_type::TypeOutcome {
+    fn from(o: AutoTypeOutcomeView) -> Self {
+        match o {
+            AutoTypeOutcomeView::Typed => Self::Typed,
+            AutoTypeOutcomeView::TargetMismatch => Self::TargetMismatch,
+            AutoTypeOutcomeView::FocusChanged { typed_any } => Self::FocusChanged { typed_any },
+            AutoTypeOutcomeView::SecureInput => Self::SecureInput,
+            AutoTypeOutcomeView::AccessibilityDenied => Self::AccessibilityDenied,
+        }
+    }
+}
+
+/// Say whether this app can type for agents: it holds the Accessibility permission and the person
+/// has agent auto-type on. Until it says `true`, every `request_type` is `TYPE_UNAVAILABLE`
+/// before any sheet.
+#[uniffi::export]
+pub fn auto_type_set_ready(ready: bool) {
+    AUTO_TYPE.set_ready(ready);
+}
+
+/// Wait up to `timeout_ms` for an approved auto-type, and take it.
+///
+/// **This call blocks.** Call it from a background task, never from the main actor.
+#[uniffi::export]
+#[must_use]
+pub fn auto_type_next_job(timeout_ms: u32) -> Option<AutoTypeJobView> {
+    AUTO_TYPE
+        .next_job(Duration::from_millis(u64::from(timeout_ms)))
+        .map(|job| AutoTypeJobView {
+            id: job.id,
+            item_title: job.item_title,
+            bundle_id: job.target.bundle_id,
+            team_id: job.target.team_id,
+            window_title: job.target.window_title,
+            values: job
+                .values
+                .iter()
+                .map(|v| AutoTypeValueView {
+                    field: v.field.into(),
+                    value: v.value.expose().to_owned(),
+                })
+                .collect(),
+        })
+}
+
+/// Report how job `id` went. `false` when the id is unknown: it timed out, or a lock swept it.
+#[uniffi::export]
+pub fn auto_type_finish(id: String, outcome: AutoTypeOutcomeView) -> bool {
+    AUTO_TYPE.finish(&id, outcome.into())
+}
+
 /// Read an endpoint the host named, or say why this platform cannot listen on it.
 ///
 /// One place for the three overrides the app can pass, so that a string crossing the FFI means
@@ -990,6 +1176,7 @@ pub fn agent_start(session: Arc<VaultSession>, socket_path: Option<String>) -> F
         queue: Some(Arc::clone(&QUEUE)),
         agent_fill: Some(Arc::clone(&AGENT_FILL)),
         test_logins: Some(Arc::clone(&TEST_LOGINS)),
+        auto_type: Some(Arc::clone(&AUTO_TYPE)),
     };
     let started =
         Agent::start(session.handle(), &config).map_err(|e| FfiError::invalid(e.to_string()))?;
@@ -1020,6 +1207,8 @@ pub fn agent_stop() {
     if let Some(mut existing) = slot.take() {
         existing.stop();
     }
+    // A job not yet typed goes with the vault key (ADR-0050 §5).
+    AUTO_TYPE.revoke_all();
 }
 
 /// Whether the listener is running, and what it is holding.

@@ -44,32 +44,34 @@ struct StoreCommandOutputFactsBlock: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    static let notice = "What this command prints becomes a stored secret. The agent will not see it."
+    static let notice = String(localized: "What this command prints becomes a stored secret. The agent will not see it.")
 
     static func targetSummary(_ facts: StoreOutputFactsView) -> String {
         let title = ApprovalSheet.safe(facts.itemTitle, limit: 120)
         let vault = ApprovalSheet.safe(facts.vaultName, limit: 80)
         if facts.itemId == nil {
             let category = ApprovalSheet.safe(facts.newItemCategory ?? "api-credential", limit: 40)
-            return "New item “\(title)” (\(category)) in vault “\(vault)”"
+            return String(localized: "New item “\(title)” (\(category)) in vault “\(vault)”")
         }
-        return "Existing item “\(title)” in vault “\(vault)”"
+        return String(localized: "Existing item “\(title)” in vault “\(vault)”")
     }
 
     static func fieldSummary(_ facts: StoreOutputFactsView) -> String {
         let label = ApprovalSheet.safe(facts.fieldLabel, limit: 64)
-        if facts.itemId == nil { return "“\(label)” (new, concealed)" }
+        if facts.itemId == nil { return String(localized: "“\(label)” (new, concealed)") }
         return facts.fillsEmptyField
-            ? "“\(label)” (existing, empty — will be filled)"
-            : "“\(label)” (new, concealed — will be added)"
+            ? String(localized: "“\(label)” (existing, empty — will be filled)")
+            : String(localized: "“\(label)” (new, concealed — will be added)")
     }
 
     static func timeoutSummary(_ facts: StoreOutputFactsView) -> String {
-        "\(facts.timeoutSeconds) second\(facts.timeoutSeconds == 1 ? "" : "s")"
+        facts.timeoutSeconds == 1
+            ? String(localized: "1 second")
+            : String(localized: "\(facts.timeoutSeconds) seconds")
     }
 
     /// The target phrase for the sentence and the Touch ID prompt.
     static func leadTarget(_ facts: StoreOutputFactsView?) -> String {
-        ApprovalSheet.safe(facts?.itemTitle ?? "an item", limit: 80)
+        ApprovalSheet.safe(facts?.itemTitle ?? String(localized: "an item"), limit: 80)
     }
 }

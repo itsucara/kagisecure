@@ -11,6 +11,7 @@ pub mod audit;
 pub mod daemon;
 pub mod env;
 pub mod generate;
+pub mod host_bundle;
 pub mod import;
 pub mod item;
 pub mod mcp;

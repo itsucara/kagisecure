@@ -195,6 +195,8 @@ final class AppModel {
         // Agent-fill notices are drained on the same tick (ADR-0036 implementation decision 11).
         agent.agentFill = agentFill
         agent.testLogins = testLogins
+        agent.approvalNotifier = SystemAgentFillNotifier()
+        agent.bringApprovalForward = AgentService.activateAndFocusSheet
         // The switch the user chose, pushed to Rust's in-memory flag (off in every new process)
         // at launch. Pushed again on every unlock, in `adopt`, before either listener starts.
         agentFill.applyStoredSwitch()
@@ -357,6 +359,8 @@ final class AppModel {
         // with. A failure to bind is not fatal — the vault still works — so it is recorded on the
         // service and shown in Agent access rather than raised as a modal.
         agent.start(session: session)
+        // Approved auto-types arrive through Rust's broker; the typist polls it (ADR-0050).
+        AutoTypeService.shared.start()
         // Started after the agent, because both listeners ask through the queue the agent's poll
         // loop is now draining — a fill that arrived before that loop existed would sit unanswered
         // until it timed out.
@@ -411,6 +415,7 @@ final class AppModel {
         store.session.lock()
         presence.cancelInFlight()
         agent.stop()
+        AutoTypeService.shared.stop()
         browserExtension.stop()
         browserPrompt.vaultLocked()
         // The recent agent-fill notices name items; they go with the key. Blocks stay (Rust's).

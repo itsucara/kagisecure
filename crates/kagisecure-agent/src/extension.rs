@@ -142,6 +142,7 @@ use crate::vault::{LockHookGuard, REQUEST_LOCK_TIMEOUT, VaultHandle, sync_could_
 
 pub mod agent_fill;
 mod crossing;
+pub(crate) use crossing::auto_type_values;
 
 use agent_fill::{AgentFillBroker, SessionTicket};
 use crossing::{Approved, TOTP_FIELD};

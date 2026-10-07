@@ -61,6 +61,7 @@
 
 pub mod agent;
 pub mod approval;
+pub mod auto_type;
 pub mod browser_setup;
 pub mod bundle;
 pub mod catalog;
@@ -78,7 +79,8 @@ pub mod vault;
 pub use agent::{Agent, AgentConfig, AgentError, AgentStatus};
 pub use approval::{
     APPROVAL_TIMEOUT_SECONDS, AgentFillFacts, ApprovalKind, ApprovalQueue, ApprovalRequest,
-    ClientVerification, Decision, StoreOutputFacts, TestLoginFacts, TestLoginWebsite,
+    AutoTypeFacts, ClientVerification, Decision, StoreOutputFacts, TestLoginFacts,
+    TestLoginWebsite,
 };
 pub use extension::agent_fill::{
     AgentFillBlock, AgentFillBlockReason, AgentFillBroker, AgentFillClock, AgentFillNotice,

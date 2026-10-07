@@ -423,6 +423,7 @@ fn every_tool_works_end_to_end_and_the_marker_never_reaches_stdout() {
             "list_test_logins",
             "list_vaults",
             "request_fill",
+            "request_type",
             "revoke_env_file",
             "run_with_env",
             "store_command_output",
@@ -912,7 +913,7 @@ async fn every_tool_through_the_rmcp_client_api() {
         .map(|t| t.name.to_string())
         .collect();
     names.sort();
-    assert_eq!(names.len(), 14, "{names:?}");
+    assert_eq!(names.len(), 15, "{names:?}");
 
     // Everything the client is handed, concatenated, so one assertion covers the lot.
     let mut seen = String::new();

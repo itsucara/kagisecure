@@ -19,6 +19,8 @@ kagisecure-ipc = { workspace = true }
 kagisecure-agent = { workspace = true }
 kagisecure-extension-ipc = { workspace = true }
 kagisecure-shared = { workspace = true }
+# The bundle format and grant types of `kagisecure host-bundle` (ADR-0043).
+kagisecure-host = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }
 rpassword = "7"

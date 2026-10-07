@@ -53,6 +53,9 @@ struct ApprovalSheet: View {
                     if request.action == .storeCommandOutput, let facts = request.storeOutput {
                         StoreCommandOutputFactsBlock(facts: facts)
                     }
+                    if request.action == .autoType, let facts = request.autoType {
+                        AutoTypeFactsBlock(facts: facts)
+                    }
                     if !request.variables.isEmpty { variables }
                     if !request.command.isEmpty { command }
                     location
@@ -117,6 +120,7 @@ struct ApprovalSheet: View {
         case .agentFill: "person.badge.key"
         case .createTestLogin: "person.badge.plus"
         case .storeCommandOutput: "terminal.fill"
+        case .autoType: "keyboard"
         }
     }
 
@@ -172,7 +176,11 @@ struct ApprovalSheet: View {
         case .storeCommandOutput:
             let cmd = safe(request.command.joined(separator: " "), limit: 80)
             let item = StoreCommandOutputFactsBlock.leadTarget(request.storeOutput)
-            return "\(who) wants to run \(cmd) and store its output in “\(item)”"
+            return String(localized: "\(who) wants to run \(cmd) and store its output in “\(item)”")
+        case .autoType:
+            let item = safe(request.autoType?.itemTitle ?? request.itemTitle ?? String(localized: "a login"))
+            let app = AutoTypeFactsBlock.appName(for: request.autoType)
+            return String(localized: "\(who) wants kagisecure to type “\(item)” into \(app)")
         }
     }
 
@@ -395,10 +403,9 @@ struct ApprovalSheet: View {
 
     /// What a stdin delivery does with the values, and the one thing to check before allowing it
     /// (ADR-0047): the values reach whatever the command does with its input.
-    static let stdinCaption =
-        "The values are written to this command's standard input, once, and are not placed in its "
-        + "environment or arguments. Allow it only if this is the command you expect: it can do "
-        + "anything with what it reads."
+    static var stdinCaption: String {
+        String(localized: "The values are written to this command's standard input, once, and are not placed in its environment or arguments. Allow it only if this is the command you expect: it can do anything with what it reads.")
+    }
 
     @ViewBuilder
     private var location: some View {
@@ -490,8 +497,11 @@ struct ApprovalSheet: View {
 
     /// The one-line scope sentence from ui-spec.md §10.2.
     static func summary(for request: ApprovalRequestView, ttlSeconds: UInt64) -> String {
+        if request.action == .autoType {
+            return AutoTypeFactsBlock.summary
+        }
         if request.action == .storeCommandOutput {
-            return "This runs the command once and stores what it prints as a secret. The agent never receives the output, and each run asks for Touch ID."
+            return String(localized: "This runs the command once and stores what it prints as a secret. The agent never receives the output, and each run asks for Touch ID.")
         }
         if request.action == .createTestLogin {
             return String(localized: "This saves a new login in the Agent test logins vault with a password kagisecure generates. The agent never receives the password, and each create here asks for Touch ID.")
@@ -513,8 +523,8 @@ struct ApprovalSheet: View {
         }
         if request.stdinDelivery {
             let names = request.variables.isEmpty
-                ? "no variables" : safe(request.variables.joined(separator: ", "), limit: 100)
-            return "This passes \(names) to this one run of the command. The next run asks again."
+                ? String(localized: "no variables") : safe(request.variables.joined(separator: ", "), limit: 100)
+            return String(localized: "This passes \(names) to this one run of the command. The next run asks again.")
         }
         let names = request.variables.isEmpty
             ? String(localized: "no variables") : safe(request.variables.joined(separator: ", "), limit: 100)
@@ -561,10 +571,14 @@ struct ApprovalSheet: View {
                 Button("Deny") { agent.deny(request) }
                     .keyboardShortcut(.cancelAction)
                     .accessibilityIdentifier("ks.approval.deny")
+                if request.action == .autoType {
+                    Button("Deny and block this agent") { agent.denyAndBlock(request) }
+                        .accessibilityIdentifier("ks.approval.denyAndBlock")
+                }
                 Button("Allow once") { approve(.allowOnce) }
                     .accessibilityIdentifier("ks.approval.allowOnce")
                 if !request.stdinDelivery && request.action != .createTestLogin
-                    && request.action != .storeCommandOutput {
+                    && request.action != .storeCommandOutput && request.action != .autoType {
                     Button("Allow for this session") {
                         approve(.allowSession(ttlSeconds: UInt64(ttlSeconds), uses: request.requestedUses))
                     }

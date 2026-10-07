@@ -168,9 +168,11 @@ pub fn run(path: &Path, args: &DaemonArgs, input: &mut SecretInput) -> Result<()
         // Nor does it serve agent fills: with no broker, every `request_fill` is
         // `FILL_UNAVAILABLE` before anything is looked up (ADR-0036 §3.1).
         agent_fill: None,
+        // Nor auto-type (ADR-0050): nothing here types, so `request_type` is `TYPE_UNAVAILABLE`.
         // Nor agent test logins, which are personal and interactive (ADR-0048 §12): with no
         // broker, both test-login tools answer `TEST_LOGINS_OFF`.
         test_logins: None,
+        auto_type: None,
     };
     let agent = Agent::start(Arc::clone(&handle), &config)
         .context("could not start the kagisecure agent")?;
@@ -252,7 +254,9 @@ fn decide(
         ApprovalMode::AutoApprove
             if matches!(
                 request.kind,
-                ApprovalKind::CreateTestLogin | ApprovalKind::StoreCommandOutput
+                ApprovalKind::CreateTestLogin
+                    | ApprovalKind::StoreCommandOutput
+                    | ApprovalKind::AutoType
             ) =>
         {
             println!(
@@ -390,6 +394,9 @@ fn what(kind: ApprovalKind) -> &'static str {
         ApprovalKind::StoreCommandOutput => {
             "run a command and store what it prints as a secret (the agent will not see it)"
         }
+        // Unreachable: with no auto-type broker, `request_type` is `TYPE_UNAVAILABLE` before any
+        // sheet (ADR-0050 §4).
+        ApprovalKind::AutoType => "type a saved login into another app",
     }
 }
 

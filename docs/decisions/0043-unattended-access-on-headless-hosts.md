@@ -1,12 +1,12 @@
 # ADR-0043: Headless hosts arm themselves from a key in their own key store and take every grant from a signed bundle made on a Mac
 
-- **Status:** Proposed (2026-09-27). Not implemented, not accepted. The owner answered all eight
-  open questions of the first draft the same day, and the five its answers raised (see "Owner's
-  answers"); eight of the thirteen answers chose against the proposals, and the design below
-  follows the answers. No question for the owner remains; measurements do (see "Open questions"
-  and "Implementation plan").
+- **Status:** **Accepted (2026-10-07) for one scope: deploy keys on a Linux host** — the
+  "Accepted scope" section below, which is built (`crates/kagisecure-host`, `kagisecure
+  host-bundle`). Everything else in this ADR stays **Proposed** (2026-09-27): it is the design
+  the accepted scope is a first slice of, and where the two differ, the accepted scope decides for
+  what it covers.
 - **Date:** 2026-09-27
-- **Deciders:** the owner (pending)
+- **Deciders:** the owner (accepted scope, 2026-10-07: start with deploy keys on one headless server)
 - **Refines:** [ADR-0042](0042-unattended-agent-access.md) §14, §15 and its open question 19 (this
   is the follow-up ADR they call for), and ADR-0042's owner's answer 4, **for headless hosts only**
   (§11); [architecture.md](../architecture.md) §2.6; [threat-model.md](../threat-model.md) M-13 and
@@ -28,11 +28,158 @@
   [ADR-0041](0041-anchor-the-audit-logs-freshness-outside-the-vault-file.md),
   [vault-format.md](../vault-format.md), [browser-extension.md](../browser-extension.md) §9
 
-> **Nothing in this ADR is implemented, and it is not accepted.** It is a proposal for the owner,
-> written against [ADR-0042](0042-unattended-agent-access.md), which is itself proposed and
-> unimplemented. Mechanisms are described in the present tense because that is how the other ADRs
-> read, not because code exists. Its threat-model entries are listed under "Changes in the threat
-> model" with provisional numbers; [threat-model.md](../threat-model.md) is not edited by it.
+> **What is built is the accepted scope only.** The rest of this ADR is a proposal, written
+> against [ADR-0042](0042-unattended-agent-access.md). Mechanisms are described in the present
+> tense because that is how the other ADRs read, not because code exists. Its threat-model entries
+> are listed under "Changes in the threat model" with provisional numbers;
+> [threat-model.md](../threat-model.md) is not edited by it.
+
+## Accepted scope (2026-10-07): deploy keys on a headless host
+
+**The owner's decision.** Start with deploy keys: the staging and gateway deploys of a project
+run on the owner's headless Ubuntu server take their SSH deploy key from kagisecure
+instead of a passphrase-less key file, unattended, under a standing grant that names that exact
+command; the key file is then removed. The owner's direction for this stage: correctness and code
+quality first, convenience first, no backward compatibility.
+
+What follows decides every question this scope raises, with the simplest choice that is correct.
+Where it is simpler than §1–§20, the simplification is named, and the larger design remains the
+direction for later scopes.
+
+### A1. One binary, one engine per host, no approval path
+
+`kagisecure-host` (crate `crates/kagisecure-host`, Linux and macOS) is the only process on the host
+that holds the key. It has **no approval path**: no prompt, no flag that approves, no message that
+creates or widens a grant. Its socket accepts one request — "run grant *G* as *argv* in *cwd*" —
+and refuses anything else unread (`deny_unknown_fields`; a test sends an `approve` field and gets
+`BAD_REQUEST`). `kagisecure daemon` is unchanged (§2).
+
+Reused, not duplicated: the core's injector (`inject::run_with_env` with `Delivery::Stdin`, its
+masking, process group and deadline), the machine-vault grant types (`PinnedExecutable`,
+`GrantLimits`, `PresencePath`, `file_sha256`), and the shared-vault crypto (device keys, HPKE,
+domain-separated Ed25519). The core gains one field, `RunRequest::run_as`, so a command can be
+started as another account. The Mac's engine in `kagisecure-agent` is not linked: its jobs,
+schedules, run binding and Keychain arming are what this scope does without (A4).
+
+**Simplified from §2–§3:** one account runs the engine (root, A2) and granted commands run as the
+grant's `run_as` account; there is no job/CI account split, no cgroup or peer-pid binding, and no
+`separate`/`shared` profile choice at `init`.
+
+### A2. Key protection: a 0600 file by default; a TPM-sealed systemd credential optional
+
+- **Default: a key file.** `kagisecure-host init` creates the host's key pair — a shared-vault
+  device key, X25519 for sealing and Ed25519 for identity — in
+  `/var/lib/kagisecure-host/host.key`, mode `0600`, in a `0700` directory (`StateDirectory=`).
+  The service runs as **root**, so the file is readable by root alone. The true sentence, printed
+  by `init` and repeated in the docs: *anything that can read that file — the service, or root —
+  can open every bundle made for this host and so holds every value in it.* A host without a TPM
+  is no worse than the passphrase-less key file it replaces, and better in one way: what rests on
+  disk is ciphertext plus a key only root can read, not a key any process of the operator can.
+- **Why root, not a service account.** A granted command runs as the grant's account. A
+  non-root service would need `CAP_SETUID`/`CAP_SETGID` as ambient capabilities, which a child
+  that changes from one non-root uid to another *keeps* (capabilities(7)) — the deploy would run
+  able to become root. From root, the change to the job account clears every capability, so the
+  command keeps none. The unit's `CapabilityBoundingSet=` is only `CAP_SETUID CAP_SETGID CAP_KILL
+  CAP_DAC_READ_SEARCH` (the last to hash and enter a checkout in a `0750` home).
+- **Optional: TPM.** If `$CREDENTIALS_DIRECTORY/kagisecure-host.key` exists it is used instead of
+  the file. With `LoadCredentialEncrypted=` and `systemd-creds encrypt --with-key=host+tpm2`,
+  the key is sealed by the TPM and systemd decrypts it for the unit (§4.1's mechanism, without
+  PCR policy, and with no TPM code in kagisecure). Not required, not checked by `init`.
+- **Hardening, honestly limited.** Granted commands run inside the unit, so it cannot be
+  sandboxed as §3 wants: `ProtectSystem=full`, `PrivateTmp=yes`, `NoNewPrivileges=yes`,
+  `RestrictSUIDSGID=yes`, no core dumps — but no `ProtectHome` and no
+  `RestrictAddressFamilies=AF_UNIX` (a deploy needs the network and its home).
+
+### A3. Signed bundles, exported from the Mac, carrying only what that host is granted
+
+- **Owner key.** The signer is the Mac's shared-vault device key, held in the personal vault body
+  (`kagisecure host-bundle owner-key` prints it, creating it if the vault has none). The host
+  pins it at `init --owner <key>` and accepts bundles from no other device.
+- **Export.** `kagisecure host-bundle export --host build-1 --host-key <key> --environment
+  app-deploy --grants <file> [--grant NAME]... --out build-1.kgsb` opens the personal vault
+  with the master password (recorded as `PRESENCE_CONFIRMED_MASTER_PASSWORD`), reads the named
+  **machine-vault** environment, and puts in the bundle **only the variables the chosen grants
+  release** — a bundle carrying anything no grant releases does not validate. The export is
+  audited in the personal vault, durably, before the file is written.
+- **Envelope** (`kagisecure_shared::host_bundle`): magic, signer id, host id, a sequence number
+  (milliseconds since the epoch at export), the payload sealed with HPKE Base mode to the host's
+  X25519 key under `info = "kagisecure/host-bundle/v1" ‖ signer ‖ host ‖ sequence`, and an Ed25519
+  signature in the new domain `kagisecure/shared/sig/host-bundle/v1` over everything after the
+  signer id. Verified before it is decrypted: layout, signer is the pinned owner, signature
+  (strict), host id, sequence above the last imported, then the payload opens. Tests: every
+  single-bit change refused, a stranger's valid signature refused, another host's bundle refused,
+  a replay refused, a re-signed header around a lifted payload does not open.
+- **Complete, not a delta.** Importing replaces every environment and grant and resets every
+  use count and suspension: re-signing is the owner approving again.
+- **At rest** the host keeps the bundle exactly as signed and verifies it again on every request;
+  there is no host-side machine-vault file and no second copy of a value. Mutable state
+  (`state.json`: sequence, uses, suspensions) and the audit log (`audit.log`, JSON lines, synced
+  before each release) hold no value.
+- **Simplified from §5–§9:** no enrolment ceremony beyond comparing fingerprints, no `narrowing`
+  bundles (a new complete bundle narrows), no inbox polling (the operator runs `import`), no
+  signed reports or pins from the host, no expiry of the bundle itself beyond its grants'.
+
+### A4. Grants: one exact command, named by the caller, run by the host
+
+A host grant is ADR-0042's command grant with one widening and three narrowings:
+
+- **Argument patterns.** Each argument after the executable is a literal or `{commit}`
+  (`ArgPattern::CommitSha`): exactly 40 lower-case hex digits. The argument count is exact.
+- **Executable pinned by SHA-256 only** (no code-signing pin on Linux), plus its absolute path;
+  the working directory is matched exactly after resolving symbolic links.
+- **Named by the caller.** A request names its grant; it is matched against that one grant, never
+  searched for. An unknown name is refused (`NO_SUCH_GRANT`) and is not a strike.
+- **The host starts the command itself**, as the grant's `run_as` account (looked up in
+  `/etc/passwd`; `HOME`, `USER`, `LOGNAME` set to it), in the grant's directory, with the
+  unit's fixed `PATH`, a deadline (default 30 minutes, at most 6 hours), and its output masked
+  before it is returned to the caller. The caller's environment never reaches the command.
+- **Suspension** (ADR-0042 §7): a request whose argv or cwd is not the grant's is a strike and
+  suspends that grant (`EXECUTABLE_MISMATCH`, `ARGUMENTS_MISMATCH`, `CWD_MISMATCH`); an executable
+  whose hash changed suspends it (`PIN_CHANGED`). A suspended grant answers `SUSPENDED` until a new
+  bundle is imported — restoring the file does not lift it. Limits: total uses (default 500) and
+  an expiry at most 90 days after creation.
+- **Who may ask** is the file system: the socket is `0660` in a `0750` runtime directory, group
+  `kagisecure`. A member can do nothing but start, exactly, a command the owner granted.
+
+### A5. Stdin delivery under a host grant: the narrow exception to ADR-0047 §8
+
+ADR-0047 §8 keeps stdin delivery off the unattended socket. A host grant is the one exception, and
+only in this form: **delivery is always stdin** (a host grant cannot put values in an
+environment), and only for a grant that pins the exact executable by hash, every argument by
+literal or `{commit}` pattern, and the working directory. The frame is ADR-0047's
+`NAME\0VALUE\0`, written once and closed. Why it is acceptable here: stdin is the form the
+deploy script was written to receive (it never writes the key to disk and loads it into a
+private `ssh-agent`); an environment would be inherited by everything the deploy starts. ADR-0047
+§4's "one approval, one run" does not apply — the grant is the approval (ADR-0042) — and that is
+what `kagisecure host-bundle export` prints before it finishes.
+
+### A6. What a deploy looks like
+
+The operator on the host runs the project's deploy script as before. On the host, the script
+resolves the commit to 40 hex, then `exec`s `kagisecure-host request deploy-<target> --
+<checkout>/infra/deploy/deploy <target> <sha> --key-from-stdin` from the checkout. The host checks
+and audits, starts the script as the operator with the key on stdin, and returns the masked output
+(when the run ends; it is not streamed) and the exit code. The script holds the key only in memory.
+The key file and its public half are then removed.
+
+### A7. Residual risk, stated
+
+- Root on the host holds every bundled value (the key file, or the TPM-unsealed credential
+  while the unit runs).
+- The grant pins the script, not what it runs: `bash`, `git`, `ssh`, the operator's
+  `~/.ssh/config` and `pnpm` are files the operator or root can change. Anything that can change
+  what the granted command does can obtain the key — ADR-0042's sentence, unchanged.
+- A change to the pinned script (any new commit touching it, pulled on the host) suspends the
+  grant until the owner exports a new bundle. That is the intended cost of pinning.
+- Masking is best effort (mcp-server.md §2.8); a deploy that prints its key is not prevented
+  from doing so, only scrubbed.
+
+### A8. Not in this scope
+
+CI grants (§11), login grants and unattended sign-ins (§15), schedules and jobs started by the
+host, signed reports and pins from the host (§8, §14), `narrowing` bundles, enrolment beyond
+fingerprints, profiles and their labels on the Mac (§1), Mac build hosts (§17), an FFI hook or a
+Mac app screen for exporting (the CLI does it), and `prod` deploys (still from the Mac).
 
 ## Context
 
@@ -1321,7 +1468,9 @@ The ADR stays **Proposed**: the answers settle direction, not acceptance.
 
 ## Open questions
 
-None for the owner: the eight questions of the first draft and the five their answers raised are
+The accepted scope (above) resolves for itself: key protection (A2), bundle provenance and
+contents (A3), and stdin delivery under a grant (A5). For the rest of the design: none for the
+owner: the eight questions of the first draft and the five their answers raised are
 answered above. What remains is measurement, recorded in this ADR when it is made:
 
 - the three blockers of `enclave` sealing for Mac hosts (§17; the first is ADR-0011's account

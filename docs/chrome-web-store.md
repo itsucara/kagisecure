@@ -325,7 +325,7 @@ path.
 | Submit | `POST https://chromewebstore.googleapis.com/v2/publishers/{publisher}/items/{item}:publish` (empty body: default publish type, reviewed) |
 
 OAuth scope: `https://www.googleapis.com/auth/chromewebstore`. Publisher id
-`3edd5ef8-a197-45cc-b770-5ba58afbefa3`, item id `jgfpjhijkkjngmihmammolbcicgkicji`, both
+`3edd5ef8-a197-45cc-b770-5ba58afbefa3`, item id `aacppfmljihmjacphgpkbmanhbhphjgl`, both
 constants in `xtask/src/chrome_publish.rs`.
 
 The API cannot create an item (§6) and publishes with the visibility already set in the

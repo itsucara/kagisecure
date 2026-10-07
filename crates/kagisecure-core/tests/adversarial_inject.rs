@@ -50,6 +50,7 @@ fn run_script(
         max_output,
         timeout: Some(Duration::from_secs(20)),
         new_process_group: true,
+        run_as: None,
     };
     run_with_env(&request).expect("the shell should start")
 }
@@ -250,6 +251,7 @@ fn masking_is_opt_out_and_the_injector_does_not_override_the_caller() {
         max_output: DEFAULT_MAX_OUTPUT,
         timeout: Some(Duration::from_secs(20)),
         new_process_group: true,
+        run_as: None,
     };
     let outcome = run_with_env(&request).unwrap();
     assert_eq!(outcome.masked, 0);

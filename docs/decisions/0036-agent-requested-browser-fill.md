@@ -144,6 +144,9 @@ the opposite of the extension's rule ([ADR-0018](0018-browser-extension-secret-c
 here it is a model, and `agent_visible` is precisely the user's statement of which items a model may
 deal in.
 
+> *Amended 2026-10-03: the switch is **on by default** and turning it on asks for no presence check
+> (amendment item 4). The paragraph below is the original design.*
+
 **The feature is off by default.** One switch in Agent access, "Let agents ask to fill logins in
 your browser", stored in app defaults and pushed to an in-memory flag in Rust
 (`agent_fill_set_enabled`). Off, every call answers `FILL_UNAVAILABLE` before any item is looked up.
@@ -183,6 +186,11 @@ has normally caused one. If no extension session is connected, the answer is `FI
 not a sheet.
 
 #### 3.2 Which tab: the one in front, and only that one
+
+> *Superseded in part by [Amendment 2026-10-03](#amendment-2026-10-03-agents-fill-without-prompts-during-grace)
+> item 5: a background tab at the claimed origin is now used, and the active/visible requirement
+> is dropped. The text below, including "a background tab cannot be filled", is the original
+> design.*
 
 On `Locate`, each connected service worker takes **the active tab of the browser's last-focused
 normal window** — `chrome.tabs.query({ active: true, lastFocusedWindow: true })`, which returns an
@@ -230,6 +238,13 @@ cannot be filled.** An agent that drives a window the human cannot see gets `NO_
 every time. That is the design, not a limitation to be lifted.
 
 #### 3.3 Where it can work at all
+
+> *Update: a headless, throwaway browser the agent launches itself still gets `FILL_UNAVAILABLE`,
+> but a **run browser** — a headless Chromium-family browser kagisecure launches for an unattended
+> run, with the extension and manifest in its profile — is fillable under a standing login grant
+> ([ADR-0042](0042-unattended-agent-access.md) §12; [browser-extension.md](../browser-extension.md),
+> "Run browsers and the unattended extension endpoint"; the Playwright recipe in §5 there also
+> loads the extension). "Honest rather than fixable" below describes only the agent-launched case.*
 
 Only in a browser profile that has the kagisecure extension and its native-messaging manifest: an
 agent operating the user's own browser. An automation framework that launches a throwaway profile
@@ -1292,8 +1307,7 @@ and the claims about the browser are the Rust and JavaScript tests', not an obse
 
 ## Pointer 2026-09-27 — unattended fills of machine-vault logins
 
-[ADR-0042](0042-unattended-agent-access.md) §12, accepted for macOS and not yet built beyond its
-core, lets a job kagisecure starts sign in with a **machine-vault** login under a standing login
+[ADR-0042](0042-unattended-agent-access.md) §12, accepted for macOS and since built (Phase 5), lets a job kagisecure starts sign in with a **machine-vault** login under a standing login
 grant, in a browser kagisecure launched for that run, at one exact origin. For those fills only,
 §3.2's visibility rule is dropped and §5's sheet and biometric are replaced by the grant. Every
 fill this ADR describes — into the user's own browsers, of personal, shared or machine-vault

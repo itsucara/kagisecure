@@ -90,6 +90,7 @@ fn a_connected_sidecar_does_not_keep_a_stopped_agent_from_coming_back() {
                 queue: None,
                 agent_fill: None,
                 test_logins: None,
+                auto_type: None,
             },
         );
         let started_in = starting.elapsed();

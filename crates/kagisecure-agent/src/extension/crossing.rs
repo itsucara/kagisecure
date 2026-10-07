@@ -33,10 +33,12 @@
 //! hands the browser without a prompt (ADR-0030), and the username-only fill that writes it never
 //! reaches a sheet.
 
-use kagisecure_core::model::{Field, Item};
+use kagisecure_core::model::{Field, Item, SecretText};
 use kagisecure_extension_ipc::protocol::{FillField, FillValue, Response};
+use kagisecure_ipc::protocol::TypeField;
 
 use crate::approval::{ApprovalKind, Grant};
+use crate::auto_type::TypedValue;
 use crate::test_login::TestLoginPass;
 use crate::unattended::login::StandingPass;
 
@@ -104,7 +106,7 @@ impl Approved {
     ) -> Option<Self> {
         let covers = matches!(
             expected,
-            ApprovalKind::FillCredential | ApprovalKind::AgentFill
+            ApprovalKind::FillCredential | ApprovalKind::AgentFill | ApprovalKind::AutoType
         ) && grant.kind() == expected
             && grant.origin() == Some(origin)
             && grant.item_id() == Some(item_id)
@@ -319,6 +321,49 @@ pub(super) fn totp_code(approved: Approved, item: &Item, now: u64) -> Option<Res
         code: FillValue::new(code.expose_str()?.to_owned()),
         seconds_remaining: generator.seconds_remaining(now),
     })
+}
+
+/// The values an approved auto-type types into a native app (ADR-0050), in typing order.
+///
+/// The fourth crossing, and the only one that does not go to a browser: the grant is an
+/// [`ApprovalKind::AutoType`] grant whose `origin` is the target app's bundle id. Like [`filled`]
+/// it takes the grant by value — one grant, one crossing — and the caller runs it inside the
+/// transaction that commits the `Allowed` entry, on the item as the file holds it now.
+///
+/// `None` when the grant is not for this kind, target, item and every field, or the item has no
+/// value for one of them: then nothing crosses.
+pub(crate) fn auto_type_values(
+    grant: Grant,
+    bundle_id: &str,
+    item: &Item,
+    fields: &[TypeField],
+    now: u64,
+) -> Option<Vec<TypedValue>> {
+    let names: Vec<String> = fields.iter().map(|f| f.as_str().to_owned()).collect();
+    let item_id = item.id.to_string();
+    let approved =
+        Approved::from_grant(grant, ApprovalKind::AutoType, bundle_id, &item_id, &names)?;
+    let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    if !approved.covers(item, &refs) {
+        return None;
+    }
+    fields
+        .iter()
+        .map(|field| {
+            let value = match field {
+                TypeField::Username => item.username().filter(|u| !u.is_empty())?.to_owned(),
+                TypeField::Password => password_of(item)?,
+                TypeField::OneTimeCode => {
+                    let generator = item.totp_field()?.totp_generator().ok()?;
+                    generator.code_at(now).ok()?.expose_str()?.to_owned()
+                }
+            };
+            Some(TypedValue {
+                field: *field,
+                value: SecretText::new(value),
+            })
+        })
+        .collect()
 }
 
 /// Whether the item has a password a fill could write. Reads no value out.

@@ -146,6 +146,37 @@ final class QuickAccessModel {
         }
     }
 
+    /// ⇧⏎: type the selected login into the app that was in front before Quick Access — the
+    /// username, Tab, the password, or the password alone — behind one presence prompt that rides
+    /// the grace window (ADR-0050 §7). Keystrokes, never the clipboard.
+    func typeIntoPreviousApp() async {
+        guard let session, !awaitingPresence, let item = selectedItem else { return }
+        guard let field = item.passwordField else {
+            flash(String(localized: "No password on this item"))
+            return
+        }
+        awaitingPresence = true
+        defer { awaitingPresence = false }
+        let password: String
+        do {
+            let release = try await session.releaseField(
+                itemId: item.id, fieldId: field.id, purpose: .autoType)
+            defer { release.close() }
+            password = try release.value()
+        } catch {
+            flash(Self.refusal(error))
+            return
+        }
+        var values: [(AutoTypeFieldView, String)] = []
+        if let username = item.username, !username.isEmpty { values.append((.username, username)) }
+        values.append((.password, password))
+        onDismiss()
+        let outcome = await AutoTypeService.shared.typeIntoFrontmost(values)
+        if outcome != .typed {
+            AutoTypeService.notifyFailure(outcome)
+        }
+    }
+
     // MARK: - Helpers
 
     /// The clipboard clear policy, named at the copy site.

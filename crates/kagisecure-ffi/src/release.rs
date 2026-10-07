@@ -87,8 +87,12 @@ fn tool_for(kind: Kind, purpose: ReleasePurpose) -> FfiResult<&'static str> {
                 "a one-time code is not edited; release the field itself to edit its setup",
             ));
         }
+        (Kind::Field | Kind::Totp, P::AutoType) => "auto_type",
         (Kind::Notes, P::QuickAccessCopy) => {
             return Err(FfiError::invalid("Quick Access does not copy notes"));
+        }
+        (Kind::Notes, P::AutoType) => {
+            return Err(FfiError::invalid("notes are not auto-typed"));
         }
     })
 }

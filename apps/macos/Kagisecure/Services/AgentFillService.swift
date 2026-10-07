@@ -302,6 +302,26 @@ protocol AgentFillNotifier: AnyObject {
 
     /// Post one notification — if, and only if, the user authorized them.
     func post(title: String, body: String) async
+
+    /// Raise (or replace) the notification for an approval sheet that just appeared. Fire and
+    /// forget; `id` is the request id, so `withdrawApproval` can find it again.
+    func postApproval(id: String, title: String, body: String)
+
+    /// Remove the delivered and pending notification for `id` — the sheet was answered, timed out
+    /// or went away.
+    func withdrawApproval(id: String)
+}
+
+extension AgentFillNotifier {
+    func postApproval(id: String, title: String, body: String) {}
+    func withdrawApproval(id: String) {}
+}
+
+/// Does nothing; the default until the app wires in the real one.
+@MainActor
+final class InertApprovalNotifier: AgentFillNotifier {
+    func requestAuthorization() async {}
+    func post(title: String, body: String) async {}
 }
 
 /// `UNUserNotificationCenter`, asked nothing until the switch is turned on.
@@ -321,5 +341,35 @@ final class SystemAgentFillNotifier: AgentFillNotifier {
         let request = UNNotificationRequest(
             identifier: "agent-fill-\(UUID().uuidString)", content: content, trigger: nil)
         try? await center.add(request)
+    }
+
+    private static func approvalIdentifier(_ id: String) -> String { "agent-approval-\(id)" }
+
+    func postApproval(id: String, title: String, body: String) {
+        Task { @MainActor in
+            let center = UNUserNotificationCenter.current()
+            var status = await center.notificationSettings().authorizationStatus
+            if status == .notDetermined {
+                _ = try? await center.requestAuthorization(options: [.alert, .sound])
+                status = await center.notificationSettings().authorizationStatus
+            }
+            guard status == .authorized || status == .provisional else { return }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
+            // Downgraded to active by the system when the app lacks the entitlement.
+            content.interruptionLevel = .timeSensitive
+            let request = UNNotificationRequest(
+                identifier: Self.approvalIdentifier(id), content: content, trigger: nil)
+            try? await center.add(request)
+        }
+    }
+
+    func withdrawApproval(id: String) {
+        let identifier = Self.approvalIdentifier(id)
+        let center = UNUserNotificationCenter.current()
+        center.removeDeliveredNotifications(withIdentifiers: [identifier])
+        center.removePendingNotificationRequests(withIdentifiers: [identifier])
     }
 }

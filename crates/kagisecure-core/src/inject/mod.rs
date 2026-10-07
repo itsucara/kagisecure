@@ -81,6 +81,25 @@ pub enum Delivery {
     Stdin,
 }
 
+/// The account a child runs as, when it is not the caller's (ADR-0043 §3: a headless host's
+/// service account holds the key, and a granted command runs as the job account).
+///
+/// Unix only: the child's group and user are set before it executes (supplementary groups are
+/// those the caller holds), and `HOME`, `USER` and `LOGNAME` are set to the account's, so the
+/// command finds its own configuration. Changing user needs the privilege to do so
+/// (`CAP_SETUID` and `CAP_SETGID` on Linux); without it the spawn fails.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunAs {
+    /// User id.
+    pub uid: u32,
+    /// Primary group id.
+    pub gid: u32,
+    /// Login name.
+    pub user: String,
+    /// Home directory.
+    pub home: std::path::PathBuf,
+}
+
 /// One variable to place in the child's environment.
 pub struct EnvInjection {
     /// Variable name. Metadata: it may be shown, logged and returned to an agent.
@@ -140,6 +159,9 @@ pub struct RunRequest<'a> {
     /// the terminal behaviour unless it opts in. On Windows every child gets a job object either
     /// way; that does not change console Ctrl-C delivery.
     pub new_process_group: bool,
+    /// Start the child as another account ([`RunAs`]); `None` keeps the caller's. Refused with
+    /// [`Error::Spawn`] on a platform that has no such thing.
+    pub run_as: Option<&'a RunAs>,
 }
 
 impl<'a> RunRequest<'a> {
@@ -156,6 +178,7 @@ impl<'a> RunRequest<'a> {
             max_output: DEFAULT_MAX_OUTPUT,
             timeout: None,
             new_process_group: false,
+            run_as: None,
         }
     }
 }
@@ -212,6 +235,12 @@ pub fn run_with_env_tracked(
     command.stderr(Stdio::piped());
     if let Some(dir) = request.cwd {
         command.current_dir(dir);
+    }
+    if let Some(account) = request.run_as {
+        set_account(&mut command, account).map_err(|reason| Error::Spawn {
+            program: request.program.to_string_lossy().into_owned(),
+            reason: reason.to_owned(),
+        })?;
     }
     // Built before the spawn, so a value that cannot be framed starts nothing.
     let payload = match request.delivery {
@@ -302,6 +331,21 @@ pub fn run_with_env_tracked(
         masked,
         timed_out,
     })
+}
+
+#[cfg(unix)]
+fn set_account(command: &mut Command, account: &RunAs) -> std::result::Result<(), &'static str> {
+    use std::os::unix::process::CommandExt as _;
+    command.gid(account.gid).uid(account.uid);
+    command.env("HOME", &account.home);
+    command.env("USER", &account.user);
+    command.env("LOGNAME", &account.user);
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_account(_command: &mut Command, _account: &RunAs) -> std::result::Result<(), &'static str> {
+    Err("running a command as another account is not supported on this platform")
 }
 
 /// The bytes [`Delivery::Stdin`] writes: `NAME\0VALUE\0` for each injection, in order.

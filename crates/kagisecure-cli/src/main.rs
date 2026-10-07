@@ -23,8 +23,8 @@ use std::process::ExitCode;
 use clap::Parser;
 
 use cli::{
-    Cli, Command, EnvCommand, ItemCommand, McpCommand, SharedCommand, SharedEnvCommand,
-    SharedItemCommand, TestLoginsCommand, VaultCommand,
+    Cli, Command, EnvCommand, HostBundleCommand, ItemCommand, McpCommand, SharedCommand,
+    SharedEnvCommand, SharedItemCommand, TestLoginsCommand, VaultCommand,
 };
 use prompt::SecretInput;
 
@@ -127,6 +127,12 @@ fn dispatch(args: &Cli) -> anyhow::Result<u8> {
         }
         Command::Shared(SharedCommand::SetDir(a)) => {
             commands::shared::set_dir(&path, a, &mut input)?
+        }
+        Command::HostBundle(HostBundleCommand::OwnerKey) => {
+            commands::host_bundle::owner_key(&path, &mut input)?;
+        }
+        Command::HostBundle(HostBundleCommand::Export(a)) => {
+            commands::host_bundle::export(&path, a, &mut input)?;
         }
         Command::ClipboardClear(a) => commands::generate::clipboard_clear_helper(a)?,
         // `run` is the one command whose exit status is not its own.

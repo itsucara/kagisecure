@@ -91,6 +91,7 @@ fn fixture() -> Fixture {
             queue: None,
             agent_fill: None,
             test_logins: None,
+            auto_type: None,
         },
     )
     .expect("the agent should bind a fresh socket");

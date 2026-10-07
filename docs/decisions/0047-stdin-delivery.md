@@ -62,7 +62,10 @@ agent run the storing command, approving once with Touch ID, the agent never see
    argv in Rust's debug form (`STDIN ["/path/tool", "import", "prod"]`), because the lease that
    would otherwise remember the command is gone the moment the run uses it.
 8. **Not on the unattended socket.** No standing grant covers a stdin run; asking for one there is
-   a strike (`NO_GRANT`), like `write_env_file`.
+   a strike (`NO_GRANT`), like `write_env_file`. The one exception is a headless host's grant
+   ([ADR-0043](0043-unattended-access-on-headless-hosts.md), accepted scope §A5, 2026-10-07):
+   delivered on stdin only, and only for a grant that pins the executable by SHA-256, every
+   argument (literal or a 40-hex commit), and the working directory.
 9. **`PROTOCOL_VERSION` 3.** A build that predates `delivery` would deserialize a stdin request with
    the field ignored and put the values in the environment. The version mismatch refuses that peer
    at `Hello` instead.
