@@ -223,6 +223,7 @@ fn a_value_in_a_shared_vault_never_reaches_the_model() {
                     variables: None,
                     timeout_seconds: 10,
                     output: OutputMode::Scrubbed,
+                    delivery: kagisecure_ipc::protocol::Delivery::Environment,
                 })
                 .expect("call"),
         );
@@ -502,6 +503,7 @@ fn every_request(shared: &Shared) -> Vec<Request> {
             variables: None,
             timeout_seconds: 5,
             output: OutputMode::Scrubbed,
+            delivery: kagisecure_ipc::protocol::Delivery::Environment,
         },
         Request::RevokeEnvFile {
             lease_id: None,
@@ -511,6 +513,28 @@ fn every_request(shared: &Shared) -> Vec<Request> {
             item_id: shared.item_id,
             origin: "https://example.com".to_owned(),
             fields: vec![AgentFillField::Password],
+        },
+        Request::CreateTestLogin {
+            app: "shop".to_owned(),
+            purpose: "buyer".to_owned(),
+            username: "buyer1@example.test".to_owned(),
+            websites: vec!["http://localhost:47800".to_owned()],
+            generator: None,
+            tags: Vec::new(),
+            reason: None,
+            bind: None,
+        },
+        Request::TrashTestLogins {
+            website: Some("http://localhost:47800".to_owned()),
+            tag: None,
+            reason: "rebuild".to_owned(),
+        },
+        Request::ListTestLogins {
+            website: None,
+            tag: None,
+            query: None,
+            limit: 10,
+            cursor: None,
         },
         Request::Audit {
             limit: 10,
@@ -537,6 +561,9 @@ fn every_request(shared: &Shared) -> Vec<Request> {
             | Request::RunWithEnv { .. }
             | Request::RevokeEnvFile { .. }
             | Request::RequestFill { .. }
+            | Request::CreateTestLogin { .. }
+            | Request::ListTestLogins { .. }
+            | Request::TrashTestLogins { .. }
             | Request::Audit { .. }
             | Request::ListLeases
             | Request::Lock => {}

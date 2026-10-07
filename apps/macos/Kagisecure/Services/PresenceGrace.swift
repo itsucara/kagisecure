@@ -85,11 +85,16 @@ struct PresenceGrace {
     /// Whether nothing is remembered.
     var isEmpty: Bool { lastUse == nil }
 
-    /// Whether the grace can apply to `request` at all: a browser fill or an agent fill.
+    /// Whether the grace can apply to `request` at all: a browser fill, an agent fill, or a run
+    /// bound only to test logins (`ridesGrace`).
     static func applies(to request: ApprovalRequestView) -> Bool {
         switch request.action {
         case .fillCredential, .agentFill: true
-        case .writeEnvFile, .runWithEnv, .createEnvironment, .addVariables: false
+        // A run or a .env write whose every variable is a sealed test login rides the window
+        // (ADR-0048 §9); Rust says so in `ridesGrace`. Any other run never does.
+        case .writeEnvFile, .runWithEnv: request.ridesGrace
+        // A test-login create outside the allowed origins is Touch ID every time (ADR-0048 §3).
+        case .createEnvironment, .addVariables, .createTestLogin: false
         }
     }
 

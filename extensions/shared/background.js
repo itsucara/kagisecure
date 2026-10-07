@@ -473,7 +473,7 @@ const AGENT_PROBE_TTL_MS = 90_000;
 const AGENT_DELIVERY_TTL_MS = 60_000;
 
 /** The field names an outcome may report, matching `AgentFillField`. */
-const AGENT_FIELDS = ["username", "password", "one_time_code"];
+const AGENT_FIELDS = ["username", "password", "one_time_code", "new_password"];
 
 /** The reasons an outcome may give, matching `AgentFillFailure` on the wire. */
 const AGENT_FAILURES = new Set([
@@ -541,7 +541,13 @@ function emptyTargetReport(probeId) {
     probe_id: probeId,
     page: { top_origin: UNKNOWN_ORIGIN, frame_origin: null, top_origin_established: false },
     tab: { tab_id: 0, document_id: null, tab_active: false, visible: false },
-    found: { username: false, password: false, one_time_code: false },
+    found: {
+      username: false,
+      password: false,
+      one_time_code: false,
+      sign_up: false,
+      sign_up_username: false,
+    },
   };
 }
 
@@ -560,13 +566,15 @@ function stampedTabFacts(sender, visible) {
   };
 }
 
-/** Which fields the content script found, as three booleans and nothing else. */
+/** Which fields the content script found, as five booleans and nothing else. */
 function foundFields(claimed) {
   const found = claimed && typeof claimed === "object" ? claimed : {};
   return {
     username: found.username === true,
     password: found.password === true,
     one_time_code: found.one_time_code === true,
+    sign_up: found.sign_up === true,
+    sign_up_username: found.sign_up_username === true,
   };
 }
 
@@ -835,10 +843,11 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           : null;
         const failure = AGENT_FAILURES.has(message.failure) ? message.failure : null;
         // One outcome per delivery, and a second only for the tripwire, which follows a
-        // password write and says nothing else: `UNMASKED`, naming the password it cleared.
+        // password write and says nothing else: `UNMASKED`, naming the password it cleared — a
+        // login's `password`, or a sign-up's `new_password` (ADR-0048 §7).
         const first = delivery && delivery.outcomes === 0 && failure !== "UNMASKED";
         const tripwire =
-          delivery && delivery.outcomes === 1 && delivery.wrotePassword && failure === "UNMASKED";
+          delivery && delivery.outcomes === 1 && !!delivery.wrotePassword && failure === "UNMASKED";
         if (!delivery || !isDeliveryTarget(delivery, sender) || !(first || tripwire)) {
           sendResponse({ ok: false });
           return;
@@ -846,9 +855,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         delivery.outcomes += 1;
         const claimed = Array.isArray(message.written) ? message.written : [];
         const written = tripwire
-          ? ["password"]
+          ? [delivery.wrotePassword]
           : AGENT_FIELDS.filter((field) => claimed.includes(field));
-        if (first) delivery.wrotePassword = written.includes("password");
+        if (first) {
+          delivery.wrotePassword = written.includes("password")
+            ? "password"
+            : written.includes("new_password")
+              ? "new_password"
+              : null;
+        }
         sendResponse({ ok: true });
         await tellApp({ ask: "agent_fill_outcome", grant_id: message.grantId, written, failure });
         return;

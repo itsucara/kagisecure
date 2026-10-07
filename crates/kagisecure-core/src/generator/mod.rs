@@ -231,6 +231,47 @@ impl Recipe {
     }
 }
 
+/// The lengths an agent may choose for a generated test-login password (ADR-0048 §4). A fixed
+/// menu, so an agent cannot ask for something short enough to guess.
+pub const TEST_LOGIN_LENGTHS: [u32; 5] = [20, 24, 32, 48, 64];
+
+/// The length a test-login password gets when the agent does not choose one (ADR-0048 §4).
+pub const TEST_LOGIN_DEFAULT_LENGTH: u32 = 32;
+
+/// The entropy every test-login recipe must reach, in bits ([`Recipe::entropy_bits`]).
+pub const TEST_LOGIN_MIN_BITS: f64 = 100.0;
+
+/// The recipe for an agent test login (ADR-0048 §4): characters only, lower case, upper case and
+/// digits always on, the agent choosing only a length from [`TEST_LOGIN_LENGTHS`], symbols and
+/// whether to avoid ambiguous characters. There is no alphabet, seed or word recipe to choose.
+///
+/// # Errors
+///
+/// [`Error::Generator`] for a length off the menu, or a recipe under [`TEST_LOGIN_MIN_BITS`] —
+/// which no menu choice is, and which is checked anyway so a later change to the menu or the
+/// alphabet cannot quietly weaken it.
+pub fn test_login_recipe(length: u32, symbols: bool, avoid_ambiguous: bool) -> Result<Recipe> {
+    if !TEST_LOGIN_LENGTHS.contains(&length) {
+        return Err(Error::Generator(
+            "a test-login password is 20, 24, 32, 48 or 64 characters",
+        ));
+    }
+    let recipe = Recipe::Characters(CharacterOptions {
+        length,
+        lowercase: true,
+        uppercase: true,
+        digits: true,
+        symbols,
+        avoid_ambiguous,
+    });
+    if recipe.entropy_bits() < TEST_LOGIN_MIN_BITS {
+        return Err(Error::Generator(
+            "that test-login recipe is under the 100-bit floor",
+        ));
+    }
+    Ok(recipe)
+}
+
 /// Generate one password from `recipe`.
 ///
 /// # Errors
@@ -376,6 +417,28 @@ fn uniform_below(n: usize) -> Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_test_login_menu_choice_clears_the_floor_and_nothing_else_is_offered() {
+        for length in TEST_LOGIN_LENGTHS {
+            for symbols in [false, true] {
+                for avoid_ambiguous in [false, true] {
+                    let recipe = test_login_recipe(length, symbols, avoid_ambiguous).unwrap();
+                    assert!(recipe.entropy_bits() >= TEST_LOGIN_MIN_BITS, "{recipe:?}");
+                    let Recipe::Characters(o) = recipe else {
+                        panic!("characters only")
+                    };
+                    assert!(o.lowercase && o.uppercase && o.digits);
+                    let value = recipe.generate().unwrap();
+                    assert_eq!(value.expose().len(), length as usize);
+                }
+            }
+        }
+        for length in [0, 8, 16, 19, 21, 33, 128] {
+            assert!(test_login_recipe(length, true, false).is_err(), "{length}");
+        }
+        assert!(TEST_LOGIN_LENGTHS.contains(&TEST_LOGIN_DEFAULT_LENGTH));
+    }
 
     fn text(secret: &Secret) -> String {
         secret.expose_str().expect("ASCII").to_owned()

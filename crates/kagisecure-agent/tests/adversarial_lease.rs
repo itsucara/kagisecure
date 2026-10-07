@@ -673,6 +673,7 @@ fn a_run_with_env_spawn_failure_after_grant_revokes_the_freshly_minted_lease() {
                 variables: None,
                 timeout_seconds: 5,
                 output: OutputMode::Scrubbed,
+                delivery: kagisecure_ipc::protocol::Delivery::Environment,
             })
             .expect("call")
     });

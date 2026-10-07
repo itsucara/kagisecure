@@ -272,6 +272,13 @@ pub enum KgsApprovalAction {
     /// would show are not in [`crate::capi::KgsApprovalRequest`] (see "What is not here" in the
     /// module docs). A host that does receive it denies it.
     AgentFill = 5,
+    /// An agent asks for a test login at a site outside the allowed origins (ADR-0048 §3).
+    ///
+    /// Here only because the conversion from [`ApprovalAction`] is exhaustive. Agent test logins
+    /// are macOS only today, so a Windows host never receives this tag in practice, and the facts
+    /// such a sheet would show are not in [`crate::capi::KgsApprovalRequest`]. A host that does
+    /// receive it denies it.
+    CreateTestLogin = 6,
 }
 tags!(
     KgsApprovalAction,
@@ -283,6 +290,7 @@ tags!(
         RunWithEnv,
         FillCredential,
         AgentFill,
+        CreateTestLogin,
     }
 );
 

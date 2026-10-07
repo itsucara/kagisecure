@@ -8,7 +8,49 @@ Versions before 1.0.0 may change the vault format. When they do, the change is l
 what it means for a vault written by an earlier build — see
 [docs/vault-format.md](docs/vault-format.md) §9 for the compatibility rules the format follows.
 
-## Unreleased
+## 0.2.0 — 2026-10-07
+
+New:
+
+- **`run_with_env` can hand the values to a command's standard input** instead of its environment
+  (`delivery: "stdin"`, [ADR-0047](docs/decisions/0047-stdin-delivery.md)), for commands that store
+  secrets elsewhere and read them from standard input (`sops set --value-stdin`, `gh secret set`).
+  The values are written once as `NAME\0VALUE\0` pairs and never placed in the child's environment
+  or arguments. Every such run asks the user, is granted for that one run only, and says so on the
+  approval sheet (only **Allow once** is offered) and in the Touch ID prompt; a variable with no
+  value yet is named in the new `NOT_POPULATED` refusal before any sheet; the audit entry records
+  the command. The IPC protocol is now version 3, so an older app refuses the sidecar at `Hello`
+  rather than put the values in the environment. Not offered by the Windows app yet, and never on
+  the unattended socket.
+- **Agent test logins** ([ADR-0048](docs/decisions/0048-agent-test-logins.md),
+  [docs/agent-test-logins.md](docs/agent-test-logins.md)): an agent testing an app creates test
+  users whose passwords kagisecure generates, seals and keeps; no tool returns one.
+  - *Create and reuse* (Phase 1a). A new switch, Settings › AI Agents › **Agent test logins**, off
+    by default (Touch ID to turn on), creates an "Agent test logins" vault and holds the list of
+    allowed domains. New MCP tools `create_test_login` (status `created` or `exists`) and
+    `list_test_logins`. At `localhost`, loopback, `*.localhost`, `*.test` and allowed domains a
+    create needs no sheet; anywhere else it shows a sheet with the registrable domain in large type
+    and asks for Touch ID every time. Login fills of a sealed test login at those origins need no
+    sheet. Test logins are never offered to your own autofill (browser extension or system
+    AutoFill); the app shows their provenance and offers only **Regenerate** for their password.
+    Creates are limited to 10 per agent in 10 minutes and 200 live items; each create raises a
+    notification. A run or `.env` write whose every variable is bound to a test login rides the
+    grace window.
+  - *Sign-up fills* (Phase 1b). `request_fill` accepts `["username", "new_password"]` (or
+    `["new_password"]`) to fill a sealed test login into an app's sign-up form; the extension's
+    strict sign-up detector never takes a login or change-password form, and a login fill never
+    lands in a new-password box.
+  - *Cleanup and non-browser tests* (Phase 3). New MCP tool `trash_test_logins` (a `website` or
+    `tag` filter and a `reason`): a soft trash of matching test logins in one transaction with one
+    audit entry, refused outright when any match is saved for a site that is not allowed.
+    `create_test_login` takes an optional `bind` (`environment`, `username_var`,
+    `credential_var`) that binds the login to an environment in the test vault, created if
+    missing, after one `add_variables` sheet. New CLI commands `kagisecure test-logins list` and
+    `kagisecure test-logins trash --website/--tag`.
+  - The IPC protocol is now **version 4** (new error code `TEST_LOGINS_OFF`): the sidecar, the
+    app, the extension and the native-messaging host must come from the same build. The MCP server
+    now has thirteen tools. `kagisecure daemon` answers the three test-login tools
+    `TEST_LOGINS_OFF`; the unattended socket refuses them. Not in the Windows app.
 
 ## 0.1.5 — 2026-10-04
 

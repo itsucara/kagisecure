@@ -821,6 +821,10 @@ private struct AgentSettings: View {
                 )
             }
 
+            if model.store != nil {
+                AgentTestLoginsSection()
+            }
+
             if let store = model.store {
                 Section {
                     Toggle(isOn: $showNewItems) {
@@ -877,6 +881,84 @@ private struct AgentSettings: View {
             }
         }
         .formStyle(.grouped)
+    }
+}
+
+// MARK: - Agent test logins
+
+/// "Agent test logins" (ADR-0048 §1, §3): the switch, off by default, and the registrable domains
+/// agents may create test logins for without a sheet. Turning on and adding a domain ask for
+/// presence; turning off and removing do not.
+private struct AgentTestLoginsSection: View {
+    @Environment(AppModel.self) private var model
+    @State private var newDomain = ""
+
+    /// The honest wording of ADR-0048's Threats: what kagisecure does and does not stop.
+    static let footer = String(
+        localized: "kagisecure never returns the password through any tool, so a well-behaved agent keeps it out of its transcript. But the agent types it into a page it drives, or pipes it to a command it chose, and the app under test receives it: an agent that runs script in that page, chooses that command, or controls that app can read it. That is accepted because the value is random, protects only a test account on a site you allowed, and is never anyone's real password.")
+
+    var body: some View {
+        let service = model.testLogins
+        Section {
+            Toggle(
+                isOn: Binding(
+                    get: { service.settings.enabled },
+                    set: { on in Task { await service.setEnabled(on) } })
+            ) {
+                Text("Let agents create test logins")
+                Text("kagisecure generates and keeps the password; the agent never receives it.")
+            }
+            .disabled(service.confirming)
+            .accessibilityIdentifier("ks.settings.agentTestLogins")
+            if let problem = service.problem {
+                Text(problem)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .accessibilityIdentifier("ks.settings.agentTestLogins.problem")
+            }
+            if service.settings.enabled {
+                LabeledContent {
+                    Text("localhost, *.localhost and *.test are always allowed")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } label: {
+                    Text("Allowed without a sheet")
+                }
+                ForEach(service.settings.autoDomains, id: \.self) { domain in
+                    LabeledContent {
+                        Button("Remove") { service.remove(domain: domain) }
+                            .accessibilityIdentifier("ks.settings.agentTestLogins.remove.\(domain)")
+                    } label: {
+                        Text(domain)
+                            .font(.system(.body, design: .monospaced))
+                    }
+                }
+                HStack {
+                    TextField("Add a domain, e.g. example.com", text: $newDomain)
+                        .onSubmit(add)
+                        .accessibilityIdentifier("ks.settings.agentTestLogins.newDomain")
+                    Button("Add…", action: add)
+                        .disabled(newDomain.trimmingCharacters(in: .whitespaces).isEmpty || service.confirming)
+                        .accessibilityIdentifier("ks.settings.agentTestLogins.add")
+                }
+            }
+        } header: {
+            Text("Agent test logins")
+        } footer: {
+            Text(Self.footer)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("ks.settings.agentTestLogins.footer")
+        }
+        .onAppear { service.refresh() }
+    }
+
+    private func add() {
+        let domain = newDomain
+        Task {
+            if await model.testLogins.add(domain: domain) { newDomain = "" }
+        }
     }
 }
 

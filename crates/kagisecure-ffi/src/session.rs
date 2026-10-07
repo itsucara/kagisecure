@@ -39,9 +39,9 @@ use crate::import::{
 };
 use crate::presence::Presence;
 use crate::types::{
-    AgentVisibilityScopeView, BulkVisibilityView, EnvironmentView, FieldView, ItemDraft,
-    ItemFilter, ItemSort, ItemView, KeepAppVersionOutcome, SidebarCounts, TagCount, UnlockKind,
-    VaultConflictDetailsView, VaultConflictKindView, VaultView, field_value,
+    AgentTestLoginSettingsView, AgentVisibilityScopeView, BulkVisibilityView, EnvironmentView,
+    FieldView, ItemDraft, ItemFilter, ItemSort, ItemView, KeepAppVersionOutcome, SidebarCounts,
+    TagCount, UnlockKind, VaultConflictDetailsView, VaultConflictKindView, VaultView, field_value,
 };
 use crate::{FfiError, FfiResult};
 use kagisecure_core::model::SecretText;
@@ -325,8 +325,11 @@ impl VaultSession {
     }
 
     /// An item as the app sees it, with its revision keyed for this session.
-    pub(crate) fn view(&self, item: &Item) -> ItemView {
-        ItemView::from_core(item, &self.revision_key)
+    pub(crate) fn view(&self, vault: &Vault, item: &Item) -> ItemView {
+        ItemView {
+            in_agent_test_vault: vault.in_agent_test_vault(item),
+            ..ItemView::from_core(item, &self.revision_key)
+        }
     }
 
     /// Borrow the unlocked vault, or [`FfiError::VaultLocked`].
@@ -717,6 +720,104 @@ impl VaultSession {
         })
     }
 
+    /// The agent test-login settings (ADR-0048 §1, §3): off, with no allowed domains, until the
+    /// switch is turned on.
+    pub fn agent_test_login_settings(&self) -> AgentTestLoginSettingsView {
+        self.read_or(
+            AgentTestLoginSettingsView {
+                enabled: false,
+                auto_domains: Vec::new(),
+                vault_id: None,
+            },
+            |vault| match vault.test_login_policy() {
+                Some((id, policy)) => AgentTestLoginSettingsView {
+                    enabled: policy.enabled,
+                    auto_domains: policy.auto_domains.clone(),
+                    vault_id: Some(id.to_string()),
+                },
+                None => AgentTestLoginSettingsView {
+                    enabled: false,
+                    auto_domains: Vec::new(),
+                    vault_id: None,
+                },
+            },
+        )
+    }
+
+    /// Turn agent test logins on or off (ADR-0048 §1). Turning them on creates the test-login
+    /// vault if there is none. One transaction, audited. The app asks for presence before it calls
+    /// this to turn them on (`PresenceOwner.featureSwitch`); Rust cannot see that.
+    ///
+    /// # Errors
+    ///
+    /// I/O failures; nothing changes on any error.
+    pub fn set_agent_test_logins(&self, enabled: bool) -> FfiResult<()> {
+        self.transact(|tx| {
+            if !enabled && tx.agent_test_vault().is_none() {
+                return Ok(());
+            }
+            tx.ensure_agent_test_vault("app")?;
+            let mut policy = tx
+                .test_login_policy()
+                .map(|(_, p)| p.clone())
+                .unwrap_or_default();
+            policy.enabled = enabled;
+            tx.set_test_login_policy(policy, "app")
+        })
+    }
+
+    /// Allow agent test logins without a sheet at `domain` and its subdomains (ADR-0048 §3).
+    /// What the person typed is reduced to its registrable domain, which is returned. The app
+    /// asks for presence before it calls this.
+    ///
+    /// # Errors
+    ///
+    /// [`FfiError::Invalid`]-style refusal for an IP address, a single label such as `localhost`
+    /// or a public suffix itself; I/O failures.
+    pub fn add_agent_test_login_domain(&self, domain: String) -> FfiResult<String> {
+        let Some(domain) = kagisecure_agent::test_login::allowed_domain(&domain) else {
+            return Err(FfiError::invalid(
+                "Enter a registrable domain such as example.com — not an IP address, a single \
+                 name such as localhost, or a public suffix.",
+            ));
+        };
+        self.transact(|tx| {
+            tx.ensure_agent_test_vault("app")?;
+            let mut policy = tx
+                .test_login_policy()
+                .map(|(_, p)| p.clone())
+                .unwrap_or_default();
+            if !policy.auto_domains.contains(&domain) {
+                policy.auto_domains.push(domain.clone());
+            }
+            tx.set_test_login_policy(policy, "app")?;
+            Ok(domain)
+        })
+    }
+
+    /// Stop allowing `domain` (ADR-0048 §3). Returns whether it was on the list.
+    ///
+    /// # Errors
+    ///
+    /// I/O failures.
+    pub fn remove_agent_test_login_domain(&self, domain: String) -> FfiResult<bool> {
+        let wanted = domain.trim().to_ascii_lowercase();
+        self.transact(|tx| {
+            let Some(mut policy) = tx.test_login_policy().map(|(_, p)| p.clone()) else {
+                return Ok(false);
+            };
+            let before = policy.auto_domains.len();
+            policy
+                .auto_domains
+                .retain(|d| !d.eq_ignore_ascii_case(&wanted));
+            if policy.auto_domains.len() == before {
+                return Ok(false);
+            }
+            tx.set_test_login_policy(policy, "app")?;
+            Ok(true)
+        })
+    }
+
     /// Show every item in `scope` to agents with all its fields, or hide each one and all its
     /// fields — a multi-selection, a tag, a category, or everything — in **one** transaction with
     /// **one** audit entry recording the scope kind and counts, never a tag, a title or a value.
@@ -787,7 +888,7 @@ impl VaultSession {
         };
         select_items(vault.items(), &filter, query, sort)
             .into_iter()
-            .map(|item| self.view(item))
+            .map(|item| self.view(&vault, item))
             .collect()
     }
 
@@ -798,7 +899,7 @@ impl VaultSession {
     /// [`FfiError::NotPresent`].
     pub fn item(&self, item_id: String) -> FfiResult<ItemView> {
         let vault = self.vault()?;
-        Ok(self.view(vault.find_item(&item_id)?))
+        Ok(self.view(&vault, vault.find_item(&item_id)?))
     }
 
     /// The counts the sidebar shows (ui-spec.md §2.2).
@@ -882,7 +983,7 @@ impl VaultSession {
             let item = Item::from_template(target, category, title);
             let id = item.id.to_string();
             tx.add_new_item(item);
-            Ok(self.view(tx.find_item(&id)?))
+            Ok(self.view(tx, tx.find_item(&id)?))
         })
     }
 
@@ -943,7 +1044,7 @@ impl VaultSession {
             apply_draft(item, draft);
             let id = item.id.to_string();
             Ok(SaveItemOutcome::Saved(Box::new(
-                self.view(tx.find_item(&id)?),
+                self.view(tx, tx.find_item(&id)?),
             )))
         })?;
         match outcome {
@@ -1030,7 +1131,7 @@ impl VaultSession {
             field.agent_visible = visible;
             item.updated_at = unix_now();
             let id = item.id.to_string();
-            Ok(self.view(tx.find_item(&id)?))
+            Ok(self.view(tx, tx.find_item(&id)?))
         })
     }
 
@@ -1774,7 +1875,7 @@ impl VaultSession {
             change(item);
             item.updated_at = unix_now();
             let id = item.id.to_string();
-            Ok(self.view(tx.find_item(&id)?))
+            Ok(self.view(tx, tx.find_item(&id)?))
         })
     }
 }
@@ -3475,5 +3576,57 @@ mod agent_visibility_tests {
             .expect("bulk");
         assert_eq!(result.matched, 2);
         assert!(all_items(&session).iter().all(|i| i.agent_visible));
+    }
+
+    #[test]
+    fn the_test_login_switch_creates_its_vault_and_domains_are_registrable_only() {
+        let (_dir, session) = session();
+        assert!(!session.agent_test_login_settings().enabled);
+        // Turning it off when there is nothing to turn off creates nothing.
+        session.set_agent_test_logins(false).unwrap();
+        assert!(session.agent_test_login_settings().vault_id.is_none());
+
+        session.set_agent_test_logins(true).unwrap();
+        let settings = session.agent_test_login_settings();
+        assert!(settings.enabled);
+        let vault_id = settings.vault_id.expect("created");
+
+        assert_eq!(
+            session
+                .add_agent_test_login_domain("https://staging.example-partner.com".to_owned())
+                .unwrap(),
+            "example-partner.com"
+        );
+        for refused in ["127.0.0.1", "localhost", "co.uk"] {
+            assert!(
+                session
+                    .add_agent_test_login_domain(refused.to_owned())
+                    .is_err(),
+                "{refused}"
+            );
+        }
+        assert_eq!(
+            session.agent_test_login_settings().auto_domains,
+            ["example-partner.com"]
+        );
+        assert!(
+            session
+                .remove_agent_test_login_domain("Example-Partner.com".to_owned())
+                .unwrap()
+        );
+        assert!(session.agent_test_login_settings().auto_domains.is_empty());
+
+        let in_test_vault = session
+            .create_item(Some(vault_id), "login".to_owned(), "t".to_owned())
+            .unwrap();
+        assert!(in_test_vault.in_agent_test_vault);
+        let ordinary = session
+            .create_item(None, "login".to_owned(), "o".to_owned())
+            .unwrap();
+        assert!(!ordinary.in_agent_test_vault);
+        assert!(session.item(in_test_vault.id).unwrap().in_agent_test_vault);
+
+        session.set_agent_test_logins(false).unwrap();
+        assert!(!session.agent_test_login_settings().enabled);
     }
 }

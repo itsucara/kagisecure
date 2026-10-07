@@ -39,7 +39,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use kagisecure_core::audit::AuditDraft;
-use kagisecure_core::inject::{EnvInjection, RunRequest, envfile, run_with_env_tracked};
+use kagisecure_core::inject::{
+    Delivery as InjectDelivery, EnvInjection, RunRequest, envfile, run_with_env_tracked,
+};
 use kagisecure_core::lease::{self, LeaseRequest, LeaseStore, WrittenEntry};
 use kagisecure_core::model::{Environment, VarSource};
 use kagisecure_core::proto::{
@@ -49,20 +51,29 @@ use kagisecure_core::proto::{
 use kagisecure_core::{Vault, unix_now};
 use kagisecure_extension_ipc::origin::Origin;
 use kagisecure_ipc::protocol::{
-    AddVariablesStatus, AgentFillField, ClientInfo, ErrorCode, MAX_DESCRIPTION_CHARS,
-    MAX_ENVIRONMENT_NAME_CHARS, MAX_HINT_CHARS, MAX_RUN_ARGS, MAX_VARIABLES_PER_CALL, OutputMode,
-    PROTOCOL_VERSION, Request, Response, VariableRequest, agent_fill_fields_ok, clamp_run_timeout,
-    display_text_ok, rfc3339,
+    AddVariablesStatus, AgentFillField, ClientInfo, Delivery, ErrorCode, MAX_DESCRIPTION_CHARS,
+    MAX_ENVIRONMENT_NAME_CHARS, MAX_HINT_CHARS, MAX_RUN_ARGS, MAX_TEST_LOGIN_APP_CHARS,
+    MAX_TEST_LOGIN_PURPOSE_CHARS, MAX_TEST_LOGIN_REASON_CHARS, MAX_TEST_LOGIN_TAG_CHARS,
+    MAX_TEST_LOGIN_TAGS, MAX_TEST_LOGIN_TRASH_REASON_CHARS, MAX_TEST_LOGIN_USERNAME_CHARS,
+    MAX_TEST_LOGIN_WEBSITE_CHARS, MAX_TEST_LOGIN_WEBSITES, MAX_VARIABLES_PER_CALL, OutputMode,
+    PROTOCOL_VERSION, Request, Response, TestLoginBind, TestLoginBinding, TestLoginGenerator,
+    TestLoginStatus, VariableRequest, agent_fill_fields_ok, clamp_run_timeout, display_text_ok,
+    rfc3339,
 };
 use kagisecure_ipc::server::{Connection, PeerIdentity};
 
 use crate::approval::{
     ApprovalKind, ApprovalQueue, ApprovalRequest, ClientVerification, Outcome as Approval,
+    TestLoginFacts, TestLoginWebsite,
 };
 use crate::catalog::Catalog;
 use crate::extension::agent_fill::{self, AgentFillBroker, AgentFillCall, Sidecar};
 use crate::release::{self, Acted, NotReleased, Released, audited_release};
 use crate::shared::SheetFacts;
+use crate::test_login::bind::{
+    self as test_login_bind, BindNames, BindPlan, BindRefusal, LoginFields,
+};
+use crate::test_login::{self, TestLoginBroker, TestLoginNotice};
 use crate::vault::{REQUEST_LOCK_TIMEOUT, VaultHandle, WriteFailure, sync_could_not_read};
 
 /// The name this process answers the handshake with.
@@ -144,6 +155,69 @@ const INVALID_FILL_ORIGIN: &str = "origin must be the http or https origin of th
 const INVALID_FILL_FIELDS: &str = "fields must name username, password or both, each at most once, \
                                    or one_time_code on its own. Nothing was asked or filled. Fix \
                                    the argument and retry.";
+
+/// The answer to `create_test_login` and `list_test_logins` when agent test logins cannot be
+/// served (ADR-0048 §1): the switch is off, there is no test-login vault, or the caller cannot be
+/// identified. Fixed, and given before anything is looked up.
+const TEST_LOGINS_OFF: &str = "Agent test logins are turned off in kagisecure. Nothing was \
+                               created or listed. Tell the user; they can turn them on in \
+                               Settings. Do not retry until they have.";
+
+/// The answer to an agent over its create limit (ADR-0048 §11).
+const TEST_LOGIN_RATE_LIMITED: &str = "This agent has created 10 test logins in the last 10 \
+                                       minutes, the most kagisecure allows. Nothing was created. \
+                                       Reuse an existing one (list_test_logins), or wait.";
+
+/// The answer when the test-login vault is full (ADR-0048 §11).
+const TEST_LOGIN_VAULT_FULL: &str = "The agent test-login vault already holds 200 test logins, the \
+                                     most kagisecure allows. Nothing was created. Reuse an \
+                                     existing one (list_test_logins), or ask the user to remove \
+                                     some.";
+
+/// The answer to a `create_test_login` argument that breaks the documented limits.
+const INVALID_TEST_LOGIN: &str = "app (1-64 characters), purpose (1-280), username (1-256), each \
+                                  website (an http or https URL), each tag (at most 64) and reason \
+                                  (at most 200) must be one line with no control characters; 1-5 \
+                                  websites, at most 10 tags; generator.length 20, 24, 32, 48 or \
+                                  64. Nothing was created. Fix the argument and retry.";
+
+/// The answer to a `create_test_login` `bind` that breaks the documented limits.
+const INVALID_TEST_LOGIN_BIND: &str = "bind.environment must be one line of 1-128 characters, and \
+                                       bind.username_var and bind.credential_var two different \
+                                       variable names matching ^[A-Za-z_][A-Za-z0-9_]*$ (at most \
+                                       128 characters). Nothing was created. Fix the argument and \
+                                       retry.";
+
+/// The answer to a `bind` naming an environment that more than one environment in the test-login
+/// vault is called.
+const TEST_LOGIN_BIND_AMBIGUOUS: &str = "More than one environment in the agent test-login vault has \
+                                         that name. Nothing was created or bound. Use another \
+                                         name, or ask the user to rename one.";
+
+/// The answer to a `bind` naming an environment in the test-login vault the person hid.
+const TEST_LOGIN_BIND_HIDDEN: &str = "The environment of that name in the agent test-login vault is \
+                                      hidden from agents. Nothing was created or bound. Use another \
+                                      name, or ask the user to show it.";
+
+/// The answer to a `bind` whose variable names are taken by other bindings.
+const TEST_LOGIN_BIND_TAKEN: &str = "The environment already has a variable with one of those names, \
+                                     bound to something else. Bindings are only added, never \
+                                     replaced. Nothing was created or bound. Use other variable \
+                                     names or another environment.";
+
+/// The answer to a `trash_test_logins` argument that breaks the documented limits.
+const INVALID_TEST_LOGIN_TRASH: &str = "trash_test_logins needs website (an http or https URL), tag \
+                                        (at most 64 characters) or both, and a reason of one line \
+                                        of 1-200 characters, with no control characters. Nothing \
+                                        was trashed. Fix the argument and retry.";
+
+/// The answer to a `trash_test_logins` whose matches include a login saved for a website that
+/// needs the person's approval (ADR-0048 §12). Fixed: it names no login.
+const TEST_LOGINS_TRASH_REFUSED: &str = "At least one matching test login is saved for a website \
+                                         outside localhost, *.localhost, *.test and the domains the \
+                                         user allowed. Nothing was trashed. Narrow website or tag \
+                                         to logins at those sites, or ask the user to trash the \
+                                         others in kagisecure.";
 
 /// The longest `origin` `request_fill` accepts. An origin is a scheme, a host and a port; this is
 /// generous for that, and keeps a string of any length out of the parser.
@@ -230,6 +304,9 @@ pub struct Service {
     /// the ordinary sheet and presence proof, like the personal vault, and only while the personal
     /// vault is unlocked — which is when this service serves at all.
     machine: Option<MachineSlot>,
+    /// The test-login broker, when this host serves agent test logins (ADR-0048). `None` —
+    /// `kagisecure daemon` — answers every test-login tool `TEST_LOGINS_OFF`.
+    test_logins: Option<Arc<TestLoginBroker>>,
 }
 
 /// Where the ordinary agent keeps the machine vault the host attached ([`Service::with_machine`]).
@@ -258,7 +335,16 @@ impl Service {
             children,
             agent_fill,
             machine: None,
+            test_logins: None,
         }
+    }
+
+    /// Serve agent test logins through `broker` (ADR-0048): its create limits and notices are
+    /// process-wide, so the host hands every agent it starts the same one.
+    #[must_use]
+    pub fn with_test_logins(mut self, broker: Arc<TestLoginBroker>) -> Self {
+        self.test_logins = Some(broker);
+        self
     }
 
     /// Serve the machine vault in `slot` too, beside the personal vault (ADR-0042 §2): its
@@ -447,6 +533,7 @@ impl Service {
                 variables,
                 timeout_seconds,
                 output,
+                delivery,
             } => self.run_with_env(
                 *environment_id,
                 command,
@@ -455,6 +542,7 @@ impl Service {
                 variables.as_deref(),
                 *timeout_seconds,
                 *output,
+                *delivery,
                 connection,
             ),
             Request::RevokeEnvFile { lease_id, path } => {
@@ -465,6 +553,47 @@ impl Service {
                 origin,
                 fields,
             } => self.request_fill(*item_id, origin, fields, connection),
+            Request::CreateTestLogin {
+                app,
+                purpose,
+                username,
+                websites,
+                generator,
+                tags,
+                reason,
+                bind,
+            } => self.create_test_login(
+                &TestLoginArgs {
+                    app,
+                    purpose,
+                    username,
+                    websites,
+                    generator: generator.unwrap_or_default(),
+                    tags,
+                    reason: reason.as_deref(),
+                    bind: bind.as_ref(),
+                },
+                connection,
+            ),
+            Request::TrashTestLogins {
+                website,
+                tag,
+                reason,
+            } => self.trash_test_logins(website.as_deref(), tag.as_deref(), reason, connection),
+            Request::ListTestLogins {
+                website,
+                tag,
+                query,
+                limit,
+                cursor,
+            } => self.list_test_logins(
+                website.as_deref(),
+                tag.as_deref(),
+                query.as_deref(),
+                *limit,
+                cursor.as_deref(),
+                connection,
+            ),
             Request::Audit { limit, verify } => self.audit(*limit, *verify),
             Request::ListLeases => Response::Leases {
                 leases: self.leases().summaries(unix_now()),
@@ -845,7 +974,7 @@ impl Service {
         let looked_up = self.read_catalog(|catalog| {
             catalog.agent_item(&call.item_id).map(|found| {
                 (
-                    agent_fill::nothing_to_fill(found.value, fields),
+                    agent_fill::nothing_to_fill(catalog.personal(), found.value, fields),
                     found.place.audit_vault(),
                 )
             })
@@ -981,6 +1110,756 @@ impl Service {
                 self.write_refused("create_environment", None, Vec::new(), &e, connection)
             }
         }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Agent test logins (ADR-0048)
+    // -----------------------------------------------------------------------------------------
+
+    /// `create_test_login` (ADR-0048 §6): validate → identify the agent → the switch → an
+    /// existing match (`exists`) → the vault's cap and the agent's rate limit → §3's origins, or
+    /// the sheet → one transaction that re-checks, generates, seals and writes the item with its
+    /// audit entry. Every entry names the agent in full (`actor_for`, §10).
+    ///
+    /// The duplicate is looked for before the limits are counted, so reusing a test user is
+    /// never refused for the creates around it.
+    fn create_test_login(&self, args: &TestLoginArgs<'_>, connection: &Connection) -> Response {
+        const TOOL: &str = "create_test_login";
+        let Some((websites, recipe)) = Self::valid_test_login(args) else {
+            return Response::error(ErrorCode::InvalidArgument, INVALID_TEST_LOGIN);
+        };
+        let bind = match args.bind.map(BindNames::of) {
+            None => None,
+            Some(Some(names)) => Some(names),
+            Some(None) => {
+                return Response::error(ErrorCode::InvalidArgument, INVALID_TEST_LOGIN_BIND);
+            }
+        };
+        // An agent the kernel cannot vouch for has no limit to be keyed on: off, before anything
+        // is looked up — and so is a host with no broker.
+        let (Some(broker), Some(sidecar)) = (
+            self.test_logins.as_ref(),
+            Sidecar::of(connection.identity()),
+        ) else {
+            return test_logins_off();
+        };
+        let actor = agent_fill::actor_for(connection.identity());
+        let entry = |outcome: Outcome, detail: &str, item_id: Option<ItemId>| AuditDraft {
+            actor: actor.clone(),
+            client_pid: connection.identity().pid,
+            tool: TOOL.to_owned(),
+            item_id,
+            outcome,
+            detail: Some(detail.to_owned()),
+            ..AuditDraft::default()
+        };
+
+        // The switch.
+        let policy = match self.read(|v| v.test_login_policy().map(|(id, p)| (id, p.clone()))) {
+            Err(response) => return response,
+            Ok(Some((id, policy))) if policy.enabled => (id, policy),
+            Ok(_) => return test_logins_off(),
+        };
+        let (test_vault, policy) = policy;
+
+        // An existing test user is the answer, with nothing written — unless a binding for it is
+        // asked for and not there yet.
+        match self.read(|v| {
+            test_login::existing(v, args.username, &websites)
+                .map(|item| (exists_reply(item), LoginFields::of(item)))
+        }) {
+            Err(response) => return response,
+            Ok(Some((reply, login))) => {
+                let item_id = match &reply {
+                    Response::TestLoginCreated { item_id, .. } => Some(*item_id),
+                    _ => None,
+                };
+                let Some(names) = bind else {
+                    self.record_best_effort(entry(
+                        Outcome::Allowed,
+                        test_login::audit_detail::TEST_LOGIN_EXISTS,
+                        item_id,
+                    ));
+                    return reply;
+                };
+                let Some(login) = login else {
+                    return Response::error(ErrorCode::NotFound, NO_SUCH_ITEM);
+                };
+                return self.bind_existing_test_login(
+                    reply, login, &names, test_vault, &actor, connection,
+                );
+            }
+            Ok(None) => {}
+        }
+
+        // The vault's cap, then the agent's rate limit (§11).
+        match self.read(|v| test_login::live_items(v, test_vault)) {
+            Err(response) => return response,
+            Ok(live) if live >= test_login::MAX_LIVE_ITEMS => {
+                self.record_best_effort(entry(
+                    Outcome::Denied,
+                    test_login::audit_detail::TEST_LOGIN_RATE_LIMITED,
+                    None,
+                ));
+                return Response::error(ErrorCode::RateLimited, TEST_LOGIN_VAULT_FULL);
+            }
+            Ok(_) => {}
+        }
+        // A bind that cannot be made is refused before a limit is spent or anyone is asked.
+        let bind_plan = match &bind {
+            None => None,
+            Some(names) => match self.read(|v| test_login_bind::plan(v, test_vault, names, None)) {
+                Err(response) => return response,
+                Ok(Err(refusal)) => return bind_refused(refusal),
+                Ok(Ok(plan)) => Some(plan),
+            },
+        };
+        let Some(reserved) = broker.reserve(sidecar.key()) else {
+            self.record_best_effort(entry(
+                Outcome::Denied,
+                test_login::audit_detail::TEST_LOGIN_RATE_LIMITED,
+                None,
+            ));
+            return Response::error(ErrorCode::RateLimited, TEST_LOGIN_RATE_LIMITED);
+        };
+        // From here on, a request that creates nothing hands its reservation back.
+        let release = || broker.release(sidecar.key(), reserved);
+
+        // §3: every website allowed, or the person decides at the sheet, every time.
+        let automatic = websites
+            .iter()
+            .all(|website| test_login::origin_auto(&policy, website));
+        if !automatic {
+            let facts = match self.read(|v| {
+                Self::test_login_facts(v, test_vault, args, &websites, &recipe, connection)
+            }) {
+                Ok(facts) => facts,
+                Err(response) => {
+                    release();
+                    return response;
+                }
+            };
+            let approved = self.ask(ApprovalRequest::for_test_login(
+                facts,
+                connection.identity(),
+            ));
+            if !approved.granted {
+                release();
+                self.record_best_effort(entry(Outcome::Denied, approved.code.as_str(), None));
+                return denied_reply(approved.code);
+            }
+        }
+        // §9: a binding is a standing route to the value, so the person sees it made — on the
+        // `add_variables` sheet, whatever the create needed.
+        if let (Some(names), Some(BindPlan::Write { environment_id })) = (&bind, &bind_plan) {
+            let approved = self.ask_bind(names, *environment_id, connection);
+            if !approved.granted {
+                release();
+                self.record_best_effort(entry(Outcome::Denied, approved.code.as_str(), None));
+                return denied_reply(approved.code);
+            }
+        }
+
+        let refused = std::cell::Cell::new(None::<Response>);
+        let committed = self.handle.transact(REQUEST_LOCK_TIMEOUT, |tx| {
+            // Everything that decided this is read again, on the file as it is now: the sheet may
+            // have been up for a minute, and the person may have turned the switch off, removed an
+            // allowed domain, or another agent may have filled the vault meanwhile.
+            let Some((vault_now, policy_now)) =
+                tx.test_login_policy().map(|(id, p)| (id, p.clone()))
+            else {
+                refused.set(Some(test_logins_off()));
+                return Err(kagisecure_core::Error::TransactionAborted);
+            };
+            if vault_now != test_vault || !policy_now.enabled {
+                refused.set(Some(test_logins_off()));
+                return Err(kagisecure_core::Error::TransactionAborted);
+            }
+            if automatic
+                && !websites
+                    .iter()
+                    .all(|website| test_login::origin_auto(&policy_now, website))
+            {
+                refused.set(Some(Response::error(
+                    ErrorCode::InvalidArgument,
+                    "The user changed which sites need no approval while this request was in \
+                     flight. Nothing was created. Retry once.",
+                )));
+                return Err(kagisecure_core::Error::TransactionAborted);
+            }
+            if let Some(found) = test_login::existing(tx, args.username, &websites) {
+                // Another call created it meanwhile. Without a bind that is the answer; with one,
+                // the agent retries and binds the login that is there now.
+                if bind.is_none() {
+                    return Ok(exists_reply(found));
+                }
+                refused.set(Some(Response::error(
+                    ErrorCode::InvalidArgument,
+                    "Another request created this test login while this one was in flight. \
+                     Nothing was created. Retry once.",
+                )));
+                return Err(kagisecure_core::Error::TransactionAborted);
+            }
+            if test_login::live_items(tx, test_vault) >= test_login::MAX_LIVE_ITEMS {
+                refused.set(Some(Response::error(
+                    ErrorCode::RateLimited,
+                    TEST_LOGIN_VAULT_FULL,
+                )));
+                return Err(kagisecure_core::Error::TransactionAborted);
+            }
+            let n = test_login::next_number(tx, test_vault, args.app, args.purpose);
+            let title = test_login::compose_title(args.app, args.purpose, n);
+            let mut item = Self::test_login_item(test_vault, &title, args, &websites, &recipe)?;
+            tx.attach_test_login_provenance(&mut item, &actor, args.app, args.purpose)?;
+            let login = LoginFields::of(&item)
+                .ok_or_else(|| kagisecure_core::Error::NotASecret(title.clone()))?;
+            let item_id = item.id;
+            let urls = item.urls.clone();
+            tx.add_new_item(item);
+            // In the same transaction as the item: both are written, or neither (ADR-0040).
+            tx.append_audit(AuditDraft {
+                vault_id: Some(test_vault),
+                ..entry(
+                    Outcome::Allowed,
+                    if automatic {
+                        test_login::audit_detail::TEST_LOGIN_CREATED_AUTOMATIC
+                    } else {
+                        test_login::audit_detail::TEST_LOGIN_CREATED_APPROVED
+                    },
+                    Some(item_id),
+                )
+            });
+            let binding = match &bind {
+                None => None,
+                Some(names) => {
+                    match Self::bind_in(tx, test_vault, names, login, &actor, connection) {
+                        Ok(binding) => Some(binding),
+                        Err(refusal) => {
+                            refused.set(Some(bind_refused(refusal)));
+                            return Err(kagisecure_core::Error::TransactionAborted);
+                        }
+                    }
+                }
+            };
+            Ok(Response::TestLoginCreated {
+                status: TestLoginStatus::Created,
+                item_id,
+                username: args.username.to_owned(),
+                websites: urls,
+                title,
+                binding: binding.map(Box::new),
+            })
+        });
+        match committed {
+            None => {
+                release();
+                Self::locked()
+            }
+            Some(Ok(
+                reply @ Response::TestLoginCreated {
+                    status: TestLoginStatus::Created,
+                    ..
+                },
+            )) => {
+                if let Response::TestLoginCreated {
+                    title,
+                    username,
+                    websites,
+                    ..
+                } = &reply
+                {
+                    broker.notice(TestLoginNotice::Created {
+                        agent: actor.clone(),
+                        title: title.clone(),
+                        username: username.clone(),
+                        websites: websites.clone(),
+                    });
+                }
+                reply
+            }
+            Some(Ok(reply)) => {
+                release();
+                reply
+            }
+            Some(Err(e)) => {
+                release();
+                // A re-check inside the transaction refused, and left its answer; or the write
+                // itself failed.
+                if let Some(reply) = refused.take() {
+                    return reply;
+                }
+                let (code, response) = Self::write_failed(&e);
+                self.record_best_effort(entry(Outcome::Failed, code.as_str(), None));
+                response
+            }
+        }
+    }
+
+    /// The `add_variables` sheet for a test login's `bind` (ADR-0048 §9): the environment's name
+    /// — new or existing — and the two variable names. One sheet for the whole binding.
+    fn ask_bind(
+        &self,
+        names: &BindNames,
+        environment_id: Option<EnvId>,
+        connection: &Connection,
+    ) -> Approval {
+        self.ask(
+            ApprovalRequest {
+                kind: ApprovalKind::AddVariables,
+                environment_id: environment_id.map(|id| id.to_string()),
+                environment_name: Some(names.environment.clone()),
+                variables: names.variables(),
+                ..ApprovalRequest::default()
+            }
+            .with_identity(connection.identity()),
+        )
+    }
+
+    /// Bind `names` to `login` inside `tx`, with the audit entries for what was written: one
+    /// `create_environment` entry when the environment is new, and one `add_variables` entry,
+    /// both naming the agent in full (§10).
+    fn bind_in(
+        tx: &mut kagisecure_core::vault::Tx<'_>,
+        test_vault: VaultId,
+        names: &BindNames,
+        login: LoginFields,
+        actor: &str,
+        connection: &Connection,
+    ) -> Result<TestLoginBinding, BindRefusal> {
+        let applied = test_login_bind::apply(tx, test_vault, names, login)?;
+        let draft = |tool: &str, variables: Vec<String>| AuditDraft {
+            actor: actor.to_owned(),
+            client_pid: connection.identity().pid,
+            tool: tool.to_owned(),
+            vault_id: Some(test_vault),
+            environment_id: Some(applied.binding.environment_id),
+            item_id: Some(login.item),
+            variables,
+            outcome: Outcome::Allowed,
+            detail: Some(test_login::audit_detail::TEST_LOGIN_BOUND.to_owned()),
+            ..AuditDraft::default()
+        };
+        if applied.created_environment {
+            tx.append_audit(draft("create_environment", Vec::new()));
+        }
+        if applied.wrote {
+            tx.append_audit(draft("add_variables", names.variables()));
+        }
+        Ok(applied.binding)
+    }
+
+    /// `create_test_login` with `bind` for a test login that already exists: the binding is
+    /// added — after the `add_variables` sheet — unless it is there already, in which case the
+    /// answer is `exists` with nothing written and nobody asked. How an agent rebuilds an
+    /// environment around the test users it made before.
+    fn bind_existing_test_login(
+        &self,
+        reply: Response,
+        login: LoginFields,
+        names: &BindNames,
+        test_vault: VaultId,
+        actor: &str,
+        connection: &Connection,
+    ) -> Response {
+        const TOOL: &str = "create_test_login";
+        let entry = |outcome: Outcome, detail: &str| AuditDraft {
+            actor: actor.to_owned(),
+            client_pid: connection.identity().pid,
+            tool: TOOL.to_owned(),
+            item_id: Some(login.item),
+            outcome,
+            detail: Some(detail.to_owned()),
+            ..AuditDraft::default()
+        };
+        let environment_id =
+            match self.read(|v| test_login_bind::plan(v, test_vault, names, Some(login))) {
+                Err(response) => return response,
+                Ok(Err(refusal)) => return bind_refused(refusal),
+                Ok(Ok(BindPlan::Done(binding))) => {
+                    self.record_best_effort(entry(
+                        Outcome::Allowed,
+                        test_login::audit_detail::TEST_LOGIN_EXISTS,
+                    ));
+                    return with_binding(reply, Some(binding));
+                }
+                Ok(Ok(BindPlan::Write { environment_id })) => environment_id,
+            };
+        let approved = self.ask_bind(names, environment_id, connection);
+        if !approved.granted {
+            self.record_best_effort(entry(Outcome::Denied, approved.code.as_str()));
+            return denied_reply(approved.code);
+        }
+        let refused = std::cell::Cell::new(None::<Response>);
+        let committed = self.handle.transact(REQUEST_LOCK_TIMEOUT, |tx| {
+            // The switch, and the login still sealed and live, on the file as it is now.
+            let on = tx
+                .test_login_policy()
+                .is_some_and(|(id, p)| id == test_vault && p.enabled);
+            if !on {
+                refused.set(Some(test_logins_off()));
+                return Err(kagisecure_core::Error::TransactionAborted);
+            }
+            let still = test_login::sealed_items(tx)
+                .into_iter()
+                .any(|item| item.id == login.item);
+            if !still {
+                refused.set(Some(Response::error(ErrorCode::NotFound, NO_SUCH_ITEM)));
+                return Err(kagisecure_core::Error::TransactionAborted);
+            }
+            Self::bind_in(tx, test_vault, names, login, actor, connection).map_err(|refusal| {
+                refused.set(Some(bind_refused(refusal)));
+                kagisecure_core::Error::TransactionAborted
+            })
+        });
+        match committed {
+            None => Self::locked(),
+            Some(Ok(binding)) => with_binding(reply, Some(binding)),
+            Some(Err(e)) => {
+                if let Some(reply) = refused.take() {
+                    return reply;
+                }
+                let (code, response) = Self::write_failed(&e);
+                self.record_best_effort(entry(Outcome::Failed, code.as_str()));
+                response
+            }
+        }
+    }
+
+    /// `trash_test_logins` (ADR-0048 §12): sealed, live test logins in the test-login vault that
+    /// match the filter — at least one of `website` and `tag` — moved to the trash in one
+    /// transaction with one audit entry, `TEST_LOGINS_TRASHED matched=<n>`, naming the agent in
+    /// full. Automatic only when every matched login's websites pass §3; otherwise a fixed
+    /// refusal and nothing trashed. Never a permanent deletion: emptying the trash is the
+    /// person's act.
+    fn trash_test_logins(
+        &self,
+        website: Option<&str>,
+        tag: Option<&str>,
+        reason: &str,
+        connection: &Connection,
+    ) -> Response {
+        const TOOL: &str = "trash_test_logins";
+        let invalid = || Response::error(ErrorCode::InvalidArgument, INVALID_TEST_LOGIN_TRASH);
+        if (website.is_none() && tag.is_none())
+            || reason.trim().is_empty()
+            || !display_text_ok(reason, MAX_TEST_LOGIN_TRASH_REASON_CHARS, false)
+            || tag.is_some_and(|t| {
+                t.trim().is_empty() || !display_text_ok(t, MAX_TEST_LOGIN_TAG_CHARS, false)
+            })
+        {
+            return invalid();
+        }
+        let website = match website {
+            None => None,
+            Some(w) if display_text_ok(w, MAX_TEST_LOGIN_WEBSITE_CHARS, false) => {
+                match Origin::parse(w) {
+                    Ok(origin) => Some(origin),
+                    Err(_) => return invalid(),
+                }
+            }
+            Some(_) => return invalid(),
+        };
+        if self.test_logins.is_none() || Sidecar::of(connection.identity()).is_none() {
+            return test_logins_off();
+        }
+        let actor = agent_fill::actor_for(connection.identity());
+        let entry = |outcome: Outcome, detail: String| AuditDraft {
+            actor: actor.clone(),
+            client_pid: connection.identity().pid,
+            tool: TOOL.to_owned(),
+            outcome,
+            detail: Some(detail),
+            ..AuditDraft::default()
+        };
+        let refused = std::cell::Cell::new(None::<Response>);
+        let committed = self.handle.transact(REQUEST_LOCK_TIMEOUT, |tx| {
+            let Some((test_vault, policy)) = tx
+                .test_login_policy()
+                .filter(|(_, p)| p.enabled)
+                .map(|(id, p)| (id, p.clone()))
+            else {
+                refused.set(Some(test_logins_off()));
+                return Err(kagisecure_core::Error::TransactionAborted);
+            };
+            let matched: Vec<ItemId> = test_login::matching(tx, website.as_ref(), tag)
+                .into_iter()
+                .map(|item| {
+                    test_login::every_website_auto(&policy, item)
+                        .then_some(item.id)
+                        .ok_or(())
+                })
+                .collect::<Result<_, ()>>()
+                .map_err(|()| {
+                    refused.set(Some(Response::error(
+                        ErrorCode::InvalidArgument,
+                        TEST_LOGINS_TRASH_REFUSED,
+                    )));
+                    kagisecure_core::Error::TransactionAborted
+                })?;
+            let now = unix_now();
+            for id in &matched {
+                if let Some(item) = tx.item_by_id_mut(id) {
+                    item.trashed_at = Some(now);
+                    item.updated_at = now;
+                }
+            }
+            // One entry for the whole change, in the same transaction (ADR-0040), recorded even
+            // when nothing matched, so the attempt itself is on record.
+            tx.append_audit(AuditDraft {
+                vault_id: Some(test_vault),
+                ..entry(
+                    Outcome::Allowed,
+                    test_login::audit_detail::test_logins_trashed(matched.len()),
+                )
+            });
+            Ok(matched)
+        });
+        match committed {
+            None => Self::locked(),
+            Some(Ok(item_ids)) => Response::TestLoginsTrashed {
+                trashed: item_ids.len(),
+                item_ids,
+            },
+            Some(Err(e)) => {
+                if let Some(reply) = refused.take() {
+                    if let Response::Error {
+                        code: ErrorCode::InvalidArgument,
+                        ..
+                    } = &reply
+                    {
+                        self.record_best_effort(entry(
+                            Outcome::Denied,
+                            test_login::audit_detail::TEST_LOGINS_TRASH_REFUSED.to_owned(),
+                        ));
+                    }
+                    return reply;
+                }
+                let (code, response) = Self::write_failed(&e);
+                self.record_best_effort(entry(Outcome::Failed, code.as_str().to_owned()));
+                response
+            }
+        }
+    }
+
+    /// The websites as origins and the recipe, if every argument of `create_test_login` is within
+    /// its documented limits (ADR-0048 §6). Checked here, by the process that owns the vault: any
+    /// local process can speak this protocol without the sidecar.
+    fn valid_test_login(
+        args: &TestLoginArgs<'_>,
+    ) -> Option<(Vec<Origin>, kagisecure_core::generator::Recipe)> {
+        let line =
+            |text: &str, max: usize| !text.trim().is_empty() && display_text_ok(text, max, false);
+        let fits = line(args.app, MAX_TEST_LOGIN_APP_CHARS)
+            && line(args.purpose, MAX_TEST_LOGIN_PURPOSE_CHARS)
+            && line(args.username, MAX_TEST_LOGIN_USERNAME_CHARS)
+            && (1..=MAX_TEST_LOGIN_WEBSITES).contains(&args.websites.len())
+            && args.tags.len() <= MAX_TEST_LOGIN_TAGS
+            && args.tags.iter().all(|t| line(t, MAX_TEST_LOGIN_TAG_CHARS))
+            && args
+                .reason
+                .is_none_or(|r| display_text_ok(r, MAX_TEST_LOGIN_REASON_CHARS, false));
+        if !fits {
+            return None;
+        }
+        let mut websites: Vec<Origin> = Vec::with_capacity(args.websites.len());
+        for website in args.websites {
+            if !display_text_ok(website, MAX_TEST_LOGIN_WEBSITE_CHARS, false) {
+                return None;
+            }
+            let origin = Origin::parse(website).ok()?;
+            if !websites.contains(&origin) {
+                websites.push(origin);
+            }
+        }
+        let recipe = kagisecure_core::generator::test_login_recipe(
+            args.generator.length,
+            args.generator.symbols,
+            args.generator.avoid_ambiguous,
+        )
+        .ok()?;
+        Some((websites, recipe))
+    }
+
+    /// What the test-login sheet states (ADR-0048 §3), read from the vault as it is now.
+    fn test_login_facts(
+        vault: &Vault,
+        test_vault: VaultId,
+        args: &TestLoginArgs<'_>,
+        websites: &[Origin],
+        recipe: &kagisecure_core::generator::Recipe,
+        connection: &Connection,
+    ) -> TestLoginFacts {
+        let n = test_login::next_number(vault, test_vault, args.app, args.purpose);
+        let websites = websites
+            .iter()
+            .map(|origin| {
+                let ascii = origin.ascii_serialization();
+                // The near-host warning: a login of the person's own for the same site.
+                let near_item_title = vault
+                    .items()
+                    .iter()
+                    .filter(|i| i.vault_id != test_vault && !i.is_trashed())
+                    .find(|i| {
+                        crate::extension::saved_websites(i).iter().any(|saved| {
+                            kagisecure_extension_ipc::origin::host_match(saved, &ascii)
+                        })
+                    })
+                    .map(|i| i.title.clone());
+                TestLoginWebsite {
+                    origin: kagisecure_extension_ipc::origin::AgentOriginRendering::of(origin),
+                    near_item_title,
+                    not_https: origin.scheme() != "https",
+                }
+            })
+            .collect();
+        TestLoginFacts {
+            agent: agent_fill::actor_for(connection.identity()),
+            agent_name: connection
+                .identity()
+                .reported
+                .as_ref()
+                .map_or_else(|| "unknown".to_owned(), |c| c.name.clone()),
+            title: test_login::compose_title(args.app, args.purpose, n),
+            username: args.username.to_owned(),
+            websites,
+            purpose: args.purpose.to_owned(),
+            tags: test_login::compose_tags(args.app, args.purpose, args.tags),
+            generator: generator_summary(recipe),
+            reason: args.reason.map(str::to_owned),
+        }
+    }
+
+    /// The test login itself, before its seal: a login from the template, the username the agent
+    /// chose, a password generated here from the fixed menu straight into the concealed field, the
+    /// public purpose, the websites, the composed title and tags, and every field visible to
+    /// agents (the item is the agent's to see; its password still never leaves through a tool).
+    fn test_login_item(
+        test_vault: VaultId,
+        title: &str,
+        args: &TestLoginArgs<'_>,
+        websites: &[Origin],
+        recipe: &kagisecure_core::generator::Recipe,
+    ) -> kagisecure_core::Result<kagisecure_core::model::Item> {
+        use kagisecure_core::model::{Field, FieldValue, Item};
+        let mut item = Item::from_template(test_vault, Category::Login, title);
+        let password = kagisecure_core::generator::generate(recipe)?;
+        let primary = item
+            .primary_secret
+            .ok_or_else(|| kagisecure_core::Error::NotASecret(title.to_owned()))?;
+        // The value moves into the field it belongs to; no copy is left behind.
+        let mut password = Some(password);
+        for field in &mut item.fields {
+            if field.id == primary
+                && let Some(value) = password.take()
+            {
+                field.value = FieldValue::Secret(value);
+            } else if field.label == "username" {
+                field.value = FieldValue::Public(args.username.to_owned());
+            }
+        }
+        item.fields
+            .push(Field::public(test_login::PURPOSE_LABEL, args.purpose));
+        item.urls = websites.iter().map(Origin::ascii_serialization).collect();
+        item.tags = test_login::compose_tags(args.app, args.purpose, args.tags);
+        item.set_agent_visible_all(true);
+        Ok(item)
+    }
+
+    /// `list_test_logins` (ADR-0048 §6): sealed, live, agent-visible items in the test-login vault
+    /// only, each with its username — the agent chose it — and never its password.
+    fn list_test_logins(
+        &self,
+        website: Option<&str>,
+        tag: Option<&str>,
+        query: Option<&str>,
+        limit: usize,
+        cursor: Option<&str>,
+        connection: &Connection,
+    ) -> Response {
+        if self.test_logins.is_none() || Sidecar::of(connection.identity()).is_none() {
+            return test_logins_off();
+        }
+        let website = match website {
+            None => None,
+            Some(w) if display_text_ok(w, MAX_TEST_LOGIN_WEBSITE_CHARS, false) => {
+                match Origin::parse(w) {
+                    Ok(origin) => Some(origin),
+                    Err(_) => {
+                        return Response::error(ErrorCode::InvalidArgument, INVALID_TEST_LOGIN);
+                    }
+                }
+            }
+            Some(_) => return Response::error(ErrorCode::InvalidArgument, INVALID_TEST_LOGIN),
+        };
+        let all = match self.read(|vault| {
+            vault
+                .test_login_policy()
+                .filter(|(_, p)| p.enabled)
+                .map(|_| {
+                    test_login::matching(vault, website.as_ref(), tag)
+                        .into_iter()
+                        .map(test_login::summary)
+                        .filter(|summary| {
+                            query.is_none_or(|q| {
+                                let needle = q.to_lowercase();
+                                summary.title.to_lowercase().contains(&needle)
+                                    || summary.username.to_lowercase().contains(&needle)
+                                    || summary.purpose.to_lowercase().contains(&needle)
+                                    || summary
+                                        .tags
+                                        .iter()
+                                        .any(|t| t.to_lowercase().contains(&needle))
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+        }) {
+            Ok(Some(all)) => all,
+            Ok(None) => return test_logins_off(),
+            Err(response) => return response,
+        };
+        let start: usize = cursor.and_then(|c| c.parse().ok()).unwrap_or(0);
+        let end = start.saturating_add(limit).min(all.len());
+        let page: Vec<_> = all
+            .into_iter()
+            .skip(start)
+            .take(end.saturating_sub(start))
+            .collect();
+        let next_cursor = (page.len() == limit && limit > 0).then(|| end.to_string());
+        self.record_best_effort(AuditDraft {
+            tool: "list_test_logins".to_owned(),
+            outcome: Outcome::Allowed,
+            ..Self::draft(connection)
+        });
+        Response::TestLogins {
+            items: page,
+            next_cursor,
+        }
+    }
+
+    /// Whether a release of `names` from `environment_id` may ride the app's presence grace
+    /// window (ADR-0048 §9): the switch is on and **every** selected variable is bound to a
+    /// sealed, live test login in the personal vault. Any other variable — pending, bound to an
+    /// ordinary item, from a shared environment — and the request is the ordinary sheet.
+    fn rides_grace(&self, environment_id: EnvId, names: &[String]) -> bool {
+        !names.is_empty()
+            && self
+                .read(|vault| {
+                    let Some(env) = vault.environments().iter().find(|e| e.id == environment_id)
+                    else {
+                        return false;
+                    };
+                    vault.test_login_policy().is_some_and(|(_, p)| p.enabled)
+                        && names
+                            .iter()
+                            .all(|name| match env.var(name).map(|v| &v.source) {
+                                Some(VarSource::ItemField { item, .. }) => vault
+                                    .item_by_id(item)
+                                    .is_some_and(|i| !i.is_trashed() && vault.test_login_sealed(i)),
+                                _ => false,
+                            })
+                })
+                .unwrap_or(false)
     }
 
     /// The logical vault a new environment goes into: the one named, or the first; either way
@@ -1356,6 +2235,8 @@ impl Service {
             // sheet — with the file named as not kagisecure's — every time.
             replaces_unowned_file: target_exists && !written_by_us,
         };
+        // ADR-0048 §9: every variable bound to a sealed test login rides the grace window.
+        let rides_grace = self.rides_grace(environment_id, &names);
         let mut entry = AuditDraft {
             tool: TOOL.to_owned(),
             vault_id: shared.as_ref().map(|s| s.vault_id),
@@ -1364,31 +2245,33 @@ impl Service {
             target_path: Some(human_path(&target)),
             ..Self::draft(connection)
         };
-        let reservation = match self.reserve(&request, &entry, shared.as_ref(), connection, || {
-            ApprovalRequest {
-                kind: ApprovalKind::WriteEnvFile,
-                environment_id: Some(reference.clone()),
-                environment_name: Some(env_name),
-                directory: Some(human_path(&canonical)),
-                target_path: Some(human_path(&target)),
-                variables: names.clone(),
-                gitignored: envfile::gitignore_status(&target),
-                overwrite_requested: overwrite,
-                target_exists: Some(target_exists),
-                target_written_by_us: target_exists.then_some(written_by_us),
-                requested_ttl_seconds: ttl_seconds,
-                requested_uses: lease::DEFAULT_USES,
-                shared_source: shared.as_ref().map(|s| s.source.clone()),
-                changed_since_approval: shared
-                    .as_ref()
-                    .map(|s| s.changes.clone())
-                    .unwrap_or_default(),
-                ..ApprovalRequest::default()
-            }
-        }) {
-            Ok(r) => r,
-            Err(response) => return response,
-        };
+        let reservation =
+            match self.reserve(&request, &entry, shared.as_ref(), true, connection, || {
+                ApprovalRequest {
+                    kind: ApprovalKind::WriteEnvFile,
+                    environment_id: Some(reference.clone()),
+                    environment_name: Some(env_name),
+                    directory: Some(human_path(&canonical)),
+                    target_path: Some(human_path(&target)),
+                    variables: names.clone(),
+                    gitignored: envfile::gitignore_status(&target),
+                    overwrite_requested: overwrite,
+                    target_exists: Some(target_exists),
+                    target_written_by_us: target_exists.then_some(written_by_us),
+                    requested_ttl_seconds: ttl_seconds,
+                    requested_uses: lease::DEFAULT_USES,
+                    shared_source: shared.as_ref().map(|s| s.source.clone()),
+                    changed_since_approval: shared
+                        .as_ref()
+                        .map(|s| s.changes.clone())
+                        .unwrap_or_default(),
+                    rides_grace,
+                    ..ApprovalRequest::default()
+                }
+            }) {
+                Ok(r) => r,
+                Err(response) => return response,
+            };
         entry.lease_id = Some(reservation.lease_id);
 
         // A-05 (TOCTOU): the approved directory must still be itself. Checked here, before an
@@ -1494,9 +2377,19 @@ impl Service {
         variables: Option<&[String]>,
         timeout_seconds: u64,
         output: OutputMode,
+        delivery: Delivery,
         connection: &Connection,
     ) -> Response {
         const TOOL: &str = "run_with_env";
+        // The Windows app's sheet does not say "standard input" yet, and a sheet that
+        // misdescribes where values go is the one thing this product cannot ship (ADR-0047).
+        if delivery == Delivery::Stdin && cfg!(windows) {
+            return Response::error(
+                ErrorCode::InvalidArgument,
+                "delivery \"stdin\" is not offered on this platform yet. Nothing was asked or \
+                 run. Use delivery \"environment\".",
+            );
+        }
         // Every argument is shown on the sheet; the documented bound holds here, not only in the
         // sidecar (mcp-server.md §2.8).
         if args.len() > MAX_RUN_ARGS {
@@ -1521,6 +2414,25 @@ impl Service {
             shared,
         } = selected;
 
+        // A stdin run is one fingerprint for one run, so a run that would fail for want of a value
+        // is refused before the sheet, naming what is missing (names are metadata, ADR-0047).
+        if delivery == Delivery::Stdin {
+            match self.unpopulated(environment_id, &names) {
+                Ok(missing) if missing.is_empty() => {}
+                Ok(missing) => {
+                    return Response::error(
+                        ErrorCode::NotPopulated,
+                        format!(
+                            "These variables have no value yet: {}. Nothing was asked or run. \
+                             Ask the user to enter them in kagisecure, then call again.",
+                            missing.join(", ")
+                        ),
+                    );
+                }
+                Err(response) => return response,
+            }
+        }
+
         let canonical = match canonical_dir(cwd) {
             Ok(p) => p,
             Err(message) => return Response::error(ErrorCode::InvalidPath, message),
@@ -1544,26 +2456,42 @@ impl Service {
             environment_id: Some(environment_id),
             variables: names.clone(),
             target_path: Some(human_path(&canonical)),
+            // Which command the values went to, for a delivery the lease does not remember: a
+            // stdin run's lease is gone the moment it is used (ADR-0047).
+            detail: (delivery == Delivery::Stdin).then(|| stdin_detail(&argv)),
             ..Self::draft(connection)
         };
-        let reservation = match self.reserve(&request, &entry, shared.as_ref(), connection, || {
-            ApprovalRequest {
+        // Stdin delivery is one approval per run: no lease covers it, and the one this approval
+        // mints is for this run alone (ADR-0047).
+        let stdin = delivery == Delivery::Stdin;
+        // ADR-0048 §9: every variable bound to a sealed test login rides the grace window, for
+        // either delivery; stdin's single use stands.
+        let rides_grace = self.rides_grace(environment_id, &names);
+        let reservation = match self.reserve(
+            &request,
+            &entry,
+            shared.as_ref(),
+            !stdin,
+            connection,
+            || ApprovalRequest {
                 kind: ApprovalKind::RunWithEnv,
+                stdin_delivery: stdin,
                 environment_id: Some(reference.clone()),
                 environment_name: Some(env_name),
                 directory: Some(human_path(&canonical)),
                 variables: names.clone(),
                 command: argv,
                 requested_ttl_seconds: lease::DEFAULT_TTL_SECONDS,
-                requested_uses: lease::DEFAULT_USES,
+                requested_uses: if stdin { 1 } else { lease::DEFAULT_USES },
                 shared_source: shared.as_ref().map(|s| s.source.clone()),
                 changed_since_approval: shared
                     .as_ref()
                     .map(|s| s.changes.clone())
                     .unwrap_or_default(),
+                rides_grace,
                 ..ApprovalRequest::default()
-            }
-        }) {
+            },
+        ) {
             Ok(r) => r,
             Err(response) => return response,
         };
@@ -1613,6 +2541,10 @@ impl Service {
                             program: &program,
                             args: &os_args,
                             env: &injections,
+                            delivery: match delivery {
+                                Delivery::Environment => InjectDelivery::Environment,
+                                Delivery::Stdin => InjectDelivery::Stdin,
+                            },
                             cwd: Some(&canonical),
                             mask_output: true,
                             max_output: kagisecure_core::inject::DEFAULT_MAX_OUTPUT,
@@ -1654,7 +2586,8 @@ impl Service {
                                 ErrorCode::InvalidPath.as_str()
                             }
                             kagisecure_core::Error::Spawn { .. }
-                            | kagisecure_core::Error::NonUtf8EnvValue(_) => "SPAWN_FAILED",
+                            | kagisecure_core::Error::NonUtf8EnvValue(_)
+                            | kagisecure_core::Error::UnsendableOnStdin(_) => "SPAWN_FAILED",
                             _ => "RUN_FAILED",
                         };
                         Acted::abnormal(code, Err(e))
@@ -1907,14 +2840,16 @@ impl Service {
         request: &LeaseRequest,
         entry: &AuditDraft,
         shared: Option<&SheetFacts>,
+        reuse_lease: bool,
         connection: &Connection,
         sheet: impl FnOnce() -> ApprovalRequest,
     ) -> Result<Reservation, Response> {
         // A shared value that changed since this device last approved it is never released
         // under a lease that approval minted: the sheet says who changed it, every time
-        // (ADR-0035 §14).
+        // (ADR-0035 §14). A request that must not reuse one — stdin delivery, ADR-0047 — never
+        // looks.
         let changed = shared.is_some_and(SheetFacts::changed);
-        if !changed {
+        if reuse_lease && !changed {
             let now = unix_now();
             let mut leases = self.leases();
             // Under the lease-store lock that `Agent::stop` and the `lock` tool also take to empty
@@ -2065,6 +3000,31 @@ impl Service {
     /// facts for the sheet (ADR-0035 §14) with what approving them records.
     ///
     /// `Ok(None)` means "no such environment, or not agent-visible"; `Err` means locked.
+    /// Which of `names` the environment declares but has no value for yet — `add_variables`
+    /// entries the user has not filled in. Names only; unknown names are left for the release to
+    /// refuse, as for every other delivery.
+    fn unpopulated(
+        &self,
+        environment_id: EnvId,
+        names: &[String],
+    ) -> Result<Vec<String>, Response> {
+        self.read_catalog(|catalog| {
+            let Some(found) = catalog.agent_environment(&environment_id) else {
+                return Vec::new();
+            };
+            names
+                .iter()
+                .filter(|name| {
+                    found
+                        .value
+                        .var(name)
+                        .is_some_and(|var| !var.source.is_populated())
+                })
+                .cloned()
+                .collect()
+        })
+    }
+
     fn selected_names(
         &self,
         environment_id: EnvId,
@@ -2191,8 +3151,101 @@ pub(crate) fn agent_visible_item<'c>(
 }
 
 /// The one reply for an item an agent may not know about, absent and hidden alike.
+/// The `Allowed` entry's detail for a stdin delivery: `STDIN` and the argv, each argument quoted
+/// and escaped (Rust's debug form, so a space or a quote inside one cannot blur where it ends) —
+/// the program and arguments the approval named, never a value (ADR-0047).
+fn stdin_detail(argv: &[String]) -> String {
+    format!("STDIN {argv:?}")
+}
+
 pub(crate) fn no_such_item() -> Response {
     Response::error(ErrorCode::NotFound, NO_SUCH_ITEM)
+}
+
+/// The arguments of `create_test_login`, borrowed from the request.
+struct TestLoginArgs<'a> {
+    app: &'a str,
+    purpose: &'a str,
+    username: &'a str,
+    websites: &'a [String],
+    generator: TestLoginGenerator,
+    tags: &'a [String],
+    reason: Option<&'a str>,
+    bind: Option<&'a TestLoginBind>,
+}
+
+/// Agent test logins cannot be served (ADR-0048 §1).
+pub(crate) fn test_logins_off() -> Response {
+    Response::error(ErrorCode::TestLoginsOff, TEST_LOGINS_OFF)
+}
+
+/// `create_test_login`'s answer for a sealed test login that already covers the request: the
+/// item as it is, with nothing written (ADR-0048 §6).
+fn exists_reply(item: &kagisecure_core::model::Item) -> Response {
+    Response::TestLoginCreated {
+        status: TestLoginStatus::Exists,
+        item_id: item.id,
+        username: item.username().unwrap_or_default().to_owned(),
+        websites: crate::extension::saved_websites(item),
+        title: item.title.clone(),
+        binding: None,
+    }
+}
+
+/// `reply` with `binding` set, when it is a `create_test_login` reply.
+fn with_binding(reply: Response, binding: Option<TestLoginBinding>) -> Response {
+    let binding = binding.map(Box::new);
+    match reply {
+        Response::TestLoginCreated {
+            status,
+            item_id,
+            username,
+            websites,
+            title,
+            ..
+        } => Response::TestLoginCreated {
+            status,
+            item_id,
+            username,
+            websites,
+            title,
+            binding,
+        },
+        other => other,
+    }
+}
+
+/// The fixed answer for a bind that cannot be made.
+fn bind_refused(refusal: BindRefusal) -> Response {
+    Response::error(
+        ErrorCode::InvalidArgument,
+        match refusal {
+            BindRefusal::Ambiguous => TEST_LOGIN_BIND_AMBIGUOUS,
+            BindRefusal::Hidden => TEST_LOGIN_BIND_HIDDEN,
+            BindRefusal::VariableTaken => TEST_LOGIN_BIND_TAKEN,
+        },
+    )
+}
+
+/// How the test-login sheet describes a recipe: `32 characters, with symbols`.
+fn generator_summary(recipe: &kagisecure_core::generator::Recipe) -> String {
+    match recipe {
+        kagisecure_core::generator::Recipe::Characters(o) => format!(
+            "{} characters, {}{}",
+            o.length,
+            if o.symbols {
+                "with symbols"
+            } else {
+                "no symbols"
+            },
+            if o.avoid_ambiguous {
+                ", no look-alike characters"
+            } else {
+                ""
+            }
+        ),
+        kagisecure_core::generator::Recipe::Words(o) => format!("{} words", o.words),
+    }
 }
 
 /// `request_fill` cannot be served at all (gates 1 and 5).

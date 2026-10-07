@@ -389,19 +389,36 @@ test("--reveal prints the value and --json never does, even together", (t) => {
   );
 });
 
-test("agent access is default-deny on a new item", () => {
-  const { vault } = newVault("default-deny");
-  cliOk(["item", "add", "--password-stdin", "--title", "Fresh"], { vault, stdin: [PASSWORD] });
+test("a new item is agent-visible by default, and can be hidden singly or by default", () => {
+  const { vault } = newVault("agent-default");
+  const pw = { vault, stdin: [PASSWORD] };
+  const show = (title) =>
+    JSON.parse(cliOk(["item", "show", "--password-stdin", "--json", title], pw).stdout);
+  const assertVisible = (parsed, expected) => {
+    assert.equal(parsed.agent_visible, expected, `${parsed.title}: item agent_visible`);
+    for (const field of parsed.fields) {
+      assert.equal(field.agent_visible, expected, `${parsed.title}: field ${field.label}`);
+    }
+  };
 
-  const shown = cliOk(["item", "show", "--password-stdin", "--json", "Fresh"], {
-    vault,
-    stdin: [PASSWORD],
-  });
-  const parsed = JSON.parse(shown.stdout);
-  assert.equal(parsed.agent_visible, false, "a new item is not visible to agents");
-  for (const field of parsed.fields) {
-    assert.equal(field.agent_visible, false, `field ${field.label} is not visible to agents`);
-  }
+  // Since 2026-10-04 (33f3ad7) a new item starts visible, with all its fields. The vault itself
+  // is what stays hidden from agents by default.
+  cliOk(["item", "add", "--password-stdin", "--title", "Fresh"], pw);
+  assertVisible(show("Fresh"), true);
+
+  // Hiding an item hides it and every field.
+  cliOk(["item", "agent-visible", "--password-stdin", "off", "--item", "Fresh"], pw);
+  assertVisible(show("Fresh"), false);
+
+  // Turning "Show new items to agents" off makes later items start hidden.
+  cliOk(["vault", "new-items-agent-visible", "--password-stdin", "off"], pw);
+  cliOk(["item", "add", "--password-stdin", "--title", "Later"], pw);
+  assertVisible(show("Later"), false);
+
+  // And showing everything again works in bulk.
+  cliOk(["item", "agent-visible", "--password-stdin", "on", "--all"], pw);
+  assertVisible(show("Later"), true);
+  assertVisible(show("Fresh"), true);
 });
 
 // -------------------------------------------------------------------------------------------

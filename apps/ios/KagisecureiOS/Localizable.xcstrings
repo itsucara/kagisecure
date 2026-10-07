@@ -4,6 +4,16 @@
     "": {
       "shouldTranslate": false
     },
+    "%lld item(s) could not be deleted and are still in the Trash:": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "%lld 件を削除できず、ゴミ箱に残っています："
+          }
+        }
+      }
+    },
     "%u items · %u members": {
       "localizations": {
         "ja": {
@@ -340,6 +350,26 @@
           "stringUnit": {
             "state": "translated",
             "value": "「%@」を全員に対して削除しますか?"
+          }
+        }
+      }
+    },
+    "Discard and Remove Note": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "破棄してメモを削除"
+          }
+        }
+      }
+    },
+    "Discard the note you typed?": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "入力したメモを破棄しますか？"
           }
         }
       }
@@ -884,6 +914,16 @@
         }
       }
     },
+    "Removing the note also discards what you typed here.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "メモを削除すると、ここに入力した内容も破棄されます。"
+          }
+        }
+      }
+    },
     "Restore": {
       "localizations": {
         "ja": {
@@ -900,6 +940,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "保存"
+          }
+        }
+      }
+    },
+    "Scan QR Code": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "QRを読む"
           }
         }
       }
@@ -1124,6 +1174,16 @@
         }
       }
     },
+    "This QR code is not a one-time password setup.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この QR コードはワンタイムパスワードの設定ではありません。"
+          }
+        }
+      }
+    },
     "This cannot be undone.": {
       "localizations": {
         "ja": {
@@ -1140,6 +1200,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "このフォルダを記憶できませんでした: %@"
+          }
+        }
+      }
+    },
+    "This format (a Google Authenticator export) cannot be read. Scan the QR code the website shows instead.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この形式（Google Authenticator の書き出し）は読めません。サイトに表示される QR コードを読んでください。"
           }
         }
       }

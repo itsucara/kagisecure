@@ -16,7 +16,9 @@
 mod common;
 
 use common::{CANARY, base64_decode, contains, longest_leaked_prefix, shell};
-use kagisecure_core::inject::{DEFAULT_MAX_OUTPUT, EnvInjection, RunRequest, mask, run_with_env};
+use kagisecure_core::inject::{
+    DEFAULT_MAX_OUTPUT, Delivery, EnvInjection, RunRequest, mask, run_with_env,
+};
 use kagisecure_core::model::Secret;
 use std::ffi::OsString;
 use std::time::Duration;
@@ -42,6 +44,7 @@ fn run_script(
         program: &program,
         args: &argv,
         env: &env,
+        delivery: Delivery::Environment,
         cwd: None,
         mask_output: true,
         max_output,
@@ -241,6 +244,7 @@ fn masking_is_opt_out_and_the_injector_does_not_override_the_caller() {
         program: &program,
         args: &argv,
         env: &env,
+        delivery: Delivery::Environment,
         cwd: None,
         mask_output: false,
         max_output: DEFAULT_MAX_OUTPUT,

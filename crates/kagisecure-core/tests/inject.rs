@@ -389,3 +389,147 @@ fn a_child_that_finishes_in_time_is_not_reported_as_timed_out() {
     assert_eq!(outcome.exit_code, Some(0));
     assert_eq!(String::from_utf8_lossy(&outcome.stdout).trim(), "ok");
 }
+
+// ---------------------------------------------------------------------------------------------
+// Stdin delivery (ADR-0047)
+// ---------------------------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod stdin_delivery {
+    use super::*;
+    use kagisecure_core::inject::{Delivery, MAX_STDIN_PAYLOAD};
+
+    const FIRST: &str = "sk_stdin_first_value_4c1d";
+    const SECOND: &str = "whsec_stdin_second=value/9e";
+
+    fn pair(name: &str, value: &[u8]) -> EnvInjection {
+        EnvInjection {
+            name: kagisecure_core::proto::VarName::new(name.to_owned()).expect("a valid name"),
+            value: Secret::new(value.to_vec()),
+        }
+    }
+
+    fn two() -> Vec<EnvInjection> {
+        vec![
+            pair("first_key", FIRST.as_bytes()),
+            pair("SECOND_KEY", SECOND.as_bytes()),
+        ]
+    }
+
+    fn sh(script: &str, args: &[&std::path::Path]) -> (OsString, Vec<OsString>) {
+        let mut argv = vec![
+            OsString::from("-c"),
+            OsString::from(script),
+            OsString::from("sh"),
+        ];
+        argv.extend(args.iter().map(|p| p.as_os_str().to_owned()));
+        (OsString::from("/bin/sh"), argv)
+    }
+
+    fn stdin_request<'a>(
+        program: &'a OsStr,
+        args: &'a [OsString],
+        env: &'a [EnvInjection],
+    ) -> RunRequest<'a> {
+        let mut request = RunRequest::new(program, args, env);
+        request.delivery = Delivery::Stdin;
+        request.timeout = Some(std::time::Duration::from_secs(30));
+        request.new_process_group = true;
+        request
+    }
+
+    #[test]
+    fn the_values_arrive_on_stdin_as_nul_separated_pairs_and_not_in_the_environment() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("stdin");
+        let environment = dir.path().join("environment");
+        let arguments = dir.path().join("arguments");
+        let (program, args) = sh(
+            r#"cat > "$1"; env > "$2"; ps -ww -o args= -p $$ > "$3""#,
+            &[&input, &environment, &arguments],
+        );
+        let env = two();
+        let outcome = run_with_env(&stdin_request(&program, &args, &env)).unwrap();
+        assert_eq!(outcome.exit_code, Some(0), "{outcome:?}");
+
+        let expected = format!("first_key\0{FIRST}\0SECOND_KEY\0{SECOND}\0");
+        assert_eq!(std::fs::read(&input).unwrap(), expected.as_bytes());
+
+        let seen_env = std::fs::read_to_string(&environment).unwrap();
+        for leaked in [FIRST, SECOND, "first_key", "SECOND_KEY"] {
+            assert!(
+                !seen_env.contains(leaked),
+                "{leaked} reached the environment"
+            );
+        }
+        let seen_args = std::fs::read_to_string(&arguments).unwrap();
+        for leaked in [FIRST, SECOND] {
+            assert!(
+                !seen_args.contains(leaked),
+                "{leaked} reached the arguments"
+            );
+        }
+    }
+
+    #[test]
+    fn echoed_input_is_masked_like_an_echoed_environment() {
+        let (program, args) = sh("tr '\\0' '\\n'", &[]);
+        let env = two();
+        let outcome = run_with_env(&stdin_request(&program, &args, &env)).unwrap();
+        let stdout = String::from_utf8_lossy(&outcome.stdout);
+        assert!(!stdout.contains(FIRST), "{stdout}");
+        assert!(!stdout.contains(SECOND), "{stdout}");
+        assert!(
+            stdout.contains("[kagisecure:redacted:first_key]"),
+            "{stdout}"
+        );
+        assert_eq!(outcome.masked, 2);
+    }
+
+    #[test]
+    fn a_command_that_never_reads_its_input_is_not_a_failure() {
+        let (program, args) = sh("exit 3", &[]);
+        let env = two();
+        let outcome = run_with_env(&stdin_request(&program, &args, &env)).unwrap();
+        assert_eq!(outcome.exit_code, Some(3));
+    }
+
+    #[test]
+    fn a_value_with_a_nul_byte_starts_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
+        let (program, args) = sh(r#": > "$1""#, &[&started]);
+        let env = vec![pair("broken", b"abc\0def")];
+        let err = run_with_env(&stdin_request(&program, &args, &env)).unwrap_err();
+        assert!(
+            matches!(&err, kagisecure_core::Error::UnsendableOnStdin(name) if name == "broken"),
+            "{err:?}"
+        );
+        assert!(!err.to_string().contains("abc"));
+        assert!(!started.exists(), "the command ran");
+    }
+
+    #[test]
+    fn values_longer_than_the_cap_start_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let started = dir.path().join("started");
+        let (program, args) = sh(r#": > "$1""#, &[&started]);
+        let env = vec![pair("big", &vec![b'x'; MAX_STDIN_PAYLOAD])];
+        let err = run_with_env(&stdin_request(&program, &args, &env)).unwrap_err();
+        assert!(
+            matches!(err, kagisecure_core::Error::UnsendableOnStdin(_)),
+            "{err:?}"
+        );
+        assert!(!started.exists(), "the command ran");
+    }
+
+    #[test]
+    fn an_environment_delivery_still_gives_the_child_an_empty_stdin() {
+        let (program, args) = sh("wc -c | tr -d ' '", &[]);
+        let env = two();
+        let mut request = RunRequest::new(&program, &args, &env);
+        request.mask_output = false;
+        let outcome = run_with_env(&request).unwrap();
+        assert_eq!(String::from_utf8_lossy(&outcome.stdout).trim(), "0");
+    }
+}

@@ -265,13 +265,16 @@ fn the_served_tool_list_is_exactly_the_documented_one() {
         [
             "add_variables",
             "create_environment",
+            "create_test_login",
             "describe_item",
             "list_environments",
             "list_items",
+            "list_test_logins",
             "list_vaults",
             "request_fill",
             "revoke_env_file",
             "run_with_env",
+            "trash_test_logins",
             "write_env_file",
         ]
     );

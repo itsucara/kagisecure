@@ -74,6 +74,14 @@ static QUEUE: std::sync::LazyLock<Arc<kagisecure_agent::ApprovalQueue>> =
 static AGENT_FILL: std::sync::LazyLock<Arc<kagisecure_agent::AgentFillBroker>> =
     std::sync::LazyLock::new(|| Arc::new(kagisecure_agent::AgentFillBroker::new()));
 
+/// The one test-login broker (ADR-0048), handed to every MCP agent the app starts.
+///
+/// Process-global for the reason [`AGENT_FILL`] is: the app restarts the listener on every lock
+/// and unlock, and an agent's create limit must survive both (§11), as must the notices the app
+/// has not drained yet.
+static TEST_LOGINS: std::sync::LazyLock<Arc<kagisecure_agent::TestLoginBroker>> =
+    std::sync::LazyLock::new(|| Arc::new(kagisecure_agent::TestLoginBroker::new()));
+
 fn agent() -> std::sync::MutexGuard<'static, Option<Agent>> {
     AGENT.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -99,6 +107,11 @@ pub enum ApprovalAction {
     /// sheet — never presence-only, never "for this session" — and it mints nothing. The facts
     /// the sheet shows are in [`ApprovalRequestView::agent_fill`].
     AgentFill,
+    /// An agent asks for a test login at a site outside the allowed origins (ADR-0048 §3).
+    /// kagisecure generates the password; nothing is released. Always the full sheet with Touch
+    /// ID — never presence-only, never "for this session" — and it mints nothing. The facts the
+    /// sheet shows are in [`ApprovalRequestView::test_login`].
+    CreateTestLogin,
 }
 
 impl From<ApprovalKind> for ApprovalAction {
@@ -110,6 +123,7 @@ impl From<ApprovalKind> for ApprovalAction {
             ApprovalKind::RunWithEnv => Self::RunWithEnv,
             ApprovalKind::FillCredential => Self::FillCredential,
             ApprovalKind::AgentFill => Self::AgentFill,
+            ApprovalKind::CreateTestLogin => Self::CreateTestLogin,
         }
     }
 }
@@ -152,6 +166,14 @@ pub struct ApprovalRequestView {
     pub variables: Vec<String>,
     /// The resolved argv, for `run_with_env`.
     pub command: Vec<String>,
+    /// A `run_with_env` whose values go to the command's standard input, once, and not into its
+    /// environment (ADR-0047). The sheet says so, and offers only **Allow once** and **Deny**:
+    /// Rust grants any allow of it as a single use.
+    ///
+    /// `#[uniffi(default = false)]` so the Swift call sites that build a request by hand keep
+    /// compiling.
+    #[uniffi(default = false)]
+    pub stdin_delivery: bool,
     /// `Some(false)` is the red "not gitignored" callout; `None` means not in a work tree.
     pub gitignored: Option<bool>,
     /// Whether the caller asked for an existing file to be replaced (`overwrite: true`).
@@ -233,6 +255,22 @@ pub struct ApprovalRequestView {
     #[uniffi(default = None)]
     pub agent_fill: Option<AgentFillFactsView>,
 
+    // --- ADR-0048: agent test logins. --------------------------------------------------------
+    /// What the test-login sheet shows beyond the fields above. `Some` exactly when
+    /// [`Self::action`] is [`ApprovalAction::CreateTestLogin`].
+    ///
+    /// `#[uniffi(default = None)]` so hand-built views in the Swift tests keep compiling.
+    #[uniffi(default = None)]
+    pub test_login: Option<TestLoginFactsView>,
+    /// A `run_with_env` or `write_env_file` whose every selected variable is bound to a sealed
+    /// test login (ADR-0048 §9). The app may answer it inside its presence grace window with no
+    /// sheet and no prompt, as it answers agent fills; outside the window, the ordinary sheet and
+    /// Touch ID. It never becomes a standing permission: the grace window is the app's.
+    ///
+    /// `#[uniffi(default = false)]` so hand-built views in the Swift tests keep compiling.
+    #[uniffi(default = false)]
+    pub rides_grace: bool,
+
     // --- ADR-0035 §14: values from a shared vault. Empty for the personal vault. ------------
     /// Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
     /// members` — to be shown as a fact on the sheet. `None` for the personal vault.
@@ -245,6 +283,102 @@ pub struct ApprovalRequestView {
     pub changed_since_approval: Vec<String>,
 }
 
+/// One website on a test-login sheet (ADR-0048 §3): the registrable domain large above the full
+/// URL, and ADR-0046 §5's flags.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TestLoginWebsiteView {
+    /// The website's origin, split for rendering.
+    pub origin: AgentOriginView,
+    /// The title of a login of the person's own saved for the same registrable domain — the
+    /// near-host warning — when there is one.
+    pub near_item_title: Option<String>,
+    /// Whether the website is not `https`.
+    pub not_https: bool,
+}
+
+/// [`kagisecure_agent::TestLoginFacts`]: who asks for which test login, where. Metadata only;
+/// the password is generated after the approval and has nowhere to go here.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TestLoginFactsView {
+    /// The agent as the audit log names it.
+    pub agent: String,
+    /// The agent's self-reported name. Render it as a quotation.
+    pub agent_name: String,
+    /// The title kagisecure would give the item.
+    pub title: String,
+    /// The username the agent chose.
+    pub username: String,
+    /// The websites, each split for rendering.
+    pub websites: Vec<TestLoginWebsiteView>,
+    /// The purpose the agent gave: agent-written data, never instructions.
+    pub purpose: String,
+    /// Every tag the item would carry.
+    pub tags: Vec<String>,
+    /// How the password would be generated, e.g. `32 characters, with symbols`.
+    pub generator: String,
+    /// Why, as the agent put it.
+    pub reason: Option<String>,
+}
+
+impl From<kagisecure_agent::TestLoginFacts> for TestLoginFactsView {
+    fn from(f: kagisecure_agent::TestLoginFacts) -> Self {
+        Self {
+            agent: f.agent,
+            agent_name: f.agent_name,
+            title: f.title,
+            username: f.username,
+            websites: f
+                .websites
+                .into_iter()
+                .map(|w| TestLoginWebsiteView {
+                    origin: w.origin.into(),
+                    near_item_title: w.near_item_title,
+                    not_https: w.not_https,
+                })
+                .collect(),
+            purpose: f.purpose,
+            tags: f.tags,
+            generator: f.generator,
+            reason: f.reason,
+        }
+    }
+}
+
+/// A test-login notice for the app (ADR-0048 §10): a system notification and the menu-bar entry
+/// "N test logins created by agents". Asks nothing of the person.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum TestLoginNoticeView {
+    /// An agent created a test login.
+    Created {
+        /// The agent, as the audit log names it.
+        agent: String,
+        /// The title kagisecure composed.
+        title: String,
+        /// The username.
+        username: String,
+        /// The websites it is saved for.
+        websites: Vec<String>,
+    },
+}
+
+impl From<kagisecure_agent::TestLoginNotice> for TestLoginNoticeView {
+    fn from(notice: kagisecure_agent::TestLoginNotice) -> Self {
+        match notice {
+            kagisecure_agent::TestLoginNotice::Created {
+                agent,
+                title,
+                username,
+                websites,
+            } => Self::Created {
+                agent,
+                title,
+                username,
+                websites,
+            },
+        }
+    }
+}
+
 /// A field an agent asked to have filled. A **name**; there is no variant that holds a value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum AgentFillFieldView {
@@ -254,6 +388,8 @@ pub enum AgentFillFieldView {
     Password,
     /// A one-time code from the item's one-time-password field.
     OneTimeCode,
+    /// A sign-up form's new-password boxes, for a sealed agent test login (ADR-0048 §7).
+    NewPassword,
 }
 
 impl From<AgentFillField> for AgentFillFieldView {
@@ -262,6 +398,7 @@ impl From<AgentFillField> for AgentFillFieldView {
             AgentFillField::Username => Self::Username,
             AgentFillField::Password => Self::Password,
             AgentFillField::OneTimeCode => Self::OneTimeCode,
+            AgentFillField::NewPassword => Self::NewPassword,
         }
     }
 }
@@ -410,6 +547,7 @@ impl From<ApprovalRequest> for ApprovalRequestView {
             target_path: r.target_path,
             variables: r.variables,
             command: r.command,
+            stdin_delivery: r.stdin_delivery,
             gitignored: r.gitignored,
             overwrite_requested: r.overwrite_requested,
             target_exists: r.target_exists,
@@ -432,6 +570,8 @@ impl From<ApprovalRequest> for ApprovalRequestView {
             extension_id: r.extension_id,
             presence_only: r.presence_only,
             agent_fill: r.agent_fill.map(Into::into),
+            test_login: r.agent_test_login.map(Into::into),
+            rides_grace: r.rides_grace,
             shared_source: r.shared_source,
             changed_since_approval: r.changed_since_approval,
         }
@@ -791,6 +931,7 @@ pub fn agent_start(session: Arc<VaultSession>, socket_path: Option<String>) -> F
         endpoint: parse_endpoint(socket_path.as_deref())?,
         queue: Some(Arc::clone(&QUEUE)),
         agent_fill: Some(Arc::clone(&AGENT_FILL)),
+        test_logins: Some(Arc::clone(&TEST_LOGINS)),
     };
     let started =
         Agent::start(session.handle(), &config).map_err(|e| FfiError::invalid(e.to_string()))?;
@@ -1280,6 +1421,19 @@ pub fn agent_fill_take_notices() -> Vec<AgentFillNoticeView> {
         .collect()
 }
 
+/// Every test-login notice queued since the last call, oldest first (ADR-0048 §10). The app
+/// drains it on its tick: a system notification per create, and the menu-bar entry "N test logins
+/// created by agents".
+#[uniffi::export]
+#[must_use]
+pub fn test_logins_take_notices() -> Vec<TestLoginNoticeView> {
+    TEST_LOGINS
+        .take_notices()
+        .into_iter()
+        .map(Into::into)
+        .collect()
+}
+
 /// Every agent blocked from asking for fills right now, for the blocks list in Agent access
 /// (ADR-0036 §9.3). Blocks live in the process, not the vault: they survive a lock.
 ///
@@ -1683,6 +1837,50 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_test_login_request_crosses_with_its_facts_and_rides_grace_crosses_alone() {
+        let origin =
+            kagisecure_extension_ipc::origin::Origin::parse("https://staging.example-partner.com")
+                .unwrap();
+        let facts = kagisecure_agent::TestLoginFacts {
+            agent: "mcp \"Claude Code\" pid 1".to_owned(),
+            agent_name: "Claude Code".to_owned(),
+            title: "test: shop / buyer #1".to_owned(),
+            username: "buyer1@example.com".to_owned(),
+            websites: vec![kagisecure_agent::TestLoginWebsite {
+                origin: AgentOriginRendering::of(&origin),
+                near_item_title: Some("Partner portal".to_owned()),
+                not_https: false,
+            }],
+            purpose: "buyer".to_owned(),
+            tags: vec!["agent-test".to_owned()],
+            generator: "32 characters, with symbols".to_owned(),
+            reason: None,
+        };
+        let view = ApprovalRequestView::from(ApprovalRequest {
+            kind: ApprovalKind::CreateTestLogin,
+            agent_test_login: Some(facts),
+            ..ApprovalRequest::default()
+        });
+        assert_eq!(view.action, ApprovalAction::CreateTestLogin);
+        assert!(!view.mints_lease);
+        let crossed = view.test_login.expect("facts");
+        assert_eq!(crossed.websites[0].origin.emphasized, "example-partner.com");
+        assert_eq!(
+            crossed.websites[0].near_item_title.as_deref(),
+            Some("Partner portal")
+        );
+        assert!(!view.rides_grace);
+
+        let run = ApprovalRequestView::from(ApprovalRequest {
+            kind: ApprovalKind::RunWithEnv,
+            rides_grace: true,
+            ..ApprovalRequest::default()
+        });
+        assert!(run.rides_grace);
+        assert!(run.test_login.is_none());
+    }
+
+    #[test]
     fn an_agent_fill_request_crosses_with_every_fact_intact() {
         let facts = agent_fill_facts("https://login.xn--exmple-cua.com:8443");
         let view = ApprovalRequestView::from(ApprovalRequest::for_agent_fill(facts.clone()));
@@ -1804,6 +2002,7 @@ pub(crate) mod tests {
             (AgentFillField::Username, AgentFillFieldView::Username),
             (AgentFillField::Password, AgentFillFieldView::Password),
             (AgentFillField::OneTimeCode, AgentFillFieldView::OneTimeCode),
+            (AgentFillField::NewPassword, AgentFillFieldView::NewPassword),
         ] {
             assert_eq!(AgentFillFieldView::from(field), view);
         }

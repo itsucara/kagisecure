@@ -21,6 +21,7 @@ project with no staffing commitment, and dated roadmaps in that situation are fi
 | M9 | Agent-requested browser fills | M4, M6 | built on macOS with Chromium-family browsers; not yet run in a real browser — see below |
 | M10 | Shared vaults (offline, file exchange) | M1, M3, M4, M8; ADR-0039/0040 implemented | scheduled, in progress — Phases 0, 1 and 2 built (library and CLI), agents and approvals (Phase 4), and the macOS app's UI (Phase 5); see below |
 | M11 | Unattended jobs (machine vault, standing grants, run-browser sign-ins) | M4, M9; ADR-0035 implemented; ADR-0039/0040 implemented | in progress — Phases 0 to 5 built (the documentation page, the core, the engine, the app, shared-vault copies, unattended sign-ins); macOS only; the interactive fill of a machine-vault login is not built; see below |
+| M12 | Agent test logins (kagisecure generates the password; sign-up fills) | M4, M9; ADR-0047 implemented | built on macOS — Phases 1a, 1b and 3 (ADR-0048 accepted 2026-10-07); the app's sheets, Settings and notices covered by unit tests only, not by XCUITest; see below |
 
 **Update, 2026-09-26:** M9 — an agent driving the user's browser asks for a saved login to be
 filled into the tab in front, and a human approves each fill in the app
@@ -45,6 +46,20 @@ persists across restarts with no expiry, with the machine vault's key in the Key
 ([ADR-0043](decisions/0043-unattended-access-on-headless-hosts.md), proposed). ADR-0042 asked to
 follow shared vaults; M11 is in progress beside M10 rather than after it, since its Phase 1 needs
 only M10's Phase 0 (the body passthrough and the `format_ver` lever), which is built.
+
+**Update, 2026-10-07:** agent test logins ([ADR-0048](decisions/0048-agent-test-logins.md),
+proposed) are recorded as **M12**, pending the owner's acceptance of the ADR; nothing is built. The
+same day the stdin delivery of `run_with_env` ([ADR-0047](decisions/0047-stdin-delivery.md),
+accepted) landed on `main`. M12 lets an agent have kagisecure generate and keep a password for a
+test account on a local or allowed origin and fill it into sign-up and login pages without a sheet
+once a Settings switch is on; its implementation plan, with files and tests per phase, is in the
+ADR, so that whoever implements it starts from the ADR and this entry.
+
+**Update, 2026-10-07 (later):** ADR-0048 was accepted the same day, and M12 is built on macOS:
+Phases 1a and 1b (create, reuse, the no-sheet login and sign-up fills) and Phase 3
+(`trash_test_logins`, `kagisecure test-logins`, `create_test_login`'s `bind`, and the
+non-browser recipe in [agent-test-logins.md](agent-test-logins.md)). Two e2e scenarios run headless
+against the committed test app.
 
 **Platform decision (2026-09-09):** kagisecure is macOS-first. The product is modeled on
 1Password 8's desktop look and feel (see [ui-spec.md](ui-spec.md)) and has no accounts, no
@@ -1170,6 +1185,52 @@ the user's own browsers are never unattended. Arming persists across restarts an
       onto the clipboard.
 - [x] A value seeded as a machine-vault password never appears in any byte the sidecar writes,
       across a successful unattended fill (e2e suite B, `unattended.test.mjs`).
+
+---
+
+## M12 — Agent test logins (kagisecure generates the password; sign-up fills)
+
+Proposed and accepted 2026-10-07, from [ADR-0048](decisions/0048-agent-test-logins.md); **built on
+macOS** the same day (Phases 1a, 1b and 3). The person's guide is
+[agent-test-logins.md](agent-test-logins.md); the tools are in [mcp-server.md](mcp-server.md)
+§2.10–§2.13. An agent asks kagisecure to create a login for a test account on a local or
+allowed origin — app, purpose, username and websites, never a value — and kagisecure generates the
+password inside the vault transaction, seals it, and keeps it in a dedicated personal vault that
+the person's own browser extension and system AutoFill never offer. Once a Settings switch is on
+(one Touch ID), creates, sign-up fills (`new_password`) and login fills at those origins need no
+sheet; any other origin gets an ADR-0046-style sheet with the registrable domain shown large and
+Touch ID every time. No tool returns the password; the ADR says plainly that an agent driving the
+page or choosing the command can still read what kagisecure types there, and accepts that for test
+values. macOS only, interactive agents only; nothing on the unattended socket.
+
+**Phases** (ADR-0048, "Implementation plan"):
+
+- **Phase 1a — create and reuse.** The switch and the vault, `create_test_login` and
+  `list_test_logins`, the seal, the no-sheet login fill, the grace rule for runs bound only to
+  test logins, protocol 4, and a purpose-built local test web app in `e2e/`.
+- **Phase 1b — the sign-up fill.** `new_password` in `request_fill`, the extension's strict
+  sign-up detector, delivery into every new-password box.
+- **Phase 3 — cleanup and the non-browser recipe.** `trash_test_logins`, its CLI, and the
+  documented recipe for XCUITest, Playwright and API seeding through `run_with_env`.
+
+Status of each, as built:
+
+- [x] Phase 1a: the switch, the vault, the seal, `create_test_login` / `list_test_logins`, the
+      no-sheet login fill, the grace rule for runs, protocol 4, the test app; Swift sheet, Settings
+      section and notices (unit tests only). `tests/test_login_create.rs`,
+      `tests/test_login_sidecar.rs`, `crates/kagisecure-core/tests/test_login_seal.rs`.
+- [x] Phase 1b: `new_password`, the sign-up detector, delivery into every new-password box.
+      `tests/agent_fill_sign_up.rs`, `extensions/chrome/test/*`, and a headless e2e scenario.
+- [x] Phase 3: `trash_test_logins` (`tests/test_login_trash.rs`), `kagisecure test-logins list |
+      trash` (`crates/kagisecure-cli/tests/test_logins.rs`), `create_test_login`'s `bind`
+      (`tests/test_login_bind.rs`), the recipe, and a headless e2e "environment rebuilt" scenario.
+- [ ] Driven by hand in the real app with a real agent: not yet. The four older agent-fill e2e
+      scenarios (ADR-0036) still have not run in a windowed browser.
+
+Out of scope here, each behind its own prerequisite: real-service and employees' SaaS accounts
+(ADR-0046's path), the itsustar AI room (needs a per-client policy and a browser in the room),
+headless hosts ([ADR-0043](decisions/0043-unattended-access-on-headless-hosts.md), proposed),
+native-app fills through the credential provider, passkeys.
 
 ---
 

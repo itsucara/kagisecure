@@ -7,6 +7,18 @@
     "CFBundleName": {
       "shouldTranslate": false
     },
+    "NSCameraUsageDescription": {
+      "comment": "Shown when the camera reads a one-time password QR code.",
+      "extractionState": "manual",
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "ワンタイムパスワードの QR コードを読むためにカメラを使います。"
+          }
+        }
+      }
+    },
     "NSFaceIDUsageDescription": {
       "comment": "Shown when Face ID unlocks the vault.",
       "extractionState": "manual",

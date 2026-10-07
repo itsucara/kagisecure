@@ -288,6 +288,16 @@ struct AgentFillApprovalTests {
     @Test func theFieldsAreNamesInTheOrderAsked() {
         #expect(AgentFillSheetView.fieldNames([.username, .password]) == "username, password")
         #expect(AgentFillSheetView.fieldNames([.oneTimeCode]) == "one-time code")
+        #expect(AgentFillSheetView.fieldNames([.username, .newPassword]) == "username, new password")
+    }
+
+    @Test func aSignUpFillSaysItCreatesAnAccount() {
+        #expect(
+            AgentFillSheetView.fillSummary(Self.facts(fields: [.username, .newPassword]))
+                == "username and a new password (create account)")
+        #expect(
+            AgentFillSheetView.fillSummary(Self.facts(fields: [.newPassword]))
+                == "a new password (create account)")
     }
 
     @Test func theTouchIDReasonNamesTheSiteAndTheItemAndNotTheAgent() {

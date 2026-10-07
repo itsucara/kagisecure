@@ -190,9 +190,26 @@ final class VaultStore {
         refresh()
     }
 
-    /// Every trashed item, permanently.
+    /// Every trashed item, permanently. Every item is attempted even when one fails; the list is
+    /// refreshed once at the end from what the vault really holds, and the failures (if any) are
+    /// thrown together so the person sees which items are still in the Trash.
     func emptyTrash() throws {
-        for item in trashedItems { try deletePermanently(item) }
+        try emptyTrash { item in
+            let current = (try? session.item(itemId: item.id)) ?? item
+            try session.deleteItem(itemId: item.id, revision: current.revision)
+        }
+    }
+
+    /// `emptyTrash()` with the per-item delete injected (tests make some deletes fail).
+    func emptyTrash(deleting delete: (ItemView) throws -> Void) throws {
+        var failures: [EmptyTrashError.Failure] = []
+        for item in trashedItems {
+            do { try delete(item) } catch {
+                failures.append(.init(title: item.title, message: AppModel.message(for: error)))
+            }
+        }
+        refresh()
+        if !failures.isEmpty { throw EmptyTrashError(failures: failures) }
     }
 
     // MARK: Secrets — each behind a fresh presence check (ADR-0038)
@@ -258,4 +275,18 @@ final class VaultStore {
     }
 
     nonisolated static func unixNow() -> UInt64 { UInt64(Date().timeIntervalSince1970) }
+}
+
+/// Emptying the Trash finished, but these items could not be deleted and are still in the Trash.
+struct EmptyTrashError: Error, LocalizedError, Equatable {
+    struct Failure: Equatable {
+        let title: String
+        let message: String
+    }
+    let failures: [Failure]
+
+    var errorDescription: String? {
+        let lines = failures.map { "• \($0.title): \($0.message)" }.joined(separator: "\n")
+        return String(localized: "\(failures.count) item(s) could not be deleted and are still in the Trash:") + "\n" + lines
+    }
 }

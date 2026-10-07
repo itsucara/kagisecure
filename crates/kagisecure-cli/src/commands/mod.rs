@@ -17,6 +17,7 @@ pub mod mcp;
 pub mod recover;
 pub mod run;
 pub mod shared;
+pub mod test_logins;
 pub mod vault;
 
 /// A minimal CLI-authored audit draft: actor `"cli"`, the given tool name, outcome `Allowed`, and

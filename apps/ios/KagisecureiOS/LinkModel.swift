@@ -62,12 +62,20 @@ final class LinkModel {
     var onChange: (() -> Void)?
 
     private var syncAgain = false
+    /// When the last sync finished, so the watcher can ignore our own write-back.
+    private(set) var syncEndedAt: ContinuousClock.Instant?
+    private var presenter: FolderPresenter?
+    @ObservationIgnored private var watcher: FolderChangeDebouncer!
 
     init(personal: VaultSession, containerDirectory: URL) {
         self.personal = personal
         folders = ExchangeFolderStore(containerDirectory: containerDirectory)
         folderName = folders.resolve()?.lastPathComponent
         reload()
+        watcher = FolderChangeDebouncer(
+            isSyncing: { [weak self] in self?.syncing ?? false },
+            lastSyncEnded: { [weak self] in self?.syncEndedAt },
+            sync: { [weak self] in await self?.sync() })
     }
 
     func reload() {
@@ -105,6 +113,7 @@ final class LinkModel {
             try folders.remember(url)
             folderName = url.lastPathComponent
             problem = nil
+            if presenter != nil { stopWatching(); startWatching() }
         } catch {
             problem = String(localized: "This folder could not be remembered: \(error.localizedDescription)")
             return
@@ -113,8 +122,49 @@ final class LinkModel {
     }
 
     func forgetFolder() {
+        stopWatching()
         folders.forget()
         folderName = nil
+    }
+
+    // MARK: - Watching
+
+    /// While the app is active: sync when the picked folder changes (the Mac saved something).
+    func startWatching() {
+        guard presenter == nil, let folder = folders.resolve() else { return }
+        presenter = FolderPresenter(folder: folder) { [weak self] in self?.folderChanged() }
+    }
+
+    /// Going to the background or locking: stop presenting and give the folder's access back.
+    func stopWatching() {
+        watcher.cancel()
+        presenter?.stop()
+        presenter = nil
+    }
+
+    var isWatching: Bool { presenter != nil }
+
+    /// The presenter's entry point (and the tests'): something in the folder changed.
+    func folderChanged() { watcher.folderChanged() }
+
+    /// Back in the foreground while still unlocked: catch up with what the Mac saved meanwhile.
+    /// Skipped with nothing linked, while a sync runs (the running one covers it), and within the
+    /// watcher's own-write window right after a sync. Returns whether a sync ran.
+    @discardableResult
+    func syncOnForeground() async -> Bool {
+        guard isLinked || folders.resolve() != nil else { return false }
+        guard !syncing, !watcher.isOwnEcho else { return false }
+        await sync()
+        return true
+    }
+
+    /// Whether two folder paths name the same folder (`/var` vs `/private/var`, `..`, a trailing
+    /// slash), so a vault is only re-pointed when it really points elsewhere.
+    nonisolated static func samePath(_ a: String, _ b: String) -> Bool {
+        func norm(_ p: String) -> String {
+            URL(fileURLWithPath: p).standardizedFileURL.resolvingSymlinksInPath().path
+        }
+        return a == b || norm(a) == norm(b)
     }
 
     // MARK: - Joining
@@ -143,7 +193,10 @@ final class LinkModel {
             return
         }
         syncing = true
-        defer { syncing = false }
+        defer {
+            syncing = false
+            syncEndedAt = ContinuousClock.now
+        }
         repeat {
             syncAgain = false
             await syncOnce()
@@ -165,7 +218,7 @@ final class LinkModel {
                 // updated, so a vault joined earlier may still point at the old mirror path.
                 // Re-point every linked vault at today's mirror before it syncs.
                 for vault in vaults {
-                    if let folder = vault.summary().folder, folder != mirrorPath {
+                    if let folder = vault.summary().folder, !LinkModel.samePath(folder, mirrorPath) {
                         _ = try vault.setFolder(folder: mirrorPath)
                     }
                 }

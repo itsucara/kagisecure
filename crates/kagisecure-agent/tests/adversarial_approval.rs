@@ -418,6 +418,7 @@ fn no_approval_request_from_any_tool_carries_a_value() {
                 variables: None,
                 timeout_seconds: 5,
                 output: kagisecure_ipc::protocol::OutputMode::Scrubbed,
+                delivery: kagisecure_ipc::protocol::Delivery::Environment,
             });
             let _ = client.call(&kagisecure_ipc::protocol::Request::CreateEnvironment {
                 vault_id: None,

@@ -30,6 +30,12 @@ public enum ApprovalAction : uint
     /// agent fills, so this arrives only if something is wrong; the app denies it unseen.
     /// </summary>
     AgentFill = (uint)KgsApprovalAction.AgentFill,
+
+    /// <summary>
+    /// An agent asks to create a test login (ADR-0048). Windows never offers agent test logins,
+    /// so this arrives only if something is wrong; the app denies it unseen.
+    /// </summary>
+    CreateTestLogin = (uint)KgsApprovalAction.CreateTestLogin,
 }
 
 /// <summary>

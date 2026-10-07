@@ -202,6 +202,11 @@ pub enum Command {
     /// Import items exported from another password manager.
     Import(ImportArgs),
 
+    /// List agent test logins and move them to the trash (ADR-0048). Only sealed logins in the
+    /// "Agent test logins" vault are ever touched; passwords are never printed.
+    #[command(subcommand, name = "test-logins")]
+    TestLogins(TestLoginsCommand),
+
     /// Create, join and use shared vaults: separate files of signed records exchanged by hand,
     /// out of band, and merged as a set union (ADR-0035).
     #[command(subcommand)]
@@ -212,6 +217,47 @@ pub enum Command {
     /// `commands::generate::schedule_clear`.
     #[command(name = "__clipboard-clear", hide = true)]
     ClipboardClear(ClipboardClearArgs),
+}
+
+/// `kagisecure test-logins ...`
+#[derive(Debug, Subcommand)]
+pub enum TestLoginsCommand {
+    /// List sealed agent test logins: id, title, username, websites, tags. Never a password.
+    List(TestLoginsListArgs),
+
+    /// Move the sealed agent test logins matching --website and/or --tag to the trash, in one
+    /// transaction with one audit entry. At least one filter is required. Nothing is deleted:
+    /// restore or empty the trash in the app.
+    Trash(TestLoginsTrashArgs),
+}
+
+/// `kagisecure test-logins list`
+#[derive(Debug, Args)]
+pub struct TestLoginsListArgs {
+    /// Only logins saved for a website covering this one, e.g. `http://localhost:47800`.
+    #[arg(long)]
+    pub website: Option<String>,
+
+    /// Only logins with exactly this tag, e.g. `app:shop`.
+    #[arg(long)]
+    pub tag: Option<String>,
+
+    /// Print as JSON.
+    #[arg(long)]
+    pub json: bool,
+}
+
+/// `kagisecure test-logins trash`
+#[derive(Debug, Args)]
+#[command(group(clap::ArgGroup::new("filter").required(true).multiple(true).args(["website", "tag"])))]
+pub struct TestLoginsTrashArgs {
+    /// Only logins saved for a website covering this one, e.g. `http://localhost:47800`.
+    #[arg(long)]
+    pub website: Option<String>,
+
+    /// Only logins with exactly this tag, e.g. `app:shop`.
+    #[arg(long)]
+    pub tag: Option<String>,
 }
 
 /// A member's role, from `reader`, `writer` or `admin` on the command line.

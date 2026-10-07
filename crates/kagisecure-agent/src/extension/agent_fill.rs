@@ -56,9 +56,11 @@
 //! is covered by the item and has a password field gets a fresh `Deliver` — a new probe id and a
 //! new grant id — whose redemption spends the approval on the password. No second sheet. The
 //! same document is allowed as well as a later one: a site that swaps the form in place without
-//! navigating keeps its document id (implementation decision 38). A continuation that finds
-//! anything else is `NO_MATCHING_TAB`, and the agent's retry is a new request with a sheet of its
-//! own. Another item, another sidecar, another field set, a call after the window or after a
+//! navigating keeps its document id (implementation decision 38). A continuation whose tab does
+//! not report at all — closed, or left for another tab — can never be step two: the pending step
+//! ends and the call is served as a new request, with a sheet of its own. A continuation that
+//! finds anything else in that tab is `NO_MATCHING_TAB`, and the agent's retry is a new request
+//! with a sheet of its own. Another item, another sidecar, another field set, a call after the window or after a
 //! lock is never a continuation at all.
 //!
 //! # One-time codes (§7.4)
@@ -103,6 +105,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, Weak};
 use std::time::{Duration, Instant};
 
+use kagisecure_core::Vault;
 use kagisecure_core::audit::AuditDraft;
 use kagisecure_core::model::{Item, ItemId};
 use kagisecure_core::proto::Outcome as AuditOutcome;
@@ -128,6 +131,7 @@ use crate::approval::{AgentFillFacts, ApprovalKind, ApprovalQueue, ApprovalReque
 use crate::catalog::Catalog;
 use crate::release::{self, Acted, NotReleased, Released, audited_release};
 use crate::shared::SheetFacts;
+use crate::test_login::TestLoginPass;
 use crate::vault::{REQUEST_LOCK_TIMEOUT, VaultHandle};
 
 /// How long the broker waits for the connected browsers to report the tab in front (§3.2).
@@ -263,6 +267,12 @@ pub(crate) const NO_MATCHING_TAB: &str = "kagisecure found no tab it can fill: t
 /// The answer when the item has no value for a requested field (gate 4).
 pub(crate) const NOTHING_TO_FILL: &str = "That item has no value for a field you asked to fill. \
      Nothing was filled. Check describe_item.";
+
+/// The answer for a sign-up fill of an item that is not a sealed agent test login (ADR-0048 §7):
+/// only kagisecure's own generated test passwords are typed into a sign-up form.
+pub(crate) const NOT_A_TEST_LOGIN: &str = "A sign-up fill (new_password) is served only for a \
+     test login made with create_test_login whose password has not been edited. Nothing was \
+     filled.";
 
 /// The answer for an archived item (gate 4, implementation decision 13): found, but not a
 /// candidate for a fresh sign-in.
@@ -401,7 +411,7 @@ impl AgentFillClock {
         }
     }
 
-    fn now(&self) -> Instant {
+    pub(crate) fn now(&self) -> Instant {
         let now = Instant::now();
         match &self.advanced {
             None => now,
@@ -468,8 +478,9 @@ impl Sidecar {
         self
     }
 
-    /// The key its limits and blocks are kept under: its parent's executable.
-    fn key(&self) -> &str {
+    /// The key its limits and blocks are kept under: its parent's executable. The test-login
+    /// create limit is kept under it too (ADR-0048 §11).
+    pub(crate) fn key(&self) -> &str {
         &self.parent_executable
     }
 
@@ -520,20 +531,32 @@ fn actor_via(sidecar: &Sidecar, session: &SessionFacts) -> String {
 
 /// Which gate-4 answer `item` gets for `fields`, if any: the archived sentence, or the one for a
 /// field it has no value for. Reads no value — `crossing`'s predicates say whether one is there.
-pub(crate) fn nothing_to_fill(item: &Item, fields: &[AgentFillField]) -> Option<&'static str> {
+///
+/// A sign-up fill (`new_password`) of an item that is not a sealed test login in `vault` gets
+/// [`NOT_A_TEST_LOGIN`], under the same `NOTHING_TO_FILL` code (ADR-0048 §7).
+pub(crate) fn nothing_to_fill(
+    vault: &Vault,
+    item: &Item,
+    fields: &[AgentFillField],
+) -> Option<&'static str> {
     if item.archived {
         Some(ARCHIVED)
-    } else if has_fields(item, fields) {
+    } else if fields.contains(&AgentFillField::NewPassword) && !vault.test_login_sealed(item) {
+        Some(NOT_A_TEST_LOGIN)
+    } else if has_fields(vault, item, fields) {
         None
     } else {
         Some(NOTHING_TO_FILL)
     }
 }
 
-fn has_fields(item: &Item, fields: &[AgentFillField]) -> bool {
+fn has_fields(vault: &Vault, item: &Item, fields: &[AgentFillField]) -> bool {
     fields.iter().all(|field| match field {
         AgentFillField::Username => item.username().is_some(),
         AgentFillField::Password => crossing::has_password(item),
+        AgentFillField::NewPassword => {
+            vault.test_login_sealed(item) && crossing::has_password(item)
+        }
         AgentFillField::OneTimeCode => crossing::has_working_totp(item),
     })
 }
@@ -544,6 +567,7 @@ fn page_field(field: AgentFillField) -> PageField {
         AgentFillField::Username => PageField::Username,
         AgentFillField::Password => PageField::Password,
         AgentFillField::OneTimeCode => PageField::OneTimeCode,
+        AgentFillField::NewPassword => PageField::NewPassword,
     }
 }
 
@@ -830,6 +854,9 @@ enum Step {
     Two,
     /// A one-time code, spent into the `totp_code` reply.
     Code,
+    /// A sign-up form of a sealed test login (ADR-0048 §7): the new password into every
+    /// new-password box, and the username when asked, spending the approval.
+    SignUp,
 }
 
 /// Where delivery stands, as the MCP thread sees it.
@@ -1293,7 +1320,14 @@ impl AgentFillBroker {
                     .ok_or(Refused::Recheck)?;
                 let page = Origin::parse(&checked_origin).map_err(|_| Refused::Recheck)?;
                 covering_website(&super::saved_websites(item), &page).ok_or(Refused::Recheck)?;
-                if !has_fields(item, &checked) {
+                if !has_fields(tx, item, &checked) {
+                    return Err(Refused::Recheck);
+                }
+                // A test login's no-sheet release holds only while the item is still sealed, the
+                // switch on and the origin allowed (ADR-0048 §5, §7).
+                if approved.test_login()
+                    && !crate::test_login::still_passes(tx, item, &checked_origin)
+                {
                     return Err(Refused::Recheck);
                 }
                 match step {
@@ -1304,6 +1338,14 @@ impl AgentFillBroker {
                     }
                     Step::Code => crossing::totp_code(approved, item, kagisecure_core::unix_now())
                         .map(|reply| (reply, None)),
+                    Step::SignUp => crossing::sign_up_filled(
+                        approved,
+                        tx,
+                        item,
+                        checked.contains(&AgentFillField::Username),
+                        super::username_of(item),
+                    )
+                    .map(|reply| (reply, None)),
                     Step::Whole | Step::Two => {
                         crossing::filled(approved, item, &wanted, super::username_of(item))
                             .map(|reply| (reply, None))
@@ -1482,7 +1524,12 @@ impl AgentFillBroker {
                         flow.delivery = Delivery::Undelivered;
                     }
                     Delivery::Released(released) if released.outcome.is_none() => {
-                        if failure.is_none() && written.contains(&PageField::Password) {
+                        // Armed for every password box written: a login's, or a sign-up's
+                        // new-password boxes (ADR-0048 §7).
+                        if failure.is_none()
+                            && (written.contains(&PageField::Password)
+                                || written.contains(&PageField::NewPassword))
+                        {
                             released.tripwire.armed_at = Some(now);
                         }
                         released.outcome = Some((written.to_vec(), failure));
@@ -1950,6 +1997,7 @@ fn approved_detail(step: Step, first_entry: Option<u64>, document_id: bool) -> S
         (Step::One { .. }, _) => notes.push("step 1 of 2".to_owned()),
         (Step::Two, Some(seq)) => notes.push(format!("step 2 of 2, entry {seq}")),
         (Step::Two, None) => notes.push("step 2 of 2".to_owned()),
+        (Step::SignUp, _) => notes.push("sign-up".to_owned()),
         (Step::Whole | Step::Code, _) => {}
     }
     if !document_id {
@@ -1998,7 +2046,7 @@ fn item_now(
             (
                 super::saved_websites(item),
                 catalog.item_title(found),
-                nothing_to_fill(item, &call.fields),
+                nothing_to_fill(vault, item, &call.fields),
                 found
                     .place
                     .shared()
@@ -2052,6 +2100,12 @@ impl FlowSlot {
         if let Some(pending) = continuation {
             return self.serve_step_two(call, pending);
         }
+        self.serve_new(call)
+    }
+
+    /// A request that is not step two of a pending grant: every gate, from gate 7 on, with a
+    /// sheet unless something stands in for the person's grant.
+    fn serve_new(self, call: &AgentFillCall<'_>) -> Response {
         let broker = Arc::clone(&self.broker);
 
         // Gate 7, asked first: the audit pre-flight.
@@ -2131,6 +2185,57 @@ impl FlowSlot {
                 }
             } else if call.fields == [AgentFillField::OneTimeCode] {
                 Step::Code
+            } else if call.fields.contains(&AgentFillField::NewPassword) {
+                Step::SignUp
+            } else {
+                Step::Whole
+            };
+            let issue = Issue {
+                step,
+                approved,
+                first_entry: None,
+                until: match step {
+                    Step::One { until } => Some(until),
+                    _ => None,
+                },
+            };
+            return self.deliver(call, &session, &probe_id, target, &title, issue);
+        }
+
+        // Gate 8, a sealed agent test login at an allowed origin (ADR-0048 §7): a pass issued for
+        // this item and this origin stands where the person's grant would, and no sheet is
+        // raised. Every other gate ran as before, and the release re-checks the seal.
+        let pass = ItemId::parse_canonical(&call.item_id).and_then(|id| {
+            call.handle
+                .with(|vault| {
+                    vault.item_by_id(&id).and_then(|item| {
+                        TestLoginPass::for_fill(vault, item, &target.origin, &call.fields)
+                    })
+                })
+                .flatten()
+        });
+        if let Some(pass) = pass {
+            let Some(approved) =
+                Approved::from_test_login(pass, &origin, &call.item_id, &field_names(&call.fields))
+            else {
+                // Unreachable while the pass is issued for the request it is spent on.
+                call.record(call.entry_via(
+                    &session,
+                    &origin,
+                    AuditOutcome::Failed,
+                    ErrorCode::Internal.as_str(),
+                ));
+                return Response::error(
+                    ErrorCode::Internal,
+                    "The approval did not match the request. Nothing was filled.",
+                );
+            };
+            let step = if target.two_step {
+                Step::One {
+                    until: Instant::now() + broker.timings.flow_window,
+                }
+            } else if call.fields.contains(&AgentFillField::NewPassword) {
+                Step::SignUp
             } else {
                 Step::Whole
             };
@@ -2229,6 +2334,8 @@ impl FlowSlot {
             }
         } else if call.fields == [AgentFillField::OneTimeCode] {
             Step::Code
+        } else if call.fields.contains(&AgentFillField::NewPassword) {
+            Step::SignUp
         } else {
             Step::Whole
         };
@@ -2251,10 +2358,24 @@ impl FlowSlot {
     /// Whatever the answer, the pending step is spent: when the password is not released, step
     /// one's entry gets its `AGENT_FILL_PENDING_REFUSED` follow-up and the agent's next request
     /// is a new one, with a sheet of its own.
+    ///
+    /// When step one's tab did not report at all — the agent closed it, or went on in another
+    /// tab — step two can never come, and this request is not one: it is served as a new request,
+    /// with every gate and a sheet of its own, rather than refused for a tab that is gone.
     fn serve_step_two(self, call: &AgentFillCall<'_>, pending: PendingStep) -> Response {
         let entry = pending.entry.clone();
         let entry_seq = pending.entry_seq;
-        let answer = self.step_two(call, pending);
+        let answer = match self.step_two(call, pending) {
+            Ok(answer) => answer,
+            Err(slot) => {
+                call.record(release::follow_up(
+                    &entry,
+                    audit_detail::AGENT_FILL_PENDING_REFUSED,
+                    entry_seq,
+                ));
+                return slot.serve_new(call);
+            }
+        };
         if !matches!(answer, Response::FillResult { .. }) {
             call.record(release::follow_up(
                 &entry,
@@ -2265,10 +2386,10 @@ impl FlowSlot {
         answer
     }
 
-    fn step_two(self, call: &AgentFillCall<'_>, pending: PendingStep) -> Response {
+    fn step_two(self, call: &AgentFillCall<'_>, pending: PendingStep) -> Result<Response, Self> {
         // Gate 7, as for any request.
         if let Err(answer) = Self::preflight(call) {
-            return answer;
+            return Ok(answer);
         }
         // Gate 5: only the session that served step one can serve step two.
         let asked: Option<(u64, PushSender, SessionFacts)> = {
@@ -2281,25 +2402,33 @@ impl FlowSlot {
         };
         let Some((session_id, push, session)) = asked else {
             call.record(call.entry(AuditOutcome::Denied, audit_detail::AGENT_FILL_NO_TARGET));
-            return no_matching_tab();
+            return Ok(no_matching_tab());
         };
 
         // Gate 6: where that tab is now.
         let (probe_id, reports) = self.locate(&[(session_id, push)], &call.claimed_origin);
         let (websites, title, _) = match item_now(call) {
             Ok(found) => found,
-            Err(answer) => return answer,
+            Err(answer) => return Ok(answer),
         };
         if self.locked_since(call) {
-            return call.locked();
+            return Ok(call.locked());
+        }
+        // Step one's tab said nothing: it is closed, or the agent is in another tab now. Step two
+        // cannot come, so this is a new request (see `serve_step_two`).
+        if !reports
+            .iter()
+            .any(|r| r.session == pending.session && r.tab.tab_id == pending.tab_id)
+        {
+            return Err(self);
         }
         let target = match choose_step_two(&reports, &pending, &call.claimed_origin, &websites) {
             Choice::One(target) => target,
             Choice::NoTarget => {
                 call.record(call.entry(AuditOutcome::Denied, audit_detail::AGENT_FILL_NO_TARGET));
-                return no_matching_tab();
+                return Ok(no_matching_tab());
             }
-            Choice::Mismatch(origin) => return self.mismatch(call, &origin, title),
+            Choice::Mismatch(origin) => return Ok(self.mismatch(call, &origin, title)),
         };
 
         // Gate 8 was step one's sheet. Gate 9: the password, spending step one's approval, within
@@ -2310,7 +2439,7 @@ impl FlowSlot {
             first_entry: Some(pending.entry_seq),
             until: Some(pending.until),
         };
-        self.deliver(call, &session, &probe_id, target, &title, issue)
+        Ok(self.deliver(call, &session, &probe_id, target, &title, issue))
     }
 
     /// Gate 7: the audit pre-flight. Nobody is asked to approve what could not be recorded — and
@@ -2497,11 +2626,18 @@ impl FlowSlot {
         let fields = match step {
             Step::One { .. } => vec![AgentFillField::Username],
             Step::Two => vec![AgentFillField::Password],
-            Step::Whole | Step::Code => call.fields.clone(),
+            Step::Whole | Step::Code | Step::SignUp => call.fields.clone(),
         };
         let detail = match approved.standing() {
             // ADR-0042 §12.8: an unattended fill names its grant and run.
             Some(label) => format!("UNATTENDED_FILL_APPROVED ({label})"),
+            // ADR-0048 §10: a sealed test login's fill, with nobody asked.
+            None if approved.test_login() && step == Step::SignUp => {
+                crate::test_login::audit_detail::TEST_LOGIN_FILL_AUTOMATIC_SIGN_UP.to_owned()
+            }
+            None if approved.test_login() => {
+                crate::test_login::audit_detail::TEST_LOGIN_FILL_AUTOMATIC.to_owned()
+            }
             None => approved_detail(step, first_entry, target.tab.document_id.is_some()),
         };
         let entry = AuditDraft {
@@ -2842,6 +2978,7 @@ mod tests {
             username: true,
             password: true,
             one_time_code: false,
+            ..FoundFields::default()
         }
     }
 
@@ -2921,6 +3058,7 @@ mod tests {
             username: true,
             password: false,
             one_time_code: false,
+            ..FoundFields::default()
         }
     }
 
@@ -3230,7 +3368,22 @@ mod tests {
                 token.chars().all(|c| c.is_ascii_uppercase() || c == '_'),
                 "{token}"
             );
+        } // The sign-up details (ADR-0048 Phase 1b): a screaming-snake-case token, then notes.
+        for detail in [
+            approved_detail(Step::SignUp, None, true),
+            crate::test_login::audit_detail::TEST_LOGIN_FILL_AUTOMATIC_SIGN_UP.to_owned(),
+        ] {
+            let (token, notes) = detail.split_once(" (").expect("a note");
+            assert!(
+                token.chars().all(|c| c.is_ascii_uppercase() || c == '_'),
+                "{detail}"
+            );
+            assert!(notes.ends_with("sign-up)"), "{detail}");
         }
+        assert_eq!(
+            approved_detail(Step::SignUp, None, true),
+            "AGENT_FILL_APPROVED (sign-up)"
+        );
     }
 
     fn this_process_as_a_sidecar(started: Option<u64>) -> Sidecar {

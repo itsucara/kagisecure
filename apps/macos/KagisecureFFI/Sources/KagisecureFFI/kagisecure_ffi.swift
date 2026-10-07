@@ -3120,6 +3120,24 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
     func releaseTotp(itemId: String, fieldId: String?, purpose: ReleasePurpose) async throws  -> TotpRelease
     
     /**
+     * Allow agent test logins without a sheet at `domain` and its subdomains (ADR-0048 §3).
+     * What the person typed is reduced to its registrable domain, which is returned. The app
+     * asks for presence before it calls this.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`]-style refusal for an IP address, a single label such as `localhost`
+     * or a public suffix itself; I/O failures.
+     */
+    func addAgentTestLoginDomain(domain: String) throws  -> String
+    
+    /**
+     * The agent test-login settings (ADR-0048 §1, §3): off, with no allowed domains, until the
+     * switch is turned on.
+     */
+    func agentTestLoginSettings()  -> AgentTestLoginSettingsView
+    
+    /**
      * How many entries the audit log has, for the viewer's paging.
      */
     func auditCount()  -> UInt32
@@ -3497,6 +3515,15 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
     func platformSlotId()  -> String?
     
     /**
+     * Stop allowing `domain` (ADR-0048 §3). Returns whether it was on the list.
+     *
+     * # Errors
+     *
+     * I/O failures.
+     */
+    func removeAgentTestLoginDomain(domain: String) throws  -> Bool
+    
+    /**
      * Forget the platform slot — the user turned Touch ID off, or the Enclave key is gone.
      *
      * # Errors
@@ -3565,6 +3592,17 @@ public protocol VaultSessionProtocol: AnyObject, Sendable {
      * with nothing written; plus I/O failures.
      */
     func saveItem(draft: ItemDraft) throws  -> ItemView
+    
+    /**
+     * Turn agent test logins on or off (ADR-0048 §1). Turning them on creates the test-login
+     * vault if there is none. One transaction, audited. The app asks for presence before it calls
+     * this to turn them on (`PresenceOwner.featureSwitch`); Rust cannot see that.
+     *
+     * # Errors
+     *
+     * I/O failures; nothing changes on any error.
+     */
+    func setAgentTestLogins(enabled: Bool) throws 
     
     /**
      * Set the item-level "Visible to agents" toggle (ui-spec.md §4.4).
@@ -4073,6 +4111,39 @@ open func releaseTotp(itemId: String, fieldId: String?, purpose: ReleasePurpose)
             liftFunc: FfiConverterTypeTotpRelease_lift,
             errorHandler: FfiConverterTypeFfiError_lift
         )
+}
+    
+    /**
+     * Allow agent test logins without a sheet at `domain` and its subdomains (ADR-0048 §3).
+     * What the person typed is reduced to its registrable domain, which is returned. The app
+     * asks for presence before it calls this.
+     *
+     * # Errors
+     *
+     * [`FfiError::Invalid`]-style refusal for an IP address, a single label such as `localhost`
+     * or a public suffix itself; I/O failures.
+     */
+open func addAgentTestLoginDomain(domain: String)throws  -> String  {
+    return try  FfiConverterString.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_add_agent_test_login_domain(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(domain),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * The agent test-login settings (ADR-0048 §1, §3): off, with no allowed domains, until the
+     * switch is turned on.
+     */
+open func agentTestLoginSettings() -> AgentTestLoginSettingsView  {
+    return try!  FfiConverterTypeAgentTestLoginSettingsView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_agent_test_login_settings(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
 }
     
     /**
@@ -4690,6 +4761,23 @@ open func platformSlotId() -> String?  {
 }
     
     /**
+     * Stop allowing `domain` (ADR-0048 §3). Returns whether it was on the list.
+     *
+     * # Errors
+     *
+     * I/O failures.
+     */
+open func removeAgentTestLoginDomain(domain: String)throws  -> Bool  {
+    return try  FfiConverterBool.lift(try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_remove_agent_test_login_domain(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(domain),uniffiCallStatus
+    )
+})
+}
+    
+    /**
      * Forget the platform slot — the user turned Touch ID off, or the Enclave key is gone.
      *
      * # Errors
@@ -4787,6 +4875,24 @@ open func saveItem(draft: ItemDraft)throws  -> ItemView  {
         FfiConverterTypeItemDraft_lower(draft),uniffiCallStatus
     )
 })
+}
+    
+    /**
+     * Turn agent test logins on or off (ADR-0048 §1). Turning them on creates the test-login
+     * vault if there is none. One transaction, audited. The app asks for presence before it calls
+     * this to turn them on (`PresenceOwner.featureSwitch`); Rust cannot see that.
+     *
+     * # Errors
+     *
+     * I/O failures; nothing changes on any error.
+     */
+open func setAgentTestLogins(enabled: Bool)throws   {try rustCallWithError(FfiConverterTypeFfiError_lift) {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_method_vaultsession_set_agent_test_logins(
+            self.uniffiCloneHandle(),
+        FfiConverterBool.lower(enabled),uniffiCallStatus
+    )
+}
 }
     
     /**
@@ -5812,6 +5918,87 @@ public func FfiConverterTypeAgentStatusView_lower(_ value: AgentStatusView) -> R
 
 
 /**
+ * The agent test-login settings (ADR-0048 §1, §3), as Settings shows them.
+ */
+public struct AgentTestLoginSettingsView: Equatable, Hashable {
+    /**
+     * "Agent test logins": off by default.
+     */
+    public var enabled: Bool
+    /**
+     * The registrable domains the person allowed beside loopback, `localhost`, `*.localhost`
+     * and `*.test`.
+     */
+    public var autoDomains: [String]
+    /**
+     * The test-login vault, once the switch has created it.
+     */
+    public var vaultId: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * "Agent test logins": off by default.
+         */enabled: Bool, 
+        /**
+         * The registrable domains the person allowed beside loopback, `localhost`, `*.localhost`
+         * and `*.test`.
+         */autoDomains: [String], 
+        /**
+         * The test-login vault, once the switch has created it.
+         */vaultId: String?) {
+        self.enabled = enabled
+        self.autoDomains = autoDomains
+        self.vaultId = vaultId
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension AgentTestLoginSettingsView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAgentTestLoginSettingsView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AgentTestLoginSettingsView {
+        return
+            try AgentTestLoginSettingsView(
+                enabled: FfiConverterBool.read(from: &buf), 
+                autoDomains: FfiConverterSequenceString.read(from: &buf), 
+                vaultId: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AgentTestLoginSettingsView, into buf: inout [UInt8]) {
+        FfiConverterBool.write(value.enabled, into: &buf)
+        FfiConverterSequenceString.write(value.autoDomains, into: &buf)
+        FfiConverterOptionString.write(value.vaultId, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentTestLoginSettingsView_lift(_ buf: RustBuffer) throws -> AgentTestLoginSettingsView {
+    return try FfiConverterTypeAgentTestLoginSettingsView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAgentTestLoginSettingsView_lower(_ value: AgentTestLoginSettingsView) -> RustBuffer {
+    return FfiConverterTypeAgentTestLoginSettingsView.lower(value)
+}
+
+
+/**
  * One question waiting for a human.
  *
  * Read the field list as the definition of what the sheet may state. There is no value here, no
@@ -5879,6 +6066,15 @@ public struct ApprovalRequestView: Equatable, Hashable {
      * The resolved argv, for `run_with_env`.
      */
     public var command: [String]
+    /**
+     * A `run_with_env` whose values go to the command's standard input, once, and not into its
+     * environment (ADR-0047). The sheet says so, and offers only **Allow once** and **Deny**:
+     * Rust grants any allow of it as a single use.
+     *
+     * `#[uniffi(default = false)]` so the Swift call sites that build a request by hand keep
+     * compiling.
+     */
+    public var stdinDelivery: Bool
     /**
      * `Some(false)` is the red "not gitignored" callout; `None` means not in a work tree.
      */
@@ -5999,6 +6195,22 @@ public struct ApprovalRequestView: Equatable, Hashable {
      */
     public var agentFill: AgentFillFactsView?
     /**
+     * What the test-login sheet shows beyond the fields above. `Some` exactly when
+     * [`Self::action`] is [`ApprovalAction::CreateTestLogin`].
+     *
+     * `#[uniffi(default = None)]` so hand-built views in the Swift tests keep compiling.
+     */
+    public var testLogin: TestLoginFactsView?
+    /**
+     * A `run_with_env` or `write_env_file` whose every selected variable is bound to a sealed
+     * test login (ADR-0048 §9). The app may answer it inside its presence grace window with no
+     * sheet and no prompt, as it answers agent fills; outside the window, the ordinary sheet and
+     * Touch ID. It never becomes a standing permission: the grace window is the app's.
+     *
+     * `#[uniffi(default = false)]` so hand-built views in the Swift tests keep compiling.
+     */
+    public var ridesGrace: Bool
+    /**
      * Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
      * members` — to be shown as a fact on the sheet. `None` for the personal vault.
      */
@@ -6059,6 +6271,14 @@ public struct ApprovalRequestView: Equatable, Hashable {
         /**
          * The resolved argv, for `run_with_env`.
          */command: [String], 
+        /**
+         * A `run_with_env` whose values go to the command's standard input, once, and not into its
+         * environment (ADR-0047). The sheet says so, and offers only **Allow once** and **Deny**:
+         * Rust grants any allow of it as a single use.
+         *
+         * `#[uniffi(default = false)]` so the Swift call sites that build a request by hand keep
+         * compiling.
+         */stdinDelivery: Bool = false, 
         /**
          * `Some(false)` is the red "not gitignored" callout; `None` means not in a work tree.
          */gitignored: Bool?, 
@@ -6157,6 +6377,20 @@ public struct ApprovalRequestView: Equatable, Hashable {
          * unit tests do, many times — keep compiling and read `nil`.
          */agentFill: AgentFillFactsView? = nil, 
         /**
+         * What the test-login sheet shows beyond the fields above. `Some` exactly when
+         * [`Self::action`] is [`ApprovalAction::CreateTestLogin`].
+         *
+         * `#[uniffi(default = None)]` so hand-built views in the Swift tests keep compiling.
+         */testLogin: TestLoginFactsView? = nil, 
+        /**
+         * A `run_with_env` or `write_env_file` whose every selected variable is bound to a sealed
+         * test login (ADR-0048 §9). The app may answer it inside its presence grace window with no
+         * sheet and no prompt, as it answers agent fills; outside the window, the ordinary sheet and
+         * Touch ID. It never becomes a standing permission: the grace window is the app's.
+         *
+         * `#[uniffi(default = false)]` so hand-built views in the Swift tests keep compiling.
+         */ridesGrace: Bool = false, 
+        /**
          * Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
          * members` — to be shown as a fact on the sheet. `None` for the personal vault.
          */sharedSource: String? = nil, 
@@ -6180,6 +6414,7 @@ public struct ApprovalRequestView: Equatable, Hashable {
         self.targetPath = targetPath
         self.variables = variables
         self.command = command
+        self.stdinDelivery = stdinDelivery
         self.gitignored = gitignored
         self.overwriteRequested = overwriteRequested
         self.targetExists = targetExists
@@ -6202,6 +6437,8 @@ public struct ApprovalRequestView: Equatable, Hashable {
         self.extensionId = extensionId
         self.presenceOnly = presenceOnly
         self.agentFill = agentFill
+        self.testLogin = testLogin
+        self.ridesGrace = ridesGrace
         self.sharedSource = sharedSource
         self.changedSinceApproval = changedSinceApproval
     }
@@ -6237,6 +6474,7 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
                 targetPath: FfiConverterOptionString.read(from: &buf), 
                 variables: FfiConverterSequenceString.read(from: &buf), 
                 command: FfiConverterSequenceString.read(from: &buf), 
+                stdinDelivery: FfiConverterBool.read(from: &buf), 
                 gitignored: FfiConverterOptionBool.read(from: &buf), 
                 overwriteRequested: FfiConverterBool.read(from: &buf), 
                 targetExists: FfiConverterOptionBool.read(from: &buf), 
@@ -6259,6 +6497,8 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
                 extensionId: FfiConverterOptionString.read(from: &buf), 
                 presenceOnly: FfiConverterBool.read(from: &buf), 
                 agentFill: FfiConverterOptionTypeAgentFillFactsView.read(from: &buf), 
+                testLogin: FfiConverterOptionTypeTestLoginFactsView.read(from: &buf), 
+                ridesGrace: FfiConverterBool.read(from: &buf), 
                 sharedSource: FfiConverterOptionString.read(from: &buf), 
                 changedSinceApproval: FfiConverterSequenceString.read(from: &buf)
         )
@@ -6280,6 +6520,7 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.targetPath, into: &buf)
         FfiConverterSequenceString.write(value.variables, into: &buf)
         FfiConverterSequenceString.write(value.command, into: &buf)
+        FfiConverterBool.write(value.stdinDelivery, into: &buf)
         FfiConverterOptionBool.write(value.gitignored, into: &buf)
         FfiConverterBool.write(value.overwriteRequested, into: &buf)
         FfiConverterOptionBool.write(value.targetExists, into: &buf)
@@ -6302,6 +6543,8 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.extensionId, into: &buf)
         FfiConverterBool.write(value.presenceOnly, into: &buf)
         FfiConverterOptionTypeAgentFillFactsView.write(value.agentFill, into: &buf)
+        FfiConverterOptionTypeTestLoginFactsView.write(value.testLogin, into: &buf)
+        FfiConverterBool.write(value.ridesGrace, into: &buf)
         FfiConverterOptionString.write(value.sharedSource, into: &buf)
         FfiConverterSequenceString.write(value.changedSinceApproval, into: &buf)
     }
@@ -9306,6 +9549,15 @@ public struct ItemView: Equatable, Hashable {
      * for what goes into it and why a hash rather than `updated_at`.
      */
     public var revision: String
+    /**
+     * Whether the item is in the agent test-login vault (ADR-0048 §2). Such an item is never
+     * offered by the person's AutoFill (§8), and its sealed password field offers only
+     * **Regenerate** in the editor. `false` for an item of a shared vault.
+     *
+     * `#[uniffi(default = false)]` so the Swift call sites that build a view by hand keep
+     * compiling.
+     */
+    public var inAgentTestVault: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -9395,7 +9647,15 @@ public struct ItemView: Equatable, Hashable {
          * [`crate::VaultSession::save_item`] refuses to write if the live item's fingerprint no
          * longer matches (`FfiError::ItemChangedElsewhere`) — see `item_revision`
          * for what goes into it and why a hash rather than `updated_at`.
-         */revision: String) {
+         */revision: String, 
+        /**
+         * Whether the item is in the agent test-login vault (ADR-0048 §2). Such an item is never
+         * offered by the person's AutoFill (§8), and its sealed password field offers only
+         * **Regenerate** in the editor. `false` for an item of a shared vault.
+         *
+         * `#[uniffi(default = false)]` so the Swift call sites that build a view by hand keep
+         * compiling.
+         */inAgentTestVault: Bool = false) {
         self.id = id
         self.vaultId = vaultId
         self.category = category
@@ -9416,6 +9676,7 @@ public struct ItemView: Equatable, Hashable {
         self.username = username
         self.primarySecretFieldId = primarySecretFieldId
         self.revision = revision
+        self.inAgentTestVault = inAgentTestVault
     }
 
     
@@ -9453,7 +9714,8 @@ public struct FfiConverterTypeItemView: FfiConverterRustBuffer {
                 subtitle: FfiConverterOptionString.read(from: &buf), 
                 username: FfiConverterOptionString.read(from: &buf), 
                 primarySecretFieldId: FfiConverterOptionString.read(from: &buf), 
-                revision: FfiConverterString.read(from: &buf)
+                revision: FfiConverterString.read(from: &buf), 
+                inAgentTestVault: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -9478,6 +9740,7 @@ public struct FfiConverterTypeItemView: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.username, into: &buf)
         FfiConverterOptionString.write(value.primarySecretFieldId, into: &buf)
         FfiConverterString.write(value.revision, into: &buf)
+        FfiConverterBool.write(value.inAgentTestVault, into: &buf)
     }
 }
 
@@ -11251,6 +11514,228 @@ public func FfiConverterTypeTagCount_lower(_ value: TagCount) -> RustBuffer {
 
 
 /**
+ * [`kagisecure_agent::TestLoginFacts`]: who asks for which test login, where. Metadata only;
+ * the password is generated after the approval and has nowhere to go here.
+ */
+public struct TestLoginFactsView: Equatable, Hashable {
+    /**
+     * The agent as the audit log names it.
+     */
+    public var agent: String
+    /**
+     * The agent's self-reported name. Render it as a quotation.
+     */
+    public var agentName: String
+    /**
+     * The title kagisecure would give the item.
+     */
+    public var title: String
+    /**
+     * The username the agent chose.
+     */
+    public var username: String
+    /**
+     * The websites, each split for rendering.
+     */
+    public var websites: [TestLoginWebsiteView]
+    /**
+     * The purpose the agent gave: agent-written data, never instructions.
+     */
+    public var purpose: String
+    /**
+     * Every tag the item would carry.
+     */
+    public var tags: [String]
+    /**
+     * How the password would be generated, e.g. `32 characters, with symbols`.
+     */
+    public var generator: String
+    /**
+     * Why, as the agent put it.
+     */
+    public var reason: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The agent as the audit log names it.
+         */agent: String, 
+        /**
+         * The agent's self-reported name. Render it as a quotation.
+         */agentName: String, 
+        /**
+         * The title kagisecure would give the item.
+         */title: String, 
+        /**
+         * The username the agent chose.
+         */username: String, 
+        /**
+         * The websites, each split for rendering.
+         */websites: [TestLoginWebsiteView], 
+        /**
+         * The purpose the agent gave: agent-written data, never instructions.
+         */purpose: String, 
+        /**
+         * Every tag the item would carry.
+         */tags: [String], 
+        /**
+         * How the password would be generated, e.g. `32 characters, with symbols`.
+         */generator: String, 
+        /**
+         * Why, as the agent put it.
+         */reason: String?) {
+        self.agent = agent
+        self.agentName = agentName
+        self.title = title
+        self.username = username
+        self.websites = websites
+        self.purpose = purpose
+        self.tags = tags
+        self.generator = generator
+        self.reason = reason
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TestLoginFactsView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTestLoginFactsView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TestLoginFactsView {
+        return
+            try TestLoginFactsView(
+                agent: FfiConverterString.read(from: &buf), 
+                agentName: FfiConverterString.read(from: &buf), 
+                title: FfiConverterString.read(from: &buf), 
+                username: FfiConverterString.read(from: &buf), 
+                websites: FfiConverterSequenceTypeTestLoginWebsiteView.read(from: &buf), 
+                purpose: FfiConverterString.read(from: &buf), 
+                tags: FfiConverterSequenceString.read(from: &buf), 
+                generator: FfiConverterString.read(from: &buf), 
+                reason: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TestLoginFactsView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.agent, into: &buf)
+        FfiConverterString.write(value.agentName, into: &buf)
+        FfiConverterString.write(value.title, into: &buf)
+        FfiConverterString.write(value.username, into: &buf)
+        FfiConverterSequenceTypeTestLoginWebsiteView.write(value.websites, into: &buf)
+        FfiConverterString.write(value.purpose, into: &buf)
+        FfiConverterSequenceString.write(value.tags, into: &buf)
+        FfiConverterString.write(value.generator, into: &buf)
+        FfiConverterOptionString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTestLoginFactsView_lift(_ buf: RustBuffer) throws -> TestLoginFactsView {
+    return try FfiConverterTypeTestLoginFactsView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTestLoginFactsView_lower(_ value: TestLoginFactsView) -> RustBuffer {
+    return FfiConverterTypeTestLoginFactsView.lower(value)
+}
+
+
+/**
+ * One website on a test-login sheet (ADR-0048 §3): the registrable domain large above the full
+ * URL, and ADR-0046 §5's flags.
+ */
+public struct TestLoginWebsiteView: Equatable, Hashable {
+    /**
+     * The website's origin, split for rendering.
+     */
+    public var origin: AgentOriginView
+    /**
+     * The title of a login of the person's own saved for the same registrable domain — the
+     * near-host warning — when there is one.
+     */
+    public var nearItemTitle: String?
+    /**
+     * Whether the website is not `https`.
+     */
+    public var notHttps: Bool
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The website's origin, split for rendering.
+         */origin: AgentOriginView, 
+        /**
+         * The title of a login of the person's own saved for the same registrable domain — the
+         * near-host warning — when there is one.
+         */nearItemTitle: String?, 
+        /**
+         * Whether the website is not `https`.
+         */notHttps: Bool) {
+        self.origin = origin
+        self.nearItemTitle = nearItemTitle
+        self.notHttps = notHttps
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension TestLoginWebsiteView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTestLoginWebsiteView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TestLoginWebsiteView {
+        return
+            try TestLoginWebsiteView(
+                origin: FfiConverterTypeAgentOriginView.read(from: &buf), 
+                nearItemTitle: FfiConverterOptionString.read(from: &buf), 
+                notHttps: FfiConverterBool.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: TestLoginWebsiteView, into buf: inout [UInt8]) {
+        FfiConverterTypeAgentOriginView.write(value.origin, into: &buf)
+        FfiConverterOptionString.write(value.nearItemTitle, into: &buf)
+        FfiConverterBool.write(value.notHttps, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTestLoginWebsiteView_lift(_ buf: RustBuffer) throws -> TestLoginWebsiteView {
+    return try FfiConverterTypeTestLoginWebsiteView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTestLoginWebsiteView_lower(_ value: TestLoginWebsiteView) -> RustBuffer {
+    return FfiConverterTypeTestLoginWebsiteView.lower(value)
+}
+
+
+/**
  * A live code and everything the ring needs to draw itself.
  */
 public struct TotpCodeView: Equatable, Hashable {
@@ -13011,6 +13496,10 @@ public enum AgentFillFieldView: Equatable, Hashable {
      * A one-time code from the item's one-time-password field.
      */
     case oneTimeCode
+    /**
+     * A sign-up form's new-password boxes, for a sealed agent test login (ADR-0048 §7).
+     */
+    case newPassword
 
 
 
@@ -13038,6 +13527,8 @@ public struct FfiConverterTypeAgentFillFieldView: FfiConverterRustBuffer {
         
         case 3: return .oneTimeCode
         
+        case 4: return .newPassword
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -13056,6 +13547,10 @@ public struct FfiConverterTypeAgentFillFieldView: FfiConverterRustBuffer {
         
         case .oneTimeCode:
             writeInt(&buf, Int32(3))
+        
+        
+        case .newPassword:
+            writeInt(&buf, Int32(4))
         
         }
     }
@@ -13385,6 +13880,13 @@ public enum ApprovalAction: Equatable, Hashable {
      * the sheet shows are in [`ApprovalRequestView::agent_fill`].
      */
     case agentFill
+    /**
+     * An agent asks for a test login at a site outside the allowed origins (ADR-0048 §3).
+     * kagisecure generates the password; nothing is released. Always the full sheet with Touch
+     * ID — never presence-only, never "for this session" — and it mints nothing. The facts the
+     * sheet shows are in [`ApprovalRequestView::test_login`].
+     */
+    case createTestLogin
 
 
 
@@ -13418,6 +13920,8 @@ public struct FfiConverterTypeApprovalAction: FfiConverterRustBuffer {
         
         case 6: return .agentFill
         
+        case 7: return .createTestLogin
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -13448,6 +13952,10 @@ public struct FfiConverterTypeApprovalAction: FfiConverterRustBuffer {
         
         case .agentFill:
             writeInt(&buf, Int32(6))
+        
+        
+        case .createTestLogin:
+            writeInt(&buf, Int32(7))
         
         }
     }
@@ -15484,6 +15992,90 @@ public func FfiConverterTypeStrengthBucket_lower(_ value: StrengthBucket) -> Rus
 
 
 /**
+ * A test-login notice for the app (ADR-0048 §10): a system notification and the menu-bar entry
+ * "N test logins created by agents". Asks nothing of the person.
+ */
+
+public enum TestLoginNoticeView: Equatable, Hashable {
+    
+    /**
+     * An agent created a test login.
+     */
+    case created(
+        /**
+         * The agent, as the audit log names it.
+         */agent: String, 
+        /**
+         * The title kagisecure composed.
+         */title: String, 
+        /**
+         * The username.
+         */username: String, 
+        /**
+         * The websites it is saved for.
+         */websites: [String]
+    )
+
+
+
+
+
+}
+
+#if compiler(>=6)
+extension TestLoginNoticeView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeTestLoginNoticeView: FfiConverterRustBuffer {
+    typealias SwiftType = TestLoginNoticeView
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> TestLoginNoticeView {
+        let variant: Int32 = try readInt(&buf)
+        switch variant {
+        
+        case 1: return .created(agent: try FfiConverterString.read(from: &buf), title: try FfiConverterString.read(from: &buf), username: try FfiConverterString.read(from: &buf), websites: try FfiConverterSequenceString.read(from: &buf)
+        )
+        
+        default: throw UniffiInternalError.unexpectedEnumCase
+        }
+    }
+
+    public static func write(_ value: TestLoginNoticeView, into buf: inout [UInt8]) {
+        switch value {
+        
+        
+        case let .created(agent,title,username,websites):
+            writeInt(&buf, Int32(1))
+            FfiConverterString.write(agent, into: &buf)
+            FfiConverterString.write(title, into: &buf)
+            FfiConverterString.write(username, into: &buf)
+            FfiConverterSequenceString.write(websites, into: &buf)
+            
+        }
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTestLoginNoticeView_lift(_ buf: RustBuffer) throws -> TestLoginNoticeView {
+    return try FfiConverterTypeTestLoginNoticeView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeTestLoginNoticeView_lower(_ value: TestLoginNoticeView) -> RustBuffer {
+    return FfiConverterTypeTestLoginNoticeView.lower(value)
+}
+
+
+
+/**
  * Which HMAC a TOTP field uses.
  */
 
@@ -16284,6 +16876,30 @@ fileprivate struct FfiConverterOptionTypeDivergedFileView: FfiConverterRustBuffe
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeDivergedFileView.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeTestLoginFactsView: FfiConverterRustBuffer {
+    typealias SwiftType = TestLoginFactsView?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeTestLoginFactsView.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeTestLoginFactsView.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }
@@ -17161,6 +17777,31 @@ fileprivate struct FfiConverterSequenceTypeTagCount: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeTestLoginWebsiteView: FfiConverterRustBuffer {
+    typealias SwiftType = [TestLoginWebsiteView]
+
+    public static func write(_ value: [TestLoginWebsiteView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTestLoginWebsiteView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TestLoginWebsiteView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [TestLoginWebsiteView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTestLoginWebsiteView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeUnattendedGrantView: FfiConverterRustBuffer {
     typealias SwiftType = [UnattendedGrantView]
 
@@ -17428,6 +18069,31 @@ fileprivate struct FfiConverterSequenceTypeSharedRosterWarning: FfiConverterRust
         seq.reserveCapacity(Int(len))
         for _ in 0 ..< len {
             seq.append(try FfiConverterTypeSharedRosterWarning.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterSequenceTypeTestLoginNoticeView: FfiConverterRustBuffer {
+    typealias SwiftType = [TestLoginNoticeView]
+
+    public static func write(_ value: [TestLoginNoticeView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeTestLoginNoticeView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [TestLoginNoticeView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [TestLoginNoticeView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeTestLoginNoticeView.read(from: &buf))
         }
         return seq
     }
@@ -18040,6 +18706,18 @@ public func mcpSetup(bundleHelpersDir: String?) -> McpSetupView  {
         uniffiCallStatus in
     uniffi_kagisecure_ffi_fn_func_mcp_setup(
         FfiConverterOptionString.lower(bundleHelpersDir),uniffiCallStatus
+    )
+})
+}
+/**
+ * Every test-login notice queued since the last call, oldest first (ADR-0048 §10). The app
+ * drains it on its tick: a system notification per create, and the menu-bar entry "N test logins
+ * created by agents".
+ */
+public func testLoginsTakeNotices() -> [TestLoginNoticeView]  {
+    return try!  FfiConverterSequenceTypeTestLoginNoticeView.lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_kagisecure_ffi_fn_func_test_logins_take_notices(uniffiCallStatus
     )
 })
 }
@@ -18863,6 +19541,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_func_mcp_setup() != 42796) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_kagisecure_ffi_checksum_func_test_logins_take_notices() != 33598) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_kagisecure_ffi_checksum_func_verify_peer_code_signature() != 29888) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -19091,6 +19772,12 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_release_totp() != 59979) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_add_agent_test_login_domain() != 1818) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_agent_test_login_settings() != 29303) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_audit_count() != 1330) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -19181,6 +19868,9 @@ private let initializationResult: InitializationResult = {
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_platform_slot_id() != 15474) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_remove_agent_test_login_domain() != 17081) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_remove_platform_slot() != 20364) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -19191,6 +19881,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_save_item() != 22312) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_kagisecure_ffi_checksum_method_vaultsession_set_agent_test_logins() != 9461) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_kagisecure_ffi_checksum_method_vaultsession_set_agent_visible() != 13450) {

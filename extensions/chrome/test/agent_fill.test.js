@@ -522,7 +522,7 @@ test("agent_locate_reports_only_from_the_top_frame", async () => {
           kind: "agent-report",
           probeId: message.probeId,
           visible: true,
-          found: { username: true, password: true, one_time_code: false },
+          found: { username: true, password: true, one_time_code: false, sign_up: false, sign_up_username: false },
         });
       }
       return null;
@@ -587,7 +587,7 @@ test("the_report_takes_origin_tab_and_document_from_the_sender", async () => {
       probe_id: "probe-stamp",
       page: { top_origin: SITE, frame_origin: null, top_origin_established: true },
       tab: { tab_id: tab.id, document_id: "doc-A", tab_active: false, visible: true },
-      found: { username: false, password: true, one_time_code: false },
+      found: { username: false, password: true, one_time_code: false, sign_up: false, sign_up_username: false },
     });
   } finally {
     browser.stopAll();
@@ -599,7 +599,7 @@ test("a real report carries what the detectors found and nothing that names a fi
   try {
     await loginPageInFront(browser);
     const report = await locate(browser, "probe-login");
-    assert.deepEqual(report.found, { username: true, password: true, one_time_code: false });
+    assert.deepEqual(report.found, { username: true, password: true, one_time_code: false, sign_up: false, sign_up_username: false });
     assert.deepEqual(report.tab, {
       tab_id: 7,
       document_id: "doc-A",
@@ -646,7 +646,7 @@ test("with no tab in front the app still gets a report, ineligible on every coun
       probe_id: "probe-nothing",
       page: { top_origin: "null", frame_origin: null, top_origin_established: false },
       tab: { tab_id: 0, document_id: null, tab_active: false, visible: false },
-      found: { username: false, password: false, one_time_code: false },
+      found: { username: false, password: false, one_time_code: false, sign_up: false, sign_up_username: false },
     });
   } finally {
     browser.stopAll();
@@ -727,7 +727,7 @@ test("an approved delivery writes the login and reports field names only", async
         grant_id: "grant-ok",
         page: { top_origin: SITE, frame_origin: null, top_origin_established: true },
         tab: { tab_id: 7, document_id: "doc-A", tab_active: true, visible: true },
-        found: { username: true, password: true, one_time_code: false },
+        found: { username: true, password: true, one_time_code: false, sign_up: false, sign_up_username: false },
       },
     ]);
   } finally {
@@ -834,7 +834,7 @@ test("a_deliver_for_a_different_document_id_writes_nothing", async () => {
       kind: "agent-fill",
       grantId: "grant-nav",
       visible: true,
-      found: { username: true, password: true, one_time_code: false },
+      found: { username: true, password: true, one_time_code: false, sign_up: false, sign_up_username: false },
     });
     assert.equal(forged.ok, false);
     assert.deepEqual(browser.asks("agent_fill"), []);
@@ -859,7 +859,7 @@ test("a grant is redeemed once, and only by the document it was delivered to", a
         kind: "agent-fill",
         grantId: "grant-once",
         visible: true,
-        found: { username: true, password: true, one_time_code: false },
+        found: { username: true, password: true, one_time_code: false, sign_up: false, sign_up_username: false },
       });
       assert.equal(again.ok, false);
     }
@@ -947,7 +947,7 @@ test("an_identifier_only_page_takes_only_the_username", async (t) => {
         holdTimersFrom: 10_000,
       });
       const report = await locate(browser, "probe-step-1");
-      assert.deepEqual(report.found, { username: true, password: false, one_time_code: false });
+      assert.deepEqual(report.found, { username: true, password: false, one_time_code: false, sign_up: false, sign_up_username: false });
 
       const outcomes = await deliver(browser, "probe-step-1", "grant-step-1");
       assert.equal(top.document.getElementById("u").value, CANARY_USERNAME);
@@ -964,6 +964,8 @@ test("an_identifier_only_page_takes_only_the_username", async (t) => {
         username: true,
         password: false,
         one_time_code: false,
+        sign_up: false,
+        sign_up_username: false,
       });
       // A username is not what the tripwire is for.
       assert.deepEqual(top.heldTimers, [], "a username-only fill armed the tripwire");
@@ -1018,7 +1020,7 @@ test("the_second_page_reports_its_password_field", async () => {
       probe_id: "probe-step-2",
       page: { top_origin: SITE, frame_origin: null, top_origin_established: true },
       tab: { tab_id: 7, document_id: "doc-step-2", tab_active: true, visible: true },
-      found: { username: false, password: true, one_time_code: false },
+      found: { username: false, password: true, one_time_code: false, sign_up: false, sign_up_username: false },
     });
 
     const second = await deliver(browser, "probe-step-2", "grant-step-2");
@@ -1044,7 +1046,7 @@ test("the_second_page_reports_its_password_field", async () => {
       kind: "agent-fill",
       grantId: "grant-step-1",
       visible: true,
-      found: { username: false, password: true, one_time_code: false },
+      found: { username: false, password: true, one_time_code: false, sign_up: false, sign_up_username: false },
     });
     assert.equal(replay.ok, false);
     assert.equal(browser.asks("agent_fill").length, 2);
@@ -1072,7 +1074,7 @@ test("a_code_is_written_only_into_the_detected_code_field", async (t) => {
     try {
       const { top } = await loginPageInFront(browser, { html: CODE_PAGE });
       const report = await locate(browser, "probe-code");
-      assert.deepEqual(report.found, { username: false, password: false, one_time_code: true });
+      assert.deepEqual(report.found, { username: false, password: false, one_time_code: true, sign_up: false, sign_up_username: false });
 
       const outcomes = await deliver(browser, "probe-code", "grant-code");
       assert.equal(top.document.getElementById("c").value, CANARY_CODE);
@@ -1425,6 +1427,162 @@ test("a push never causes a value to be stored or logged", async () => {
       if (typeof value === "string") contentGlobals.push(value);
     }
     assert.deepEqual(leaks(contentGlobals), [], "a content-script global holds a value");
+  } finally {
+    browser.stopAll();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------
+// Sign-up fills (ADR-0048 §7)
+// ---------------------------------------------------------------------------------------------
+
+/** The test app's register form: a username and two new-password boxes. */
+const SIGNUP_FORM = `
+  <form id="register" method="post" action="/register">
+    <label for="u">Email or username</label>
+    <input id="u" name="username" type="text" autocomplete="username">
+    <label for="p1">Password</label>
+    <input id="p1" name="password" type="password" autocomplete="new-password">
+    <label for="p2">Confirm password</label>
+    <input id="p2" name="confirm" type="password" autocomplete="new-password">
+    <button type="submit">Create account</button>
+  </form>
+`;
+
+const signUpReply = () => ({
+  reply: "filled",
+  item_id: CANARY_ITEM_ID,
+  username: CANARY_USERNAME,
+  new_password: CANARY_PASSWORD,
+});
+
+test("a_sign_up_delivery_writes_both_boxes_and_reports_names_only", async () => {
+  const browser = createBrowser({ onAgentFill: signUpReply });
+  try {
+    const { top } = await loginPageInFront(browser, { html: SIGNUP_FORM });
+    const report = await locate(browser, "probe-signup");
+    assert.deepEqual(report.found, {
+      username: false,
+      password: false,
+      one_time_code: false,
+      sign_up: true,
+      sign_up_username: true,
+    });
+    const outcomes = await deliver(browser, "probe-signup", "grant-signup");
+    assert.equal(top.document.getElementById("u").value, CANARY_USERNAME);
+    assert.equal(top.document.getElementById("p1").value, CANARY_PASSWORD);
+    assert.equal(top.document.getElementById("p2").value, CANARY_PASSWORD);
+    assert.deepEqual(outcomes, [
+      {
+        ask: "agent_fill_outcome",
+        grant_id: "grant-signup",
+        written: ["username", "new_password"],
+        failure: null,
+      },
+    ]);
+    assert.equal(browser.asks("agent_fill")[0].found.sign_up, true);
+    assert.deepEqual(browser.logs, []);
+  } finally {
+    browser.stopAll();
+  }
+});
+
+test("a_sign_up_form_changed_between_report_and_delivery_takes_nothing", async () => {
+  const browser = createBrowser({ onAgentFill: signUpReply });
+  try {
+    const { top } = await loginPageInFront(browser, { html: SIGNUP_FORM });
+    await locate(browser, "probe-signup-dom");
+    // A third password box appears: no longer a sign-up form the detector accepts.
+    const extra = top.document.createElement("input");
+    extra.id = "p3";
+    extra.setAttribute("type", "password");
+    top.document.getElementById("register").appendChild(extra);
+    const outcomes = await deliver(browser, "probe-signup-dom", "grant-signup-dom");
+    for (const id of ["u", "p1", "p2", "p3"]) {
+      assert.equal(top.document.getElementById(id).value, "", id);
+    }
+    assert.deepEqual(outcomes[0].written, []);
+    assert.ok(outcomes[0].failure, "a failure was reported");
+  } finally {
+    browser.stopAll();
+  }
+});
+
+test("a_sign_up_reply_carrying_both_members_writes_nothing", async () => {
+  const browser = createBrowser({
+    onAgentFill: () => ({ ...signUpReply(), password: CANARY_PASSWORD }),
+  });
+  try {
+    const { top } = await loginPageInFront(browser, { html: SIGNUP_FORM });
+    await locate(browser, "probe-both");
+    const outcomes = await deliver(browser, "probe-both", "grant-both");
+    for (const id of ["u", "p1", "p2"]) {
+      assert.equal(top.document.getElementById(id).value, "", id);
+    }
+    assert.deepEqual(outcomes.map((o) => [o.written, o.failure]), [[[], "NOT_WRITABLE"]]);
+  } finally {
+    browser.stopAll();
+  }
+});
+
+test("a_password_reply_on_a_sign_up_target_writes_nothing", async () => {
+  const browser = createBrowser({
+    onAgentFill: () => ({
+      reply: "filled",
+      item_id: CANARY_ITEM_ID,
+      username: CANARY_USERNAME,
+      password: CANARY_PASSWORD,
+    }),
+  });
+  try {
+    const { top } = await loginPageInFront(browser, { html: SIGNUP_FORM });
+    await locate(browser, "probe-pw-on-signup");
+    const outcomes = await deliver(browser, "probe-pw-on-signup", "grant-pw-on-signup");
+    for (const id of ["u", "p1", "p2"]) {
+      assert.equal(top.document.getElementById(id).value, "", id);
+    }
+    assert.deepEqual(outcomes[0].written, []);
+  } finally {
+    browser.stopAll();
+  }
+});
+
+test("a_new_password_reply_on_a_login_form_writes_nothing", async () => {
+  const browser = createBrowser({ onAgentFill: signUpReply });
+  try {
+    const { top } = await loginPageInFront(browser);
+    await locate(browser, "probe-new-on-login");
+    const outcomes = await deliver(browser, "probe-new-on-login", "grant-new-on-login");
+    assert.equal(top.document.getElementById("p").value, "", "a login fill never lands in a new-password box, nor the reverse");
+    assert.equal(top.document.getElementById("u").value, "");
+    assert.deepEqual(outcomes[0].written, []);
+  } finally {
+    browser.stopAll();
+  }
+});
+
+test("the_tripwire_fires_on_the_confirm_box", async () => {
+  const browser = createBrowser({ onAgentFill: signUpReply });
+  try {
+    const { top } = await loginPageInFront(browser, { html: SIGNUP_FORM });
+    await locate(browser, "probe-signup-peek");
+    await deliver(browser, "probe-signup-peek", "grant-signup-peek");
+    const confirm = top.document.getElementById("p2");
+    assert.equal(confirm.value, CANARY_PASSWORD);
+    confirm.setAttribute("type", "text");
+    await waitFor(
+      () => browser.asks("agent_fill_outcome").length === 2,
+      "the tripwire's outcome",
+    );
+    assert.equal(confirm.value, "", "the unmasked confirm box kept the password");
+    assert.equal(top.document.getElementById("p1").value, "", "the other box kept the password");
+    assert.deepEqual(
+      browser.asks("agent_fill_outcome").map((o) => [o.written, o.failure]),
+      [
+        [["username", "new_password"], null],
+        [["new_password"], "UNMASKED"],
+      ],
+    );
   } finally {
     browser.stopAll();
   }

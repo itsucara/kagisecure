@@ -73,6 +73,21 @@ inside a local encrypted vault and never enter the model's context window.
 > tested headlessly, and the browser scenarios are written but have not been run with a real
 > browser and the real app.
 >
+> **Agents can create test users whose passwords kagisecure generates**
+> ([ADR-0048](docs/decisions/0048-agent-test-logins.md), [docs/agent-test-logins.md](docs/agent-test-logins.md)).
+> With **Agent test logins** turned on (Settings › AI Agents, off by default, Touch ID once), an
+> agent testing an app calls `create_test_login`; the login goes into its own "Agent test logins"
+> vault and is never offered to your own autofill. The agent fills it into the app's sign-up and
+> login forms with `request_fill`, binds it to an environment for non-browser tests, and cleans up
+> with `trash_test_logins`. At `localhost`, `*.localhost`, `*.test` and domains you allow there is
+> no sheet; anywhere else each create asks you. macOS only. The honest limit, in the ADR's words:
+> ACCEPTED. kagisecure never returns the password through any tool, so a well-behaved agent keeps
+> it out of its transcript and the provider's logs. It types the value into a page the agent drives,
+> or pipes it to a command the agent chose, and the app under test receives it. An agent that runs
+> script in that page, chooses that command, or controls that app can read it. Agent test logins
+> accept this: the value is random, protects only a test account on a site you allowed, and is
+> never anyone's real password.
+>
 > **Touch ID unlock works in the release build and is on by default.** After a master-password
 > unlock the app enrols Touch ID on its own, or offers to if you turned it off earlier
 > ([ADR-0004 addendum](docs/decisions/0004-biometric-key-wrapping.md),
@@ -403,7 +418,9 @@ log's hash chain. `kagisecure lock` drops the key and every lease, ends any `run
 still running with an injected environment, and does this from a terminal even when the app is
 what is holding them.
 
-The full walkthrough is in [docs/mcp-server.md §11](docs/mcp-server.md).
+The full walkthrough is in [docs/mcp-server.md §11](docs/mcp-server.md). For test users of an app
+the agent is testing — passwords kagisecure generates and the agent never receives — see
+[docs/agent-test-logins.md](docs/agent-test-logins.md).
 
 Other things worth knowing:
 
@@ -601,6 +618,7 @@ against.
 | [docs/threat-model.md](docs/threat-model.md) | Assets, adversaries, mitigations, explicit non-goals |
 | [docs/vault-format.md](docs/vault-format.md) | File format, key hierarchy, AEAD choice, item schema |
 | [docs/mcp-server.md](docs/mcp-server.md) | Tool list + schemas, approval flow, lease model, client setup |
+| [docs/agent-test-logins.md](docs/agent-test-logins.md) | Test users for apps an agent is testing: passwords kagisecure generates, sign-up and login fills, cleanup, and the recipe for non-browser tests |
 | [docs/browser-extension.md](docs/browser-extension.md) | Autofill: the protocol, approvals and leases, setup for Chromium and Safari, the source layout, testing |
 | [docs/chrome-web-store.md](docs/chrome-web-store.md) | Publishing the Chromium extension: the store package, the dashboard's answers, assets, first upload and updates |
 | [docs/threat-model-browser-extension.md](docs/threat-model-browser-extension.md) | The browser as a new semi-trusted component: assets, adversaries, residual risks |

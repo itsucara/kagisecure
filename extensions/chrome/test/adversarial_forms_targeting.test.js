@@ -167,7 +167,7 @@ test("a change-password form is not treated as a sign-in", () => {
     </form>
   `);
   const found = detectedPassword(document);
-  assert.notEqual(found, "n1", "a fill must never land in a new-password box");
+  assert.notEqual(found, "n1", "a login fill never lands in a new-password box");
   assert.notEqual(found, "n2", "a fill must never land in a confirm-password box");
 });
 
@@ -264,7 +264,7 @@ test("setFieldValue refuses nothing, so the caller is the only place a type chec
  * @param {string} html
  * @param {(document: Document) => void} duringApproval
  */
-async function fillUnderMutation(html, duringApproval) {
+async function fillUnderMutation(html, duringApproval, reply) {
   const parsed = parseHTML(`<!doctype html><html><body>${html}</body></html>`);
   const { document } = parsed;
   const global = parsed.window;
@@ -317,7 +317,11 @@ async function fillUnderMutation(html, duringApproval) {
             () =>
               callback({
                 ok: true,
-                reply: { reply: "filled", username: CANARY_USERNAME, password: CANARY_PASSWORD },
+                reply: reply || {
+                  reply: "filled",
+                  username: CANARY_USERNAME,
+                  password: CANARY_PASSWORD,
+                },
               }),
             20,
           );
@@ -429,4 +433,56 @@ test("a page that swaps in a second password field during the approval does not 
   });
   assert.equal(run.document.getElementById("p").value, CANARY_PASSWORD);
   assert.equal(run.document.getElementById("injected").value, "");
+});
+
+// ---------------------------------------------------------------------------------------------
+// Sign-up fills (ADR-0048 §7): only into new-password boxes, and never from a `password` member
+// ---------------------------------------------------------------------------------------------
+
+test("a sign-up fill lands only in new-password boxes", () => {
+  // Every shape where a sign-up target could include a box that is not a new password: the
+  // detector either names exactly the new-password boxes or refuses the page.
+  const shapes = [
+    `<form><input id="u" type="text"><input id="cur" type="password" autocomplete="current-password">
+       <input id="n1" type="password" autocomplete="new-password"></form>`,
+    `<form><input id="a" type="password" autocomplete="new-password"><input id="b" type="password">
+       <input id="c" type="password"></form>`,
+    `<form id="f1"><input id="u" type="text"><input id="p" type="password"></form>
+     <form id="f2"><input id="n1" type="password" autocomplete="new-password"></form>`,
+    `<form><input id="n1" type="password" autocomplete="new-password">
+       <input id="n2" type="password" autocomplete="new-password" data-rect="offscreen"></form>`,
+    `<form><input id="n1" type="password" autocomplete="new-password">
+       <input id="n2" type="password" autocomplete="new-password" data-rect="invisible"></form>`,
+    `<form><input id="n1" type="password" autocomplete="new-password"></form>
+     <form><input id="n2" type="password" autocomplete="new-password"></form>`,
+  ];
+  for (const html of shapes) {
+    const { document } = dom(html);
+    assert.equal(KsForms.detectSignupForm(document), null, html);
+  }
+  const { document } = dom(`
+    <form>
+      <input id="user" type="text" autocomplete="username">
+      <input id="p1" type="password" autocomplete="new-password">
+      <input id="p2" type="password" autocomplete="new-password">
+    </form>
+  `);
+  const found = KsForms.detectSignupForm(document);
+  assert.deepEqual(found.passwords.map(nameOf), ["p1", "p2"]);
+  assert.equal(nameOf(found.username), "user");
+  // And the login detector never takes the same page.
+  assert.equal(detectedPassword(document), null);
+});
+
+test("a new_password reply on a login form writes nothing", async () => {
+  // The human path never asks for a new password; a reply that carries one anyway, onto a login
+  // form, is written nowhere — not into the password box, not into the username box.
+  const run = await fillUnderMutation(RACE_FORM, () => {}, {
+    reply: "filled",
+    username: CANARY_USERNAME,
+    new_password: CANARY_PASSWORD,
+  });
+  assert.equal(run.kinds.includes("fill"), true);
+  assert.equal(run.document.getElementById("p").value, "");
+  assert.equal(run.document.getElementById("u").value, "");
 });

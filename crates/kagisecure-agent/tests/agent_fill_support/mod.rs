@@ -20,7 +20,7 @@ use kagisecure_agent::approval::{
 };
 use kagisecure_agent::{
     Agent, AgentConfig, AgentFillBroker, AgentFillClock, AgentFillTimings, Endpoint,
-    ExtensionAgent, ExtensionConfig, VaultHandle,
+    ExtensionAgent, ExtensionConfig, TestLoginBroker, VaultHandle,
 };
 use kagisecure_core::audit::AuditEntry;
 use kagisecure_core::model::{Field, Item, Secret, VaultMeta};
@@ -61,6 +61,9 @@ pub struct Fixture {
     pub handle: Arc<VaultHandle>,
     pub queue: Arc<ApprovalQueue>,
     pub broker: Arc<AgentFillBroker>,
+    /// The test-login broker (ADR-0048), process-wide like the agent-fill one. Its limits read
+    /// [`Self::clock`] too.
+    pub test_logins: Arc<TestLoginBroker>,
     /// The clock the broker's limits read: moves only when a test advances it.
     pub clock: AgentFillClock,
     pub agent: Agent,
@@ -170,12 +173,13 @@ pub fn fixture_with(timings: AgentFillTimings) -> Fixture {
     let clock = AgentFillClock::manual_for_test();
     let broker = Arc::new(AgentFillBroker::with_clock_for_test(timings, clock.clone()));
     broker.set_enabled(true);
+    let test_logins = Arc::new(TestLoginBroker::with_clock_for_test(clock.clone()));
     let Listeners {
         agent,
         extension,
         agent_endpoint,
         extension_endpoint,
-    } = listen(dir.path(), "", &handle, &queue, &broker);
+    } = listen(dir.path(), "", &handle, &queue, &broker, &test_logins);
 
     let [
         item,
@@ -191,6 +195,7 @@ pub fn fixture_with(timings: AgentFillTimings) -> Fixture {
         handle,
         queue,
         broker,
+        test_logins,
         clock,
         agent,
         extension: Mutex::new(extension),
@@ -221,6 +226,7 @@ fn listen(
     handle: &Arc<VaultHandle>,
     queue: &Arc<ApprovalQueue>,
     broker: &Arc<AgentFillBroker>,
+    test_logins: &Arc<TestLoginBroker>,
 ) -> Listeners {
     let agent_endpoint = Endpoint::for_instance(dir, &format!("agent{suffix}.sock"));
     let extension_endpoint = Endpoint::for_instance(dir, &format!("extension{suffix}.sock"));
@@ -230,6 +236,7 @@ fn listen(
             endpoint: Some(agent_endpoint.clone()),
             queue: Some(Arc::clone(queue)),
             agent_fill: Some(Arc::clone(broker)),
+            test_logins: Some(Arc::clone(test_logins)),
         },
     )
     .expect("agent");
@@ -282,6 +289,7 @@ impl Fixture {
             &handle,
             &self.queue,
             &self.broker,
+            &self.test_logins,
         );
         (handle, listeners)
     }
@@ -569,8 +577,21 @@ impl Tab {
                 username: true,
                 password: true,
                 one_time_code: false,
+                ..FoundFields::default()
             },
         }
+    }
+
+    /// The active, visible top frame of `origin`, with a sign-up form (ADR-0048 §7): a username
+    /// box and new-password boxes, and no login form.
+    pub fn sign_up(origin: &str) -> Self {
+        let mut tab = Self::front(origin);
+        tab.found = FoundFields {
+            sign_up: true,
+            sign_up_username: true,
+            ..FoundFields::default()
+        };
+        tab
     }
 
     /// Page one of an identifier-first sign-in at `origin`: a username box and no password.
@@ -580,6 +601,7 @@ impl Tab {
             username: true,
             password: false,
             one_time_code: false,
+            ..FoundFields::default()
         };
         tab
     }
@@ -598,6 +620,7 @@ impl Tab {
             username: false,
             password: false,
             one_time_code: true,
+            ..FoundFields::default()
         };
         tab
     }
@@ -973,7 +996,10 @@ fn answer_pushes(
 fn written_by(reply: &ExtResponse) -> Vec<PageField> {
     match reply {
         ExtResponse::Filled {
-            username, password, ..
+            username,
+            password,
+            new_password,
+            ..
         } => {
             let mut written = Vec::new();
             if username.is_some() {
@@ -981,6 +1007,9 @@ fn written_by(reply: &ExtResponse) -> Vec<PageField> {
             }
             if password.is_some() {
                 written.push(PageField::Password);
+            }
+            if new_password.is_some() {
+                written.push(PageField::NewPassword);
             }
             written
         }

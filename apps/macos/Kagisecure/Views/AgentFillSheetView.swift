@@ -503,6 +503,12 @@ struct AgentFillSheetView: View {
         if facts.fields == [.oneTimeCode] {
             return String(localized: "a one-time code — not the password")
         }
+        // A sign-up fill of an agent test login (ADR-0048 §7).
+        if facts.fields.contains(.newPassword) {
+            return facts.fields.contains(.username)
+                ? String(localized: "username and a new password (create account)")
+                : String(localized: "a new password (create account)")
+        }
         return fieldNames(facts.fields)
     }
 
@@ -513,6 +519,7 @@ struct AgentFillSheetView: View {
             case .username: String(localized: "username")
             case .password: String(localized: "password")
             case .oneTimeCode: String(localized: "one-time code")
+            case .newPassword: String(localized: "new password")
             }
         }
         .joined(separator: ", ")

@@ -208,6 +208,17 @@ final class VaultStore {
         return session
     }
 
+    /// Where item writes go. Unlike `source`, never falls back to the personal vault: with a
+    /// shared vault selected whose session is not open, a write there would land silently in the
+    /// personal vault, so it is refused instead (`VaultStoreError.sharedVaultNotOpen`).
+    func writableSource() throws -> any ItemSource {
+        guard let id = sharedVaultId else { return session }
+        guard let vault = shared.session(for: id) else {
+            throw VaultStoreError.sharedVaultNotOpen
+        }
+        return vault
+    }
+
     /// Whether items can be added and edited where the selection points: always in the personal
     /// vault; in a shared vault, for a writer or an admin.
     var canEditItems: Bool {
@@ -381,9 +392,15 @@ final class VaultStore {
 
     func createItem(category: String) throws {
         let title = String(localized: "New \(displayName(forCategory: category))")
-        let item = try mutating { try source.newItem(category: category, title: title) }
-        // A new item in a shared vault stays in that vault's list.
-        if sharedVaultId == nil { selection = .all }
+        let target = try writableSource()
+        let item = try mutating { try target.newItem(category: category, title: title) }
+        // A new item in a shared vault stays in that vault's list — from its Members or
+        // Environments row too, which show no items, so the selection moves to the vault's own row.
+        if let id = sharedVaultId {
+            if selection != .sharedVault(id) { selection = .sharedVault(id) }
+        } else {
+            selection = .all
+        }
         changed()
         selectedItemId = item.id
     }
@@ -394,35 +411,35 @@ final class VaultStore {
     /// `draft` opened (user decision 4) — the caller should show the "reload" alert and re-read
     /// the item rather than retry the same draft.
     func save(draft: ItemDraft) throws {
-        _ = try mutating { try source.saveItem(draft: draft) }
+        _ = try mutating { try writableSource().saveItem(draft: draft) }
         releases.hideAll(because: .edited)
         changed()
     }
 
     func toggleFavorite(_ item: ItemView) throws {
-        _ = try mutating { try source.setFavorite(itemId: item.id, favorite: !item.favorite) }
+        _ = try mutating { try writableSource().setFavorite(itemId: item.id, favorite: !item.favorite) }
         refresh()
     }
 
     func setArchived(_ item: ItemView, _ archived: Bool) throws {
-        _ = try mutating { try source.setArchived(itemId: item.id, archived: archived) }
+        _ = try mutating { try writableSource().setArchived(itemId: item.id, archived: archived) }
         changed()
     }
 
     func setTrashed(_ item: ItemView, _ trashed: Bool) throws {
-        _ = try mutating { try source.setTrashed(itemId: item.id, trashed: trashed) }
+        _ = try mutating { try writableSource().setTrashed(itemId: item.id, trashed: trashed) }
         changed()
     }
 
     func deleteForever(_ item: ItemView) throws {
         // `item` is the Trash row the person confirmed: Rust refuses unless the item is still in
         // the Trash and unchanged since that row was drawn (its revision).
-        try mutating { try source.deleteItem(itemId: item.id, revision: item.revision) }
+        try mutating { try writableSource().deleteItem(itemId: item.id, revision: item.revision) }
         changed()
     }
 
     func setAgentVisible(_ item: ItemView, _ visible: Bool) throws {
-        _ = try mutating { try source.setAgentVisible(itemId: item.id, visible: visible) }
+        _ = try mutating { try writableSource().setAgentVisible(itemId: item.id, visible: visible) }
         refresh()
     }
 
@@ -461,7 +478,7 @@ final class VaultStore {
 
     func setFieldAgentVisible(_ item: ItemView, _ field: FieldView, _ visible: Bool) throws {
         _ = try mutating {
-            try source.setFieldAgentVisible(itemId: item.id, fieldId: field.id, visible: visible)
+            try writableSource().setFieldAgentVisible(itemId: item.id, fieldId: field.id, visible: visible)
         }
         refresh()
     }
@@ -663,5 +680,21 @@ final class VaultStore {
 
     static func message(for error: Error) -> String {
         describeAnyError(error)
+    }
+}
+
+/// Errors the store raises itself, before any FFI call.
+enum VaultStoreError: LocalizedError, Equatable {
+    /// A shared vault is selected but its copy on this Mac is not open.
+    case sharedVaultNotOpen
+
+    var errorDescription: String? {
+        switch self {
+        case .sharedVaultNotOpen:
+            String(
+                localized:
+                    "This shared vault is not open on this Mac, so nothing was saved. Select it again or rebuild it from its folder."
+            )
+        }
     }
 }

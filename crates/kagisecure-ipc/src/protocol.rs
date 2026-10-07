@@ -37,7 +37,17 @@ use kagisecure_core::proto::{
 ///   `NO_MATCHING_TAB`, for `request_fill` (ADR-0036); and `RATE_LIMITED`, which returned with
 ///   `request_fill`'s approval-fatigue limits (ADR-0036 §9). (One version for all of them: no
 ///   build that speaks 2 was released before the last of them was added.)
-pub const PROTOCOL_VERSION: u32 = 2;
+/// * 3 — [`Request::RunWithEnv`]'s `delivery` ([`Delivery::Stdin`], ADR-0047) and
+///   `NOT_POPULATED`. A peer built before it would decode a `stdin` request with the field
+///   ignored — and put the values in the child's *environment*, the one place the caller asked
+///   them not to go. Refusing the mismatch at `Hello` is what keeps that from happening.
+/// * 4 — agent test logins (ADR-0048): [`Request::CreateTestLogin`], [`Request::ListTestLogins`],
+///   [`Request::TrashTestLogins`], [`Response::TestLoginCreated`] (with its optional
+///   [`TestLoginBinding`]), [`Response::TestLogins`], [`Response::TestLoginsTrashed`] and
+///   `TEST_LOGINS_OFF`; and
+///   `RATE_LIMITED` with two more fixed messages, for the create rate limit and the vault's cap.
+///   The sidecar, the app, the extension and the native-messaging host ship together.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Longest `create_environment` name, in characters (mcp-server.md §2.5). One line, not empty.
 pub const MAX_ENVIRONMENT_NAME_CHARS: usize = 128;
@@ -53,6 +63,34 @@ pub const MAX_VARIABLES_PER_CALL: usize = 50;
 
 /// Most arguments a `run_with_env` command may carry (mcp-server.md §2.8).
 pub const MAX_RUN_ARGS: usize = 64;
+
+/// Longest `create_test_login` `app`, in characters (ADR-0048 §6). One line, not empty.
+pub const MAX_TEST_LOGIN_APP_CHARS: usize = 64;
+
+/// Longest `create_test_login` `purpose`, in characters (ADR-0048 §6). One line, not empty. It is
+/// stored as a public field and shown to agents and in the app as agent-written data.
+pub const MAX_TEST_LOGIN_PURPOSE_CHARS: usize = 280;
+
+/// Longest `create_test_login` `username`, in characters (ADR-0048 §6). One line, not empty.
+pub const MAX_TEST_LOGIN_USERNAME_CHARS: usize = 256;
+
+/// Most websites one test login is saved for (ADR-0048 §6). At least one.
+pub const MAX_TEST_LOGIN_WEBSITES: usize = 5;
+
+/// Longest `trash_test_logins` `reason`, in characters (ADR-0048 §12). One line, not empty.
+pub const MAX_TEST_LOGIN_TRASH_REASON_CHARS: usize = 200;
+
+/// Most tags an agent may add to a test login beside the ones kagisecure composes (ADR-0048 §6).
+pub const MAX_TEST_LOGIN_TAGS: usize = 10;
+
+/// Longest tag an agent may add to a test login, in characters. One line.
+pub const MAX_TEST_LOGIN_TAG_CHARS: usize = 64;
+
+/// Longest `reason` an agent may give for a test login, in characters. One line.
+pub const MAX_TEST_LOGIN_REASON_CHARS: usize = 200;
+
+/// Longest website a test login may be saved for, in characters. An origin or a URL.
+pub const MAX_TEST_LOGIN_WEBSITE_CHARS: usize = 2048;
 
 /// Whether `text` is at most `max` characters and contains no control character other than, when
 /// `multi_line`, a line feed or a tab.
@@ -105,7 +143,8 @@ pub fn clamp_run_timeout(requested: u64) -> u64 {
 ///   agent on the injection tools is the approval sheet and the lease, not a counter, and adding a
 ///   counter to justify a string would have been the tail wagging the dog. It came back — as
 ///   [`Self::RateLimited`], scoped to `request_fill` — with the one limiter that bounds something
-///   no lease does: the human's attention (ADR-0036 §9).
+///   no lease does: the human's attention (ADR-0036 §9). `create_test_login` reuses it for the
+///   per-agent create limit and the test vault's cap (ADR-0048 §11), each with its own message.
 /// * `LEASE_EXPIRED` ("request a fresh injection"). Leases are matched *implicitly* — `write_env_file`
 ///   and `run_with_env` look for a live lease covering the request and, finding none, simply ask
 ///   the human again. No tool takes a lease id in order to act, so there is no call an agent can
@@ -191,6 +230,9 @@ pub enum ErrorCode {
     /// already in progress and sheets are shown one at a time, never queued. Answered before the
     /// item is looked up, so it says nothing about the item. Nothing was filled; the user has been
     /// told about an agent over its budget.
+    ///
+    /// Also `create_test_login`'s answer for an agent over ten creates in ten minutes, or a test
+    /// vault already holding its 200 live items (ADR-0048 §11). Nothing was created.
     #[serde(rename = "RATE_LIMITED")]
     RateLimited,
     /// Returned only by the unattended socket (ADR-0042 §6): the request is not covered by a
@@ -204,6 +246,18 @@ pub enum ErrorCode {
     /// nothing is released unattended. Nothing was looked at.
     #[serde(rename = "UNATTENDED_PAUSED")]
     UnattendedPaused,
+    /// `run_with_env` with `delivery: "stdin"` named variables that have no value yet — the user
+    /// has not entered them in kagisecure. Answered before any sheet, and the message names the
+    /// variables (names are metadata: `list_environments` already reports `populated`). Nothing
+    /// was asked or released (ADR-0047).
+    #[serde(rename = "NOT_POPULATED")]
+    NotPopulated,
+    /// `create_test_login`, `list_test_logins` or `trash_test_logins` while the user has agent test logins turned off
+    /// in Settings, or from a caller kagisecure cannot identify (ADR-0048 §1, §11). Answered
+    /// before anything is looked up, so it says nothing about the vault. Nothing was created;
+    /// retrying cannot help until the user turns the switch on.
+    #[serde(rename = "TEST_LOGINS_OFF")]
+    TestLoginsOff,
     /// A bug.
     #[serde(rename = "INTERNAL")]
     Internal,
@@ -231,6 +285,8 @@ impl ErrorCode {
             Self::RateLimited => "RATE_LIMITED",
             Self::NotGranted => "NOT_GRANTED",
             Self::UnattendedPaused => "UNATTENDED_PAUSED",
+            Self::NotPopulated => "NOT_POPULATED",
+            Self::TestLoginsOff => "TEST_LOGINS_OFF",
             Self::Internal => "INTERNAL",
         }
     }
@@ -274,6 +330,32 @@ pub enum OutputMode {
     None,
 }
 
+/// How `run_with_env` hands the values to the command (mcp-server.md §2.8, ADR-0047).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Delivery {
+    /// As environment variables of the child — what `run_with_env` always did.
+    #[default]
+    #[serde(rename = "environment")]
+    Environment,
+    /// Written once to the child's standard input as `NAME\0VALUE\0` pairs, in the order the
+    /// variables were selected, which is then closed. Nothing is added to the child's
+    /// environment or argv. Every such run is its own approval: no lease covers it and the grant
+    /// is always for one run.
+    #[serde(rename = "stdin")]
+    Stdin,
+}
+
+impl Delivery {
+    /// The wire spelling, which is also the name `run_with_env`'s schema uses.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Environment => "environment",
+            Self::Stdin => "stdin",
+        }
+    }
+}
+
 /// A field of an item, for binding a variable to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FieldRef {
@@ -311,6 +393,10 @@ pub enum AgentFillField {
     /// A one-time code generated from the item's one-time-password field. Always requested on
     /// its own (ADR-0036 §7.4).
     OneTimeCode,
+    /// A sign-up fill (ADR-0048 §7): the item's password, typed into every new-password box of a
+    /// recognised sign-up form. Served only for sealed agent test logins; never requested with
+    /// `password` or `one_time_code`.
+    NewPassword,
 }
 
 impl AgentFillField {
@@ -321,6 +407,7 @@ impl AgentFillField {
             Self::Username => "username",
             Self::Password => "password",
             Self::OneTimeCode => "one_time_code",
+            Self::NewPassword => "new_password",
         }
     }
 }
@@ -330,7 +417,8 @@ pub const DEFAULT_AGENT_FILL_FIELDS: [AgentFillField; 2] =
     [AgentFillField::Username, AgentFillField::Password];
 
 /// Whether `fields` is a combination `request_fill` accepts (mcp-server.md §2.10): at least one
-/// field, none twice, and a one-time code only on its own.
+/// field, none twice, a one-time code only on its own, and a new password (ADR-0048 §7) only
+/// alone or with the username.
 ///
 /// A one-time code never rides along with a password, because the pair is the account: an agent
 /// that can read the page after both has everything needed to sign in elsewhere within the code's
@@ -342,6 +430,109 @@ pub fn agent_fill_fields_ok(fields: &[AgentFillField]) -> bool {
     !fields.is_empty()
         && distinct.len() == fields.len()
         && (!fields.contains(&AgentFillField::OneTimeCode) || fields.len() == 1)
+        && (!fields.contains(&AgentFillField::NewPassword)
+            || fields
+                .iter()
+                .all(|f| matches!(f, AgentFillField::NewPassword | AgentFillField::Username)))
+}
+
+/// How a test login's password is generated (ADR-0048 §4): a length from a fixed menu, and two
+/// switches. Lower case, upper case and digits are always on. There is no alphabet, no seed and
+/// nothing that could carry a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestLoginGenerator {
+    /// 20, 24, 32, 48 or 64.
+    #[serde(default = "default_test_login_length")]
+    pub length: u32,
+    /// Include symbols.
+    #[serde(default = "default_true")]
+    pub symbols: bool,
+    /// Leave out characters that are easy to misread.
+    #[serde(default)]
+    pub avoid_ambiguous: bool,
+}
+
+impl Default for TestLoginGenerator {
+    fn default() -> Self {
+        Self {
+            length: default_test_login_length(),
+            symbols: true,
+            avoid_ambiguous: false,
+        }
+    }
+}
+
+/// The lengths [`TestLoginGenerator::length`] accepts (ADR-0048 §4).
+pub const TEST_LOGIN_LENGTHS: [u32; 5] = [20, 24, 32, 48, 64];
+
+const fn default_test_login_length() -> u32 {
+    32
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+/// Bind a test login to two variables of an environment in the test-login vault, in the same
+/// transaction as the create (ADR-0048, Phase 3). The environment is created there if no
+/// environment of that name exists. The person approves the binding on the `add_variables` sheet.
+///
+/// The second variable is named `credential_var`, not `password_var`: no argument an agent can
+/// send may have a name that reads as a way to ask for a value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TestLoginBind {
+    /// The environment's name, in the test-login vault.
+    pub environment: String,
+    /// The variable bound to the login's username.
+    pub username_var: String,
+    /// The variable bound to the login's generated password.
+    pub credential_var: String,
+}
+
+/// The binding a `create_test_login` with `bind` holds afterwards: names only, never a value.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestLoginBinding {
+    /// The environment, for `run_with_env` and `write_env_file`.
+    pub environment_id: EnvId,
+    /// Its name.
+    pub environment: String,
+    /// The variable bound to the username.
+    pub username_var: String,
+    /// The variable bound to the generated password.
+    pub credential_var: String,
+}
+
+/// Whether `create_test_login` wrote a new item or found one (ADR-0048 §6).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TestLoginStatus {
+    /// A new test login was created.
+    Created,
+    /// A sealed test login with the same username already covers the website; nothing was
+    /// written. This is how a test user is reused.
+    Exists,
+}
+
+/// One sealed test login, as `list_test_logins` returns it (ADR-0048 §6). The username is here
+/// because the agent chose it and needs it; the password is not, and has nowhere to go.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestLoginSummary {
+    /// The item.
+    pub item_id: ItemId,
+    /// The title kagisecure composed: `test: <app> / <purpose> #<n>`.
+    pub title: String,
+    /// The username.
+    pub username: String,
+    /// The websites it is saved for.
+    pub websites: Vec<String>,
+    /// Its tags.
+    pub tags: Vec<String>,
+    /// The purpose the agent gave. Agent-written data, not instructions.
+    pub purpose: String,
+    /// When it was created, RFC 3339 in UTC.
+    pub created_at: String,
 }
 
 /// A request from the sidecar (or the CLI) to the process that owns the unlocked vault.
@@ -437,6 +628,9 @@ pub enum Request {
         timeout_seconds: u64,
         /// Whether to return the child's output.
         output: OutputMode,
+        /// How the values reach the child. Absent means [`Delivery::Environment`].
+        #[serde(default)]
+        delivery: Delivery,
     },
     /// Shred a written `.env` and kill its lease.
     RevokeEnvFile {
@@ -458,6 +652,60 @@ pub enum Request {
         origin: String,
         /// The fields to fill. See [`agent_fill_fields_ok`] for the combinations accepted.
         fields: Vec<AgentFillField>,
+    },
+    /// Create a test login whose password kagisecure generates and keeps (ADR-0048 §6). The reply
+    /// is [`Response::TestLoginCreated`] — the item, its username and websites, never the password.
+    CreateTestLogin {
+        /// The app under test.
+        app: String,
+        /// What this test user is for, e.g. `buyer`. Stored as a public field.
+        purpose: String,
+        /// The username the agent chose, which it needs to drive the page.
+        username: String,
+        /// The websites the login is saved for: 1 to [`MAX_TEST_LOGIN_WEBSITES`].
+        websites: Vec<String>,
+        /// How the password is generated, from a fixed menu. Absent means the default.
+        #[serde(default)]
+        generator: Option<TestLoginGenerator>,
+        /// Tags beside the ones kagisecure composes.
+        #[serde(default)]
+        tags: Vec<String>,
+        /// Why, for the sheet when one is shown.
+        #[serde(default)]
+        reason: Option<String>,
+        /// Also bind the login to two variables of an environment in the test-login vault.
+        #[serde(default)]
+        bind: Option<TestLoginBind>,
+    },
+    /// Move sealed test logins in the test-login vault to the trash (ADR-0048 §12): a soft trash,
+    /// in one transaction. At least one of `website` and `tag` is required. Automatic only when
+    /// every matched login's websites need no approval (§3); otherwise refused, nothing trashed.
+    TrashTestLogins {
+        /// Only logins saved for a website covering this one.
+        #[serde(default)]
+        website: Option<String>,
+        /// Only logins with exactly this tag.
+        #[serde(default)]
+        tag: Option<String>,
+        /// Why, for the audit log's reader. One line.
+        reason: String,
+    },
+    /// Sealed test logins in the test-login vault (ADR-0048 §6).
+    ListTestLogins {
+        /// Only logins saved for a website covering this one.
+        #[serde(default)]
+        website: Option<String>,
+        /// Only logins with exactly this tag.
+        #[serde(default)]
+        tag: Option<String>,
+        /// Case-insensitive substring of the title, username, purpose or a tag.
+        #[serde(default)]
+        query: Option<String>,
+        /// Maximum number of logins.
+        limit: usize,
+        /// Opaque continuation token from a previous reply.
+        #[serde(default)]
+        cursor: Option<String>,
     },
     /// Read the audit log, newest last.
     Audit {
@@ -488,6 +736,9 @@ impl Request {
             Self::RunWithEnv { .. } => "run_with_env",
             Self::RevokeEnvFile { .. } => "revoke_env_file",
             Self::RequestFill { .. } => "request_fill",
+            Self::CreateTestLogin { .. } => "create_test_login",
+            Self::ListTestLogins { .. } => "list_test_logins",
+            Self::TrashTestLogins { .. } => "trash_test_logins",
             Self::Audit { .. } => "audit",
             Self::ListLeases => "list_leases",
             Self::Lock => "lock",
@@ -606,6 +857,37 @@ pub enum Response {
         /// empty unless the page asked for the username first.
         fields_pending: Vec<AgentFillField>,
     },
+    /// `create_test_login` created or found a test login. No member carries the password.
+    TestLoginCreated {
+        /// Whether it was created now or already existed.
+        status: TestLoginStatus,
+        /// The item.
+        item_id: ItemId,
+        /// Its username.
+        username: String,
+        /// The websites it is saved for.
+        websites: Vec<String>,
+        /// The title kagisecure composed.
+        title: String,
+        /// The environment binding, when the request asked for one. Boxed: it is rare, and it
+        /// would otherwise make every `Response` larger.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        binding: Option<Box<TestLoginBinding>>,
+    },
+    /// `trash_test_logins` moved these test logins to the trash.
+    TestLoginsTrashed {
+        /// How many.
+        trashed: usize,
+        /// Which.
+        item_ids: Vec<ItemId>,
+    },
+    /// Sealed test logins.
+    TestLogins {
+        /// The page.
+        items: Vec<TestLoginSummary>,
+        /// Continuation token, if there is more.
+        next_cursor: Option<String>,
+    },
     /// Files were shredded and leases dropped.
     Revoked {
         /// Paths that were removed.
@@ -695,6 +977,8 @@ mod tests {
             (ErrorCode::RateLimited, "RATE_LIMITED"),
             (ErrorCode::NotGranted, "NOT_GRANTED"),
             (ErrorCode::UnattendedPaused, "UNATTENDED_PAUSED"),
+            (ErrorCode::NotPopulated, "NOT_POPULATED"),
+            (ErrorCode::TestLoginsOff, "TEST_LOGINS_OFF"),
             (ErrorCode::Internal, "INTERNAL"),
         ] {
             assert_eq!(code.as_str(), spelling);
@@ -745,11 +1029,48 @@ mod tests {
                 variables: None,
                 timeout_seconds: 300,
                 output: OutputMode::Scrubbed,
+                delivery: Delivery::Environment,
+            },
+            Request::RunWithEnv {
+                environment_id: EnvId::new(),
+                command: "/usr/local/bin/import-secrets".to_owned(),
+                args: vec!["prod".to_owned()],
+                cwd: "/tmp/p".to_owned(),
+                variables: Some(vec!["A".to_owned()]),
+                timeout_seconds: 300,
+                output: OutputMode::None,
+                delivery: Delivery::Stdin,
             },
             Request::RequestFill {
                 item_id: ItemId::new(),
                 origin: "https://example.com".to_owned(),
                 fields: DEFAULT_AGENT_FILL_FIELDS.to_vec(),
+            },
+            Request::CreateTestLogin {
+                app: "shop".to_owned(),
+                purpose: "buyer".to_owned(),
+                username: "buyer1@example.test".to_owned(),
+                websites: vec!["http://localhost:47800".to_owned()],
+                generator: Some(TestLoginGenerator::default()),
+                tags: vec![],
+                reason: None,
+                bind: Some(TestLoginBind {
+                    environment: "shop-e2e".to_owned(),
+                    username_var: "SHOP_USER".to_owned(),
+                    credential_var: "SHOP_PASS".to_owned(),
+                }),
+            },
+            Request::TrashTestLogins {
+                website: Some("http://localhost:47800".to_owned()),
+                tag: None,
+                reason: "environment rebuilt".to_owned(),
+            },
+            Request::ListTestLogins {
+                website: None,
+                tag: Some("app:shop".to_owned()),
+                query: None,
+                limit: 50,
+                cursor: None,
             },
             Request::Lock,
         ];
@@ -801,6 +1122,34 @@ mod tests {
     }
 
     #[test]
+    fn delivery_defaults_to_the_environment_and_uses_the_documented_spellings() {
+        assert_eq!(Delivery::default(), Delivery::Environment);
+        for (delivery, spelling) in [
+            (Delivery::Environment, "environment"),
+            (Delivery::Stdin, "stdin"),
+        ] {
+            assert_eq!(delivery.as_str(), spelling);
+            assert_eq!(
+                serde_json::to_string(&delivery).unwrap(),
+                format!("\"{spelling}\"")
+            );
+        }
+        // A request from a caller that predates the field is an environment delivery.
+        let id = EnvId::new();
+        let text = format!(
+            r#"{{"op":"RunWithEnv","environment_id":"{id}","command":"true","args":[],"cwd":"/tmp","variables":null,"timeout_seconds":5,"output":"none"}}"#
+        );
+        let parsed: Request = serde_json::from_str(&text).unwrap();
+        assert!(matches!(
+            parsed,
+            Request::RunWithEnv {
+                delivery: Delivery::Environment,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn output_defaults_to_scrubbed() {
         assert_eq!(OutputMode::default(), OutputMode::Scrubbed);
     }
@@ -830,6 +1179,7 @@ mod tests {
             (AgentFillField::Username, "username"),
             (AgentFillField::Password, "password"),
             (AgentFillField::OneTimeCode, "one_time_code"),
+            (AgentFillField::NewPassword, "new_password"),
         ] {
             assert_eq!(field.as_str(), spelling);
             assert_eq!(
@@ -865,6 +1215,26 @@ mod tests {
     }
 
     #[test]
+    fn new_password_goes_alone_or_with_the_username() {
+        use AgentFillField::{NewPassword, OneTimeCode, Password, Username};
+        for accepted in [
+            &[Username, NewPassword][..],
+            &[NewPassword, Username],
+            &[NewPassword],
+        ] {
+            assert!(agent_fill_fields_ok(accepted), "{accepted:?}");
+        }
+        for refused in [
+            &[NewPassword, Password][..],
+            &[Username, Password, NewPassword],
+            &[NewPassword, OneTimeCode],
+            &[NewPassword, NewPassword],
+        ] {
+            assert!(!agent_fill_fields_ok(refused), "{refused:?}");
+        }
+    }
+
+    #[test]
     fn a_fill_result_names_fields_and_carries_nothing_else() {
         let rendered = serde_json::to_value(Response::FillResult {
             fields_written: vec![AgentFillField::Username, AgentFillField::Password],
@@ -880,5 +1250,80 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(keys, ["fields_pending", "fields_written", "reply"]);
         assert_eq!(rendered["fields_written"][1], "password");
+    }
+
+    #[test]
+    fn test_login_messages_have_no_place_for_a_password() {
+        let created = serde_json::to_value(Response::TestLoginCreated {
+            status: TestLoginStatus::Created,
+            item_id: ItemId::new(),
+            username: "buyer1@example.test".to_owned(),
+            websites: vec!["http://localhost:47800".to_owned()],
+            title: "test: shop / buyer #1".to_owned(),
+            binding: None,
+        })
+        .unwrap();
+        let mut keys: Vec<&str> = created
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "item_id", "reply", "status", "title", "username", "websites"
+            ]
+        );
+        assert_eq!(created["status"], "created");
+
+        // A binding carries names, never a value.
+        let bound = serde_json::to_value(TestLoginBinding {
+            environment_id: EnvId::new(),
+            environment: "shop-e2e".to_owned(),
+            username_var: "SHOP_USER".to_owned(),
+            credential_var: "SHOP_PASS".to_owned(),
+        })
+        .unwrap();
+        let mut keys: Vec<&str> = bound
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "credential_var",
+                "environment",
+                "environment_id",
+                "username_var"
+            ]
+        );
+        let trashed = serde_json::to_value(Response::TestLoginsTrashed {
+            trashed: 1,
+            item_ids: vec![ItemId::new()],
+        })
+        .unwrap();
+        assert_eq!(trashed["trashed"], 1);
+        // `bind` refuses an unknown member.
+        assert!(
+            serde_json::from_str::<TestLoginBind>(
+                r#"{"environment":"e","username_var":"U","credential_var":"P","value":"x"}"#
+            )
+            .is_err()
+        );
+
+        // The generator refuses anything beyond its menu's three members.
+        let parsed: Result<TestLoginGenerator, _> =
+            serde_json::from_str(r#"{"length":32,"alphabet":"ab"}"#);
+        assert!(parsed.is_err());
+        let defaulted: TestLoginGenerator = serde_json::from_str("{}").unwrap();
+        assert_eq!(defaulted, TestLoginGenerator::default());
+        assert_eq!(defaulted.length, 32);
+        assert!(defaulted.symbols);
+        assert!(TEST_LOGIN_LENGTHS.contains(&defaulted.length));
     }
 }

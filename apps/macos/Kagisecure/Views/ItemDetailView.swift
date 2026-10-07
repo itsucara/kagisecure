@@ -29,6 +29,7 @@ struct ItemDetailView: View {
                         store: store,
                         draft: draft,
                         hasStoredNotes: item.hasNotes,
+                        regenerateOnlyFieldId: item.inAgentTestVault ? item.passwordField?.id : nil,
                         onCancel: { editing = false },
                         onSave: { saved in
                             do {

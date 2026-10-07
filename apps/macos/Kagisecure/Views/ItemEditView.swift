@@ -20,6 +20,9 @@ struct ItemEditView: View {
     @State var draft: ItemDraft
     /// Whether the stored item has notes — the sheet does not know what they say.
     let hasStoredNotes: Bool
+    /// The id of the password field of an item in the agent test-login vault, which offers only
+    /// Regenerate (ADR-0048, Threats): no typing, no revealing, no pasting a real password in.
+    var regenerateOnlyFieldId: String?
     let onCancel: () -> Void
     let onSave: (ItemDraft) -> Void
 
@@ -40,11 +43,13 @@ struct ItemEditView: View {
 
     init(
         store: VaultStore, draft: ItemDraft, hasStoredNotes: Bool,
+        regenerateOnlyFieldId: String? = nil,
         onCancel: @escaping () -> Void, onSave: @escaping (ItemDraft) -> Void
     ) {
         self.store = store
         self._draft = State(initialValue: draft)
         self.hasStoredNotes = hasStoredNotes
+        self.regenerateOnlyFieldId = regenerateOnlyFieldId
         self.onCancel = onCancel
         self.onSave = onSave
         self._tagText = State(initialValue: draft.tags.joined(separator: ", "))
@@ -69,6 +74,7 @@ struct ItemEditView: View {
                 ForEach($fieldRows) { $row in
                     FieldEditRow(
                         field: $row.draft, reveal: revealer(for: row.draft),
+                        regenerateOnly: regenerateOnlyFieldId != nil && row.draft.id == regenerateOnlyFieldId,
                         onDelete: { removeField(withId: row.uiId) })
                     Divider()
                 }
@@ -230,8 +236,15 @@ struct ItemEditView: View {
     /// only says *which* position that is right now, resolved fresh at the moment of deletion
     /// rather than trusted from a possibly-stale captured index, which is strictly safer than the
     /// index this replaces ever was.
+    /// Whether `fieldId` is the field an agent test login's seal depends on.
+    static func isSealed(_ fieldId: String?, regenerateOnlyFieldId: String?) -> Bool {
+        fieldId != nil && fieldId == regenerateOnlyFieldId
+    }
+
     private func removeField(withId uiId: UUID) {
         guard let index = fieldRows.firstIndex(where: { $0.uiId == uiId }) else { return }
+        // The sealed password of an agent test login must stay (ADR-0048): removing it breaks the seal.
+        guard !Self.isSealed(fieldRows[index].draft.id, regenerateOnlyFieldId: regenerateOnlyFieldId) else { return }
         fieldRows = fieldRows.removingField(at: index)
     }
 
@@ -286,6 +299,8 @@ private struct FieldEditRow: View {
     /// Fetches this field's stored value behind its own presence prompt (`EditReveal`), for
     /// "Show". `nil` when there is nothing stored to show.
     let reveal: (() async -> String?)?
+    /// The sealed password of an agent test login: only "Regenerate" (ADR-0048).
+    var regenerateOnly = false
     let onDelete: () -> Void
 
     /// "Show" put the stored value in the draft and nothing has been typed since. Five minutes
@@ -341,6 +356,7 @@ private struct FieldEditRow: View {
             TextField("Label", text: $field.label)
                 .textFieldStyle(.roundedBorder)
                 .frame(width: 140)
+                .disabled(regenerateOnly)
                 .accessibilityIdentifier("ks.edit.fieldLabel.\(field.label)")
 
             if isTotp {
@@ -361,6 +377,21 @@ private struct FieldEditRow: View {
                 .buttonStyle(.bordered)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityIdentifier("ks.edit.fieldTotpSetup.\(field.label)")
+            } else if regenerateOnly {
+                Text("••••••••••")
+                    .font(.system(.body, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("ks.edit.fieldValue.\(field.label)")
+                Button(field.value == nil ? "Regenerate" : "Regenerated") {
+                    if let fresh = try? generatePassword(recipe: GeneratorRecipe.standard) {
+                        field.value = fresh
+                        shownUntouched = false
+                    }
+                }
+                .buttonStyle(.bordered)
+                .help("Replace this password with a new random one. Test logins take no typed password.")
+                .accessibilityIdentifier("ks.edit.fieldRegenerate.\(field.label)")
             } else if isMaskedConcealed {
                 // A fixed number of dots, same as the read-mode mask: its length must not leak
                 // the stored value's length. "Change" is the only door into replacing it — there
@@ -417,12 +448,14 @@ private struct FieldEditRow: View {
                     .accessibilityIdentifier("ks.edit.fieldConcealed.\(field.label)")
             }
 
-            Button(role: .destructive, action: onDelete) {
-                Image(systemName: "minus.circle")
+            if !regenerateOnly {
+                Button(role: .destructive, action: onDelete) {
+                    Image(systemName: "minus.circle")
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Remove \(field.label)")
+                .accessibilityIdentifier("ks.edit.fieldRemove.\(field.label)")
             }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("Remove \(field.label)")
-            .accessibilityIdentifier("ks.edit.fieldRemove.\(field.label)")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)

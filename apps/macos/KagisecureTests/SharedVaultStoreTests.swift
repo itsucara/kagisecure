@@ -181,3 +181,52 @@ struct SharedVaultStoreTests {
         #expect(store.shared.summary(for: id)?.name == "Team")
     }
 }
+
+/// Where a new item lands when the selection is inside a shared vault (ui-spec.md §16.1).
+@MainActor
+struct SharedVaultNewItemTargetTests {
+    private static func store() throws -> (VaultStore, URL) {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("kagisecure-newitem-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let session = try VaultSession.create(
+            path: directory.appendingPathComponent("me.kagivault").path,
+            masterPassword: "correct horse battery staple", vaultName: "me", kdfMKib: 64, kdfT: 1)
+        try session.setPresenceGate(gate: ScriptedPresenceGate(Array(repeating: .confirmed, count: 8)))
+        return (VaultStore(session: session), directory)
+    }
+
+    @Test func aNewItemFromMembersOrEnvironmentsSelectsTheVaultRow() throws {
+        let (store, directory) = try Self.store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let id = try store.shared.create(name: "Team", folder: directory.appendingPathComponent("f"))
+
+        store.selection = .sharedMembers(id)
+        try store.createItem(category: "login")
+        #expect(store.selection == .sharedVault(id))
+        #expect(store.items.count == 1)
+        #expect(store.selectedItem != nil)
+
+        store.selection = .sharedEnvironments(id)
+        try store.createItem(category: "login")
+        #expect(store.selection == .sharedVault(id))
+        #expect(store.items.count == 2)
+        #expect(store.shared.summary(for: id)?.itemCount == 2)
+        // Nothing leaked into the personal vault.
+        store.selection = .all
+        #expect(store.items.isEmpty)
+    }
+
+    @Test func aSharedVaultWithoutASessionRefusesRatherThanWritingToThePersonalVault() throws {
+        let (store, directory) = try Self.store()
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        store.selection = .sharedVault("not-open")
+        #expect(throws: VaultStoreError.sharedVaultNotOpen) {
+            try store.createItem(category: "login")
+        }
+        #expect(store.selection == .sharedVault("not-open"))
+        store.selection = .all
+        #expect(store.items.isEmpty)
+    }
+}

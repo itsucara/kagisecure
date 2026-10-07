@@ -29,7 +29,17 @@ struct ItemEditModel: Equatable {
     /// Empty = keep the stored note.
     var newNotes: String
     /// Remove the stored note on save (the FFI's `notes: Some("")`).
-    var removeNotes = false
+    private(set) var removeNotes = false
+
+    /// Switching "Remove Note" on would throw away a note typed in this edit: ask first.
+    var removeNotesNeedsConfirmation: Bool { !removeNotes && !newNotes.isEmpty }
+
+    /// Turn "Remove Note" on or off. Turning it on clears the note typed in this edit, so what is
+    /// saved is exactly what the sheet shows (the editor is replaced by "will be removed").
+    mutating func setRemoveNotes(_ on: Bool) {
+        removeNotes = on
+        if on { newNotes = "" }
+    }
 
     init(item: ItemView) {
         itemId = item.id
@@ -66,6 +76,29 @@ struct ItemEditModel: Equatable {
 
     var hasTotpField: Bool { fields.contains { $0.kind == .totp } }
 
+    /// Put a scanned QR code into the one-time-password field (adding the field if there is
+    /// none). Throws `TotpScanError` for anything but a usable `otpauth://` URI; the field is
+    /// left untouched then.
+    mutating func applyScannedTotp(_ payload: String) throws {
+        let uri = try Self.scannedTotpURI(payload)
+        if !hasTotpField { addTotpField() }
+        guard let index = fields.firstIndex(where: { $0.kind == .totp }) else { return }
+        fields[index].newValue = uri
+    }
+
+    /// The `otpauth://` URI a QR code carries. Google Authenticator's export
+    /// (`otpauth-migration://`) packs several accounts in a format we do not read: say so rather
+    /// than fail quietly.
+    nonisolated static func scannedTotpURI(_ payload: String) throws -> String {
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("otpauth-migration:") { throw TotpScanError.migrationExport }
+        guard lower.hasPrefix("otpauth://"), totpUriIsValid(uri: trimmed) else {
+            throw TotpScanError.notOneTimePassword
+        }
+        return trimmed
+    }
+
     /// The draft to save, with every typed one-time-password setup turned into the
     /// `otpauth://` URI the vault stores. Throws `FfiError.Invalid` for a setup that is neither a
     /// usable URI nor a Base32 secret.
@@ -100,7 +133,9 @@ struct ItemEditModel: Equatable {
     var draft: ItemDraft {
         ItemDraft(
             id: itemId, category: category, title: title,
-            fields: fields.map { field in
+            // A one-time-password field that was added but never filled in is not saved.
+            fields: fields.filter { !($0.kind == .totp && $0.fieldId == nil && $0.newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) }
+            .map { field in
                 let value: String?
                 if field.concealed && field.fieldId != nil && field.newValue.isEmpty {
                     value = nil  // keep the stored secret
@@ -127,5 +162,22 @@ struct ItemEditModel: Equatable {
                 mode: .characters, length: 20, lowercase: true, uppercase: true, digits: true,
                 symbols: true, avoidAmbiguous: false, words: 4, separator: .hyphen,
                 capitalize: false, includeDigit: false))) ?? ""
+    }
+}
+
+/// Why a scanned QR code could not become a one-time password.
+enum TotpScanError: Error, Equatable, LocalizedError {
+    /// Google Authenticator's "Transfer accounts" export.
+    case migrationExport
+    /// Anything that is not a usable `otpauth://` URI.
+    case notOneTimePassword
+
+    var errorDescription: String? {
+        switch self {
+        case .migrationExport:
+            String(localized: "This format (a Google Authenticator export) cannot be read. Scan the QR code the website shows instead.")
+        case .notOneTimePassword:
+            String(localized: "This QR code is not a one-time password setup.")
+        }
     }
 }

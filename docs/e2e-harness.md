@@ -190,7 +190,8 @@ tail attached — a crash before the reporter flushed must not be able to report
 ### Suite A — MCP agent flow (`e2e/suites/mcp/`)
 
 Three processes: this runner as the MCP client, a real `kagisecure-mcp`, and a real `kagisecure
-daemon`. 22 scenarios covering the ten tools (`request_fill` only as far as the headless
+daemon`. 22 scenarios covering ten of the thirteen tools — the three agent test-login tools are served only by
+the app, and the daemon's `TEST_LOGINS_OFF` for them is asserted by `crates/kagisecure-cli/tests/mcp.rs` — (`request_fill` only as far as the headless
 daemon's `FILL_UNAVAILABLE` — for a visible item, a hidden one, an absent one and a one-time code
 alike, before the item is looked up and with no audit entry; suite B drives it into a browser), the
 default-deny rule, `describe_item` returning names only, the
@@ -662,3 +663,15 @@ suite B needs a real login session with a window server. The repository has no C
 CI is reintroduced, this suite would need a runner with Edge installed.
 
 Safari is local-and-manual on every machine, including when CI existed.
+
+## 9. The local test app (`e2e/lib/test-app.mjs`)
+
+A dependency-free Node server with real register and login forms, used by the extension suite
+and the agent-test-login work (ADR-0048). Users live in memory; passwords are stored only as
+scrypt hashes with a per-user salt, request bodies are never logged, and no response echoes a
+password. Pages are in `e2e/suites/extension/pages/test-app/`.
+
+By hand: `node e2e/lib/test-app.mjs [--port 47800] [--host 127.0.0.1]`, then open
+http://localhost:47800/register. From a suite: `const app = await startTestApp({ port: 0 })`
+returns `{ url, close, users }`; `users` is a `Map` a test can use to assert a hash exists for
+a username. Its own test: `node --test e2e/lib/test-app.test.mjs`.

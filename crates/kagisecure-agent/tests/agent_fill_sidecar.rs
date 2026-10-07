@@ -277,6 +277,7 @@ fn a_successful_agent_fill_leaves_the_marker_in_no_byte_the_sidecar_writes() {
             item_id,
             username,
             password,
+            ..
         } => {
             assert_eq!(item_id, &fx.item);
             assert_eq!(username.as_deref(), Some("alice"));

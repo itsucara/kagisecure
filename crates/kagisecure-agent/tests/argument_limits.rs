@@ -89,6 +89,7 @@ fn more_than_sixty_four_arguments_are_refused() {
             variables: None,
             timeout_seconds: 5,
             output: OutputMode::None,
+            delivery: kagisecure_ipc::protocol::Delivery::Environment,
         },
     );
 }

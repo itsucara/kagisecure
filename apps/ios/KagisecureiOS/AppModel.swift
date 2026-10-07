@@ -147,6 +147,7 @@ final class AppModel {
 
     func lock() {
         lockEpoch += 1
+        store?.link.stopWatching()
         session?.lock()
         session = nil
         store = nil
@@ -204,6 +205,7 @@ final class AppModel {
         if store.link.isLinked || store.link.folderName != nil {
             Task { await store.link.sync() }
         }
+        store.link.startWatching()
     }
 
     nonisolated static func message(for error: Error) -> String {

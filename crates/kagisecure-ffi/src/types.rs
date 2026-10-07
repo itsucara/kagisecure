@@ -222,6 +222,14 @@ pub struct ItemView {
     /// longer matches (`FfiError::ItemChangedElsewhere`) — see `item_revision`
     /// for what goes into it and why a hash rather than `updated_at`.
     pub revision: String,
+    /// Whether the item is in the agent test-login vault (ADR-0048 §2). Such an item is never
+    /// offered by the person's AutoFill (§8), and its sealed password field offers only
+    /// **Regenerate** in the editor. `false` for an item of a shared vault.
+    ///
+    /// `#[uniffi(default = false)]` so the Swift call sites that build a view by hand keep
+    /// compiling.
+    #[uniffi(default = false)]
+    pub in_agent_test_vault: bool,
 }
 
 impl ItemView {
@@ -247,6 +255,7 @@ impl ItemView {
             username: item.username().map(str::to_owned),
             primary_secret_field_id: item.primary_secret_field().map(|f| f.id.to_string()),
             revision: crate::session::item_revision(item, revision_key),
+            in_agent_test_vault: false,
         }
     }
 }
@@ -446,6 +455,18 @@ pub struct VaultView {
     /// "Show new items to agents": whether items created in it start visible to agents with all
     /// their fields (ADR-0007 amendment 2026-10-04). On by default.
     pub new_items_agent_visible: bool,
+}
+
+/// The agent test-login settings (ADR-0048 §1, §3), as Settings shows them.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct AgentTestLoginSettingsView {
+    /// "Agent test logins": off by default.
+    pub enabled: bool,
+    /// The registrable domains the person allowed beside loopback, `localhost`, `*.localhost`
+    /// and `*.test`.
+    pub auto_domains: Vec<String>,
+    /// The test-login vault, once the switch has created it.
+    pub vault_id: Option<String>,
 }
 
 /// Which items a bulk "Show to agents" / "Hide from agents" applies to

@@ -17,6 +17,7 @@ kagisecure-core = { workspace = true, features = ["secret-material"] }
 kagisecure-import = { workspace = true }
 kagisecure-ipc = { workspace = true }
 kagisecure-agent = { workspace = true }
+kagisecure-extension-ipc = { workspace = true }
 kagisecure-shared = { workspace = true }
 clap = { version = "4", features = ["derive", "env"] }
 serde = { version = "1", features = ["derive"] }

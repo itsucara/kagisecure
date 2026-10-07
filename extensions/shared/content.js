@@ -422,8 +422,13 @@
    * so no page script runs in between, or nothing is written at all — the human approved that
    * form, not whatever part of it survived.
    *
-   * @param {{ username?: string, password?: string }} reply
-   * @param {{ kind: string, username?: Element | null, password?: Element } | null} target
+   * A sign-up reply (ADR-0048 §7) carries `new_password` and never `password`: it is written into
+   * every new-password box of a `signup` target and nowhere else, and a `password` member is
+   * written only into a `login` target. A reply carrying both, or either on the wrong kind of
+   * target, writes nothing.
+   *
+   * @param {{ username?: string, password?: string, new_password?: string }} reply
+   * @param {{ kind: string, username?: Element | null, password?: Element, passwords?: Element[] } | null} target
    * @param {{ whole?: boolean }} [options]
    * @returns {{ written: string[], failure: string | null }}
    */
@@ -438,8 +443,12 @@
     }
     const wantsUsername = typeof reply.username === "string";
     const wantsPassword = typeof reply.password === "string";
+    const wantsNewPassword = typeof reply.new_password === "string";
+    if (wantsNewPassword || target.kind === "signup") {
+      return applySignup(reply, target, outcome, fail);
+    }
     const usernameWritable = !!target.username && stillWritable(target.username);
-    const passwordWritable = target.kind !== "identifier" && stillWritable(target.password, true);
+    const passwordWritable = target.kind === "login" && stillWritable(target.password, true);
     if (
       options &&
       options.whole &&
@@ -465,6 +474,62 @@
       } else {
         fail("WRITE_REJECTED");
       }
+    }
+    return outcome;
+  }
+
+  /**
+   * The sign-up half of `applyFill` (ADR-0048 §7): all of it or none of it. The target must be a
+   * `signup` target whose boxes the sign-up detector still finds, in the same task as the writes;
+   * every new-password box must still be a writable `type=password` input; a reply that carries a
+   * `password` member, or no `new_password`, writes nothing.
+   */
+  function applySignup(reply, target, outcome, fail) {
+    const wantsUsername = typeof reply.username === "string";
+    if (
+      target.kind !== "signup" ||
+      typeof reply.new_password !== "string" ||
+      typeof reply.password === "string"
+    ) {
+      fail("NOT_WRITABLE");
+      return outcome;
+    }
+    const boxes = Array.isArray(target.passwords) ? target.passwords : [];
+    const now = KsForms.detectSignupForm(document);
+    if (
+      !now ||
+      boxes.length === 0 ||
+      now.passwords.length !== boxes.length ||
+      !boxes.every((box, i) => now.passwords[i] === box) ||
+      (wantsUsername && now.username !== target.username)
+    ) {
+      fail("FORM_CHANGED");
+      return outcome;
+    }
+    if (
+      !boxes.every((box) => stillWritable(box, true)) ||
+      (wantsUsername && !(target.username && stillWritable(target.username)))
+    ) {
+      fail("NOT_WRITABLE");
+      return outcome;
+    }
+    if (wantsUsername) {
+      if (KsForms.setFieldValue(target.username, reply.username)) {
+        outcome.written.push("username");
+      } else {
+        fail("WRITE_REJECTED");
+        return outcome;
+      }
+    }
+    let all = true;
+    for (const box of boxes) {
+      if (!KsForms.setFieldValue(box, reply.new_password)) all = false;
+    }
+    if (all) {
+      outcome.written.push("new_password");
+      boxes[boxes.length - 1].focus();
+    } else {
+      fail("WRITE_REJECTED");
     }
     return outcome;
   }
@@ -763,8 +828,9 @@
    * icon — plus the one-time-code field, if the page has one. Never the cached `form`, which is as
    * old as the last debounced scan.
    *
-   * `{ kind: "login" | "identifier" | "code", username?, password?, code }`, or `null` when there
-   * is nothing to write into at all. A box both the identifier and the code detector claim is a
+   * `{ kind: "login" | "signup" | "identifier" | "code", username?, password?, passwords?, code }`,
+   * or `null` when there is nothing to write into at all. A sign-up form (ADR-0048 §7) is one the
+   * login detector refused, so the two never both claim a page. A box both the identifier and the code detector claim is a
    * code box: a username is never written where the page asks for a code.
    */
   function detectAgentTarget() {
@@ -773,22 +839,42 @@
     if (login) {
       return { kind: "login", password: login.password, username: login.username, code };
     }
+    const signup = KsForms.detectSignupForm(document);
+    if (signup) {
+      return { kind: "signup", username: signup.username, passwords: signup.passwords, code };
+    }
     const identifier = identifierForm();
     if (identifier && identifier.username !== code) return { ...identifier, code };
     return code ? { kind: "code", code } : null;
   }
 
   /**
-   * Which fields are there, as three booleans. With `writable`, a field counts only if a value
-   * could be written into it right now — for the password, a real `type=password` input.
+   * Which fields are there, as five booleans. With `writable`, a field counts only if a value
+   * could be written into it right now — for a password, a real `type=password` input. A sign-up
+   * form's username is reported as `sign_up_username`, never as a login's `username`.
    */
   function foundIn(target, writable) {
-    const username = !!(target && target.username) && (!writable || stillWritable(target.username));
+    const signup = !!(target && target.kind === "signup");
+    const username =
+      !signup && !!(target && target.username) && (!writable || stillWritable(target.username));
+    const signUp =
+      signup &&
+      Array.isArray(target.passwords) &&
+      target.passwords.length > 0 &&
+      (!writable || target.passwords.every((box) => stillWritable(box, true)));
+    const signUpUsername =
+      signUp && !!target.username && (!writable || stillWritable(target.username));
     const password =
       !!(target && target.kind === "login" && target.password) &&
       (!writable || stillWritable(target.password, true));
     const oneTimeCode = !!(target && target.code) && (!writable || stillWritable(target.code));
-    return { username, password, one_time_code: oneTimeCode };
+    return {
+      username,
+      password,
+      one_time_code: oneTimeCode,
+      sign_up: signUp,
+      sign_up_username: signUpUsername,
+    };
   }
 
   /**
@@ -892,7 +978,7 @@
       return { ok: true };
     }
     const found = foundIn(target, true);
-    if (!found.username && !found.password && !found.one_time_code) {
+    if (!found.username && !found.password && !found.one_time_code && !found.sign_up) {
       await report([], "NOT_WRITABLE");
       return { ok: true };
     }
@@ -902,14 +988,20 @@
     // one-time code. Whatever it carries must fit this document, all of it, or nothing is written.
     let result = await send({ kind: "agent-fill", grantId, visible: isVisible(), found });
     let outcome;
-    let watch = null;
+    let watch = [];
+    let watched = "password";
     if (!result.ok) {
       outcome = null;
     } else if (!result.reply) {
       outcome = { written: [], failure: "NOT_WRITABLE" };
     } else if (result.reply.reply === "filled") {
       outcome = applyFill(result.reply, target, { whole: true });
-      if (outcome.written.includes("password")) watch = target.password;
+      if (outcome.written.includes("password")) watch = [target.password];
+      if (outcome.written.includes("new_password")) {
+        // Every new-password box written is watched; the first to unmask clears them all.
+        watch = target.passwords.slice();
+        watched = "new_password";
+      }
     } else if (result.reply.reply === "totp_code") {
       outcome = applyAgentCode(result.reply.code, target);
     } else {
@@ -922,10 +1014,18 @@
     // Armed in the same task as the write, so no page script runs between the two; its report
     // waits for the first one, which the service worker has to have counted before it accepts a
     // second.
-    if (watch) {
-      armTripwire(watch, () => {
-        reported.then(() => report(["password"], "UNMASKED"));
-      });
+    if (watch.length > 0) {
+      let tripped = false;
+      for (const field of watch) {
+        armTripwire(field, () => {
+          if (tripped) return;
+          tripped = true;
+          for (const other of watch) {
+            if (other !== field) KsForms.setFieldValue(other, "");
+          }
+          reported.then(() => report([watched], "UNMASKED"));
+        });
+      }
     }
     await reported;
     return { ok: true };

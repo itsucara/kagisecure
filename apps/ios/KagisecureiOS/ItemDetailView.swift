@@ -13,6 +13,7 @@ struct ItemDetailView: View {
     @State private var copied: String?
     /// One-time-password releases currently showing a code, by field id.
     @State private var totps: [String: TotpRelease] = [:]
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -116,6 +117,11 @@ struct ItemDetailView: View {
             }
         }
         .onDisappear { revealed = [:]; notes = nil; hideTotps() }
+        // Leaving the app hides what was shown: coming back within the auto-lock time must not
+        // find a password or a one-time password still on screen.
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .background { revealed = [:]; notes = nil; hideTotps() }
+        }
     }
 
     @ViewBuilder

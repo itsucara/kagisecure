@@ -252,6 +252,43 @@ fn the_second_step_refuses_another_item_agent_or_site() {
 }
 
 #[test]
+fn a_password_request_in_a_new_tab_after_step_ones_tab_closed_is_a_new_request() {
+    // The agent closed the tab that served step one and opened a fresh one at the same site. Step
+    // two cannot come — its tab is gone — so the request is served as what it is: a new request
+    // for the password, with a sheet of its own, not a refused continuation.
+    let fx = fixture();
+    let human = Human::approving(&fx.queue);
+    let sw = ServiceWorker::start(&fx, Tab::identifier_only(PAGE), OnDeliver::Redeem);
+    let first = step_one(&fx, &sw);
+
+    let mut new_tab = Tab::next_page(PAGE);
+    new_tab.tab.tab_id += 100;
+    new_tab.tab.document_id = Some("doc-new-tab".to_owned());
+    sw.set(new_tab, OnDeliver::Redeem);
+    let answer = fx.request_fill(&fx.item, PAGE, &PASSWORD);
+    assert_eq!(written(&answer), (vec![AgentFillField::Password], vec![]));
+    assert_eq!(
+        human.sheets(),
+        2,
+        "a new tab is a new request, with its own sheet"
+    );
+    assert_eq!(
+        fx.broker.pending_steps(),
+        0,
+        "the pending step ended with its tab"
+    );
+    let tail = details(&fx);
+    assert!(
+        tail.contains(&format!("AGENT_FILL_PENDING_REFUSED (entry {})", first.seq)),
+        "step one's entry says its password never came there: {tail:?}"
+    );
+    assert!(
+        !tail.iter().any(|d| d == "AGENT_FILL_NO_TARGET"),
+        "nothing was refused: {tail:?}"
+    );
+}
+
+#[test]
 fn the_second_step_dies_with_the_flow_window() {
     let fx = fixture_with(AgentFillTimings {
         flow_window: Duration::from_millis(800),

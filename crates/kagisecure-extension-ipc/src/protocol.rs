@@ -4,7 +4,7 @@
 //!
 //! [`Request`] is what the extension may ask. [`Response`] is what the app may answer. [`Push`] is
 //! what the app may say without being asked. There are eight questions, seven answers and two
-//! pushes, and only two answer fields in the whole file are typed [`FillValue`]. That is the
+//! pushes, and only three answer fields in the whole file are typed [`FillValue`]. That is the
 //! enumeration ADR-0018 asks a reviewer to check: everything else is an origin, a title, a
 //! username, an item id, a tab id, a yes-or-no about a form, a count or an error code.
 //!
@@ -294,6 +294,9 @@ pub enum AgentFillField {
     Password,
     /// The item's current one-time code.
     OneTimeCode,
+    /// The item's password, typed into every new-password box of a recognised sign-up form
+    /// (ADR-0048 §7). Served only for sealed agent test logins.
+    NewPassword,
 }
 
 impl AgentFillField {
@@ -304,17 +307,19 @@ impl AgentFillField {
             Self::Username => "username",
             Self::Password => "password",
             Self::OneTimeCode => "one_time_code",
+            Self::NewPassword => "new_password",
         }
     }
 
     /// The human path's name for this field, where it has one. `None` for the one-time code,
-    /// which the human path asks for with [`Request::Totp`] instead.
+    /// which the human path asks for with [`Request::Totp`] instead, and for the new password,
+    /// which the human path never fills.
     #[must_use]
     pub fn as_fill_field(self) -> Option<FillField> {
         match self {
             Self::Username => Some(FillField::Username),
             Self::Password => Some(FillField::Password),
-            Self::OneTimeCode => None,
+            Self::OneTimeCode | Self::NewPassword => None,
         }
     }
 }
@@ -369,6 +374,13 @@ pub struct FoundFields {
     /// A one-time-code field.
     #[serde(default)]
     pub one_time_code: bool,
+    /// A recognised sign-up form: one `autocomplete="new-password"` field or exactly two password
+    /// fields, no current-password field, and nothing the login detector accepts (ADR-0048 §7).
+    #[serde(default)]
+    pub sign_up: bool,
+    /// A username field of that sign-up form.
+    #[serde(default)]
+    pub sign_up_username: bool,
 }
 
 impl FoundFields {
@@ -388,9 +400,15 @@ impl FoundFields {
     /// `true` for an empty list, which is not a fill anyone asks for: refusing that is the
     /// caller's job, not this predicate's.
     #[must_use]
+    ///
+    /// A list that names [`AgentFillField::NewPassword`] is a sign-up fill: its username is the
+    /// sign-up form's, never a login form's.
     pub fn covers(&self, fields: &[AgentFillField]) -> bool {
+        let sign_up = fields.contains(&AgentFillField::NewPassword);
         fields.iter().all(|field| match field {
+            AgentFillField::Username if sign_up => self.sign_up_username,
             AgentFillField::Username => self.username,
+            AgentFillField::NewPassword => self.sign_up,
             AgentFillField::Password => self.password,
             AgentFillField::OneTimeCode => self.one_time_code,
         })
@@ -669,6 +687,11 @@ pub enum Response {
         /// The password, when it was asked for.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         password: Option<FillValue>,
+        /// The value for a sign-up form's new-password boxes (ADR-0048 §7). Only an agent fill of
+        /// a sealed test login carries it, built by [`Response::filled_sign_up`]; the human path
+        /// never does.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        new_password: Option<FillValue>,
     },
     /// The answer to an approved [`Request::Totp`].
     TotpCode {
@@ -723,20 +746,44 @@ impl Response {
             item_id: item_id.into(),
             username: username.filter(|_| requested.contains(&FillField::Username)),
             password: password.filter(|_| requested.contains(&FillField::Password)),
+            new_password: None,
+        }
+    }
+
+    /// Build a [`Response::Filled`] for a sign-up fill (ADR-0048 §7): the new password, and the
+    /// username only when it was asked for. Never a `password` member, so a content script that
+    /// looks for one on a sign-up delivery finds nothing to put in a login box.
+    #[must_use]
+    pub fn filled_sign_up(
+        item_id: impl Into<String>,
+        with_username: bool,
+        username: Option<String>,
+        new_password: FillValue,
+    ) -> Self {
+        Self::Filled {
+            item_id: item_id.into(),
+            username: username.filter(|_| with_username),
+            password: None,
+            new_password: Some(new_password),
         }
     }
 
     /// Whether this response carries no field beyond `requested`.
     ///
     /// True for every response that is not a [`Response::Filled`]: no other message has a field a
-    /// fill request could have asked for.
+    /// fill request could have asked for. A `new_password` member is never something the human
+    /// path asked for, so its presence answers `false`.
     #[must_use]
     pub fn carries_only(&self, requested: &[FillField]) -> bool {
         match self {
             Self::Filled {
-                username, password, ..
+                username,
+                password,
+                new_password,
+                ..
             } => {
-                (username.is_none() || requested.contains(&FillField::Username))
+                new_password.is_none()
+                    && (username.is_none() || requested.contains(&FillField::Username))
                     && (password.is_none() || requested.contains(&FillField::Password))
             }
             _ => true,
@@ -914,6 +961,7 @@ mod tests {
         let response = Response::Filled {
             item_id: "abc".to_owned(),
             username: Some("alice".to_owned()),
+            new_password: None,
             password: Some(FillValue::new("CANARY-MARKER-0123456789abcdef")),
         };
         let rendered = format!("{response:?}");
@@ -970,6 +1018,7 @@ mod tests {
                     username: true,
                     password: true,
                     one_time_code: false,
+                    ..FoundFields::default()
                 },
             },
             // An identifier-only page and a one-time-code page are both representable: later
@@ -1116,8 +1165,10 @@ mod tests {
         let login = FoundFields {
             username: true,
             password: true,
-            one_time_code: false,
+            ..FoundFields::default()
         };
+        assert!(!login.covers(&[AgentFillField::NewPassword]));
+        assert!(!login.covers(&[AgentFillField::Username, AgentFillField::NewPassword]));
         assert!(login.covers(&[AgentFillField::Username, AgentFillField::Password]));
         assert!(login.covers(&[AgentFillField::Password]));
         assert!(!login.covers(&[AgentFillField::OneTimeCode]));
@@ -1138,6 +1189,55 @@ mod tests {
         assert!(code.covers(&[AgentFillField::OneTimeCode]));
         assert!(!code.is_identifier_only());
         assert!(!FoundFields::default().is_identifier_only());
+
+        let sign_up = FoundFields {
+            sign_up: true,
+            sign_up_username: true,
+            ..FoundFields::default()
+        };
+        assert!(sign_up.covers(&[AgentFillField::Username, AgentFillField::NewPassword]));
+        assert!(sign_up.covers(&[AgentFillField::NewPassword]));
+        assert!(!sign_up.covers(&[AgentFillField::Password]));
+        assert!(
+            !sign_up.covers(&[AgentFillField::Username]),
+            "a login username is not there"
+        );
+        assert!(!sign_up.is_identifier_only());
+        let bare = FoundFields {
+            sign_up: true,
+            ..FoundFields::default()
+        };
+        assert!(!bare.covers(&[AgentFillField::Username, AgentFillField::NewPassword]));
+    }
+
+    #[test]
+    fn a_sign_up_fill_carries_the_new_password_and_never_a_password() {
+        // The serde canary for `filled_sign_up` (ADR-0048 Phase 1b).
+        const MARKER: &str = "MARKER-5a0e2d9b7c4f4e1a8b3d6c9f0e2a4b7d";
+        let response =
+            Response::filled_sign_up("i", true, Some("alice".to_owned()), FillValue::new(MARKER));
+        let json = serde_json::to_string(&response).unwrap();
+        assert!(
+            json.contains(&format!("\"new_password\":\"{MARKER}\"")),
+            "{json}"
+        );
+        assert!(!json.contains("\"password\""), "no password member: {json}");
+        assert!(json.contains("alice"), "{json}");
+        let without =
+            Response::filled_sign_up("i", false, Some("alice".to_owned()), FillValue::new(MARKER));
+        assert!(!serde_json::to_string(&without).unwrap().contains("alice"));
+        // And a human-path Filled never names the member at all.
+        let human = Response::filled(
+            "i",
+            &FillField::both(),
+            Some("a".to_owned()),
+            Some(FillValue::new("pw")),
+        );
+        assert!(
+            !serde_json::to_string(&human)
+                .unwrap()
+                .contains("new_password")
+        );
     }
 
     #[test]
@@ -1159,6 +1259,7 @@ mod tests {
             Some(FillField::Password)
         );
         assert_eq!(AgentFillField::OneTimeCode.as_fill_field(), None);
+        assert_eq!(AgentFillField::NewPassword.as_fill_field(), None);
 
         for failure in [
             AgentFillFailure::FormChanged,
@@ -1199,7 +1300,7 @@ mod tests {
 
     #[test]
     fn no_push_carries_a_fill_value() {
-        // The push counterpart of `only_two_response_fields_are_fill_values`. A push has no field
+        // The push counterpart of `only_three_response_fields_are_fill_values`. A push has no field
         // a value could occupy: serialize every one and check that its only keys are the tag and
         // the two ids, and that every string in it is one of the ids it was built with.
         const PROBE: &str = "probe-5d1c";
@@ -1354,10 +1455,17 @@ mod tests {
             item_id: "i".to_owned(),
             username: Some("alice".to_owned()),
             password: Some(FillValue::new("pw")),
+            new_password: None,
         };
         assert!(!overshot.carries_only(&[FillField::Username]));
         assert!(!overshot.carries_only(&[FillField::Password]));
         assert!(overshot.carries_only(&FillField::both()));
+        let sign_up =
+            Response::filled_sign_up("i", true, Some("alice".to_owned()), FillValue::new("pw"));
+        assert!(
+            !sign_up.carries_only(&FillField::both()),
+            "the human path never asks for a new password"
+        );
         assert!(
             Response::Status { unlocked: true }.carries_only(&[]),
             "a message with no fill fields carries nothing a fill could have asked for"
@@ -1461,7 +1569,7 @@ mod tests {
     }
 
     #[test]
-    fn only_two_response_fields_are_fill_values() {
+    fn only_three_response_fields_are_fill_values() {
         // A structural restatement of ADR-0018's table, asserted by construction: build every
         // response shape, serialize it, and check the marker only survives in the two that are
         // allowed to carry one.
@@ -1471,7 +1579,9 @@ mod tests {
                 item_id: "i".to_owned(),
                 username: Some("u".to_owned()),
                 password: Some(FillValue::new(MARKER)),
+                new_password: None,
             },
+            Response::filled_sign_up("i", false, None, FillValue::new(MARKER)),
             Response::TotpCode {
                 item_id: "i".to_owned(),
                 code: FillValue::new(MARKER),
@@ -1504,6 +1614,7 @@ mod tests {
                 item_id: "i".to_owned(),
                 username: Some("u".to_owned()),
                 password: None,
+                new_password: None,
             },
             Response::Noted,
         ];

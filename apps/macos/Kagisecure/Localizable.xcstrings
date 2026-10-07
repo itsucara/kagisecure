@@ -1,6 +1,16 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "This shared vault is not open on this Mac, so nothing was saved. Select it again or rebuild it from its folder.": {
+      "localizations": {
+        "ja": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "この共有保管庫はこの Mac で開かれていないため、保存されませんでした。もう一度選択するか、フォルダから再構築してください。"
+          }
+        }
+      }
+    },
     "Turn on Touch ID unlock?": {
       "localizations": {
         "ja": {

@@ -48,8 +48,9 @@ The whole product, minus UI and transport. Public surface, roughly:
   parsing, KDF parameter handling, migration.
 - `VaultKey` / `Kek` — key hierarchy types; all `Zeroize + ZeroizeOnDrop`.
 - `Item`, `Field`, `Category`, `Secret` — the item model (see [vault-format.md](vault-format.md)).
-- `Injector` — the only code that materializes plaintext outside the vault: writes `.env` files
-  and builds child-process environments.
+- `Injector` — the only code that materializes plaintext outside the vault: writes `.env` files,
+  builds child-process environments, and writes a child's standard input for `run_with_env`'s
+  stdin delivery ([ADR-0047](decisions/0047-stdin-delivery.md)).
 - `import::onepux`, `import::csv`, `import::dotenv`.
 - `audit` — append-only local audit log.
 - `lease` — approval leases (directory + TTL + scope).
@@ -98,7 +99,7 @@ M2 added `env create|list|add-var|rm|write|agent-access`, `daemon`, `lock`, `aud
 ### 2.3a `kagisecure-agent` (added in M4)
 
 Everything the process that owns the unlocked vault does *for agents*: the IPC listener, caller
-verification, the lease store, the approval queue, the ten tool handlers, the audit append, and
+verification, the lease store, the approval queue, the thirteen tool handlers, the audit append, and
 the calls into `Injector`. It is the M2 daemon's logic, lifted out of the CLI so that the macOS
 app and `kagisecure daemon` run one implementation rather than two
 ([ADR-0013](decisions/0013-agent-library-split.md)).
@@ -128,7 +129,7 @@ the vault's lifetime.
 personal vault, read-only. The host that opened one — the app's `SharedVaultSession`, or
 `kagisecure daemon` through `ReplicaSource` — attaches it to the personal vault's `VaultHandle`
 (`attach_shared`), and every agent-facing lookup reads the personal vault and the attached shared
-vaults as one `Catalog`: the ten tools, `request_fill` and the browser extension's fills. What an
+vaults as one `Catalog`: the MCP tools (`request_fill` among them) and the browser extension's fills. What an
 agent sees of a shared vault is what *this* computer made visible (a per-device setting kept in the
 replica's local section, default hidden); releases go through the same sheets, leases and presence
 rules and are recorded in the personal vault's audit log with the shared vault's id; the sheet also

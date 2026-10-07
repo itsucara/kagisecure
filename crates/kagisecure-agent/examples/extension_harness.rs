@@ -29,7 +29,7 @@
 //! extension_harness --socket <path> --site <origin>... [--username U] [--password P] [--totp URI]
 //!                   [--second-username U --second-password P]
 //!                   [--safari-socket <path>] [--allow-unlaunched-host] [--deny | --presence]
-//!                   [--agent-socket <path>] [--agent-fill]
+//!                   [--agent-socket <path>] [--agent-fill] [--test-logins]
 //! ```
 //!
 //! `--site` is **repeatable**, and every occurrence becomes another saved website on the one test
@@ -75,6 +75,11 @@
 //! neither `--deny` nor `--presence`, every request that robot answers is first announced as a
 //! line of JSON, `{"event":"sheet","kind":…}`, so the suite can count the sheets a scenario raised.
 //!
+//! `--test-logins` (with `--agent-socket`) turns agent test logins on (ADR-0048): it creates the
+//! "Agent test logins" vault with the switch on and no extra allowed domains — loopback,
+//! `localhost`, `*.localhost` and `*.test` need none — and hands the MCP side a test-login broker,
+//! so `create_test_login` and the no-sheet login and sign-up fills can be driven end to end.
+//!
 //! Prints one line of JSON when it is listening, then serves until stdin closes. On exit it prints
 //! a second line summarizing the audit log, so the test can assert on what was recorded without
 //! opening the vault itself.
@@ -84,9 +89,10 @@ use std::sync::Arc;
 
 use kagisecure_agent::approval::{ApprovalQueue, ClientVerification, Decision};
 use kagisecure_agent::{
-    Agent, AgentConfig, AgentFillBroker, Endpoint, ExtensionAgent, ExtensionConfig, VaultHandle,
+    Agent, AgentConfig, AgentFillBroker, Endpoint, ExtensionAgent, ExtensionConfig,
+    TestLoginBroker, VaultHandle,
 };
-use kagisecure_core::model::{Field, Item, Secret};
+use kagisecure_core::model::{Field, Item, Secret, TestLoginPolicy};
 use kagisecure_core::proto::Category;
 use kagisecure_core::vault::{CreateOptions, Vault};
 
@@ -128,6 +134,7 @@ fn main() {
     let presence = args.iter().any(|a| a == "--presence");
     let agent_socket = arg(&args, "--agent-socket");
     let agent_fill = args.iter().any(|a| a == "--agent-fill");
+    let test_logins = args.iter().any(|a| a == "--test-logins");
     assert!(
         !(deny && presence),
         "--deny and --presence are two different robots; pass one"
@@ -197,6 +204,21 @@ fn main() {
             Ok(())
         })
         .expect("save");
+    if test_logins {
+        vault
+            .transact(|tx| {
+                tx.ensure_agent_test_vault("extension_harness")?;
+                tx.set_test_login_policy(
+                    TestLoginPolicy {
+                        enabled: true,
+                        auto_domains: Vec::new(),
+                        unknown: std::collections::BTreeMap::new(),
+                    },
+                    "extension_harness",
+                )
+            })
+            .expect("test-login vault");
+    }
 
     let handle = VaultHandle::new(vault);
     let queue = Arc::new(ApprovalQueue::new());
@@ -308,6 +330,7 @@ fn main() {
                 endpoint: Some(endpoint_arg("--agent-socket", value)),
                 queue: Some(Arc::clone(&queue)),
                 agent_fill: Some(Arc::clone(&broker)),
+                test_logins: test_logins.then(|| Arc::new(TestLoginBroker::new())),
             },
         )
         .expect("MCP agent")

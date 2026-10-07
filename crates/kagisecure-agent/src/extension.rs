@@ -1182,7 +1182,7 @@ impl ExtensionService {
                 .all_items()
                 .iter()
                 .map(|found| found.value)
-                .filter(|item| is_servable(item))
+                .filter(|item| is_servable(catalog, item))
                 .filter_map(|item| {
                     let origin = item_match(&saved_websites(item), &page.top_origin, frame).ok()?;
                     matched_origin = Some(origin.ascii_serialization());
@@ -1987,10 +1987,14 @@ fn audit_unavailable() -> Response {
     )
 }
 
-/// Whether a browser may be served `item` at all: not in the trash and not archived — the same
+/// Whether a browser may be served `item` at all: not in the trash, not archived and not an agent
+/// test login — the same
 /// rule `match` applies, so an item the icon would never offer cannot be filled by id either.
-fn is_servable(item: &Item) -> bool {
-    !item.is_trashed() && !item.archived
+fn is_servable(catalog: &Catalog<'_>, item: &Item) -> bool {
+    // Agent test logins are never offered to the person (ADR-0048 §8): an agent chose their
+    // websites, so they must not become an autofill target. The person still sees them in the
+    // app and can type one by hand.
+    !item.is_trashed() && !item.archived && !catalog.personal().in_agent_test_vault(item)
 }
 
 /// The item `reference` names, if a browser may be served it ([`is_servable`]): in the personal
@@ -2011,7 +2015,7 @@ fn is_servable(item: &Item) -> bool {
 fn servable<'c>(catalog: &'c Catalog<'_>, reference: &str) -> Option<Found<'c, Item>> {
     catalog
         .item(&ItemId::parse_canonical(reference)?)
-        .filter(|found| is_servable(found.value))
+        .filter(|found| is_servable(catalog, found.value))
 }
 
 /// Whether `item` has what a fill asks for: a password when a secret crosses, a username when

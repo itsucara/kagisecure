@@ -291,6 +291,35 @@ impl ChildKillHandle {
     }
 }
 
+/// Make a write to `pipe` whose reader has gone away fail with `EPIPE` instead of raising
+/// `SIGPIPE`.
+///
+/// For `kagisecure-core`'s stdin delivery (ADR-0047), which writes a child's standard input from
+/// the process that owns the vault. A Rust binary ignores `SIGPIPE`, but the macOS app — a Swift
+/// process that links this library — does not, and its default action is to terminate: a command
+/// that exits without reading its input would otherwise take the app, and the unlocked vault,
+/// down with it. Apple platforms can say so per descriptor (`F_SETNOSIGPIPE`), the same
+/// reasoning `kagisecure-ipc`'s `sever` module gives for `SO_NOSIGPIPE` on its sockets; elsewhere
+/// this is a no-op and the host is relied on, which every Rust host already is.
+///
+/// # Errors
+///
+/// Whatever `fcntl` reports.
+#[cfg(unix)]
+pub fn no_sigpipe(pipe: &impl std::os::fd::AsRawFd) -> io::Result<()> {
+    imp::no_sigpipe(pipe.as_raw_fd())
+}
+
+/// See the Unix version: Windows has no `SIGPIPE`, and a broken pipe is an error there already.
+///
+/// # Errors
+///
+/// Never.
+#[cfg(not(unix))]
+pub fn no_sigpipe<T>(_pipe: &T) -> io::Result<()> {
+    Ok(())
+}
+
 #[cfg(unix)]
 mod imp {
     #![allow(unsafe_code)]
@@ -303,6 +332,29 @@ mod imp {
 
     /// Unix has `SIGTERM`: a kill starts soft.
     pub(crate) const HAS_SOFT_STOP: bool = true;
+
+    /// `<sys/fcntl.h>`'s `F_SETNOSIGPIPE` on Apple platforms. The `libc` crate (0.2.189) defines
+    /// it only for NetBSD, where it is a different number.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    const F_SETNOSIGPIPE: libc::c_int = 73;
+
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub(crate) fn no_sigpipe(fd: i32) -> io::Result<()> {
+        // SAFETY: `fcntl` with `F_SETNOSIGPIPE` reads only its integer arguments; `fd` is a
+        // descriptor the caller holds open for the duration of the call (it borrows the pipe).
+        let status = unsafe { libc::fcntl(fd, F_SETNOSIGPIPE, 1) };
+        if status == -1 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
+    #[allow(clippy::unnecessary_wraps)]
+    pub(crate) fn no_sigpipe(_fd: i32) -> io::Result<()> {
+        Ok(())
+    }
 
     /// With `own_group`, a new process group led by the child itself (its pgid becomes its pid),
     /// so killing `-pgid` reaches it and everything it spawns without ever touching this
@@ -392,6 +444,34 @@ mod imp {
         use std::time::{Duration, Instant};
 
         use super::super::Spawned;
+
+        /// `no_sigpipe` sets the flag on the very descriptor the child's stdin is written through,
+        /// which is the only thing that keeps a host that has not ignored `SIGPIPE` alive when a
+        /// child exits without reading. The race it guards against cannot be staged reliably, so
+        /// the flag itself is what is checked.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        #[test]
+        fn no_sigpipe_sets_the_flag_on_the_childs_stdin() {
+            use std::os::fd::AsRawFd;
+            const F_GETNOSIGPIPE: libc::c_int = 74;
+            let mut child = Command::new("/bin/cat")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .expect("cat");
+            let stdin = child.stdin.take().expect("piped");
+            let fd = stdin.as_raw_fd();
+            // SAFETY: `fcntl` with a query command reads only its integer arguments; `fd` is held
+            // open by `stdin` for the duration of the call.
+            let before = unsafe { libc::fcntl(fd, F_GETNOSIGPIPE) };
+            super::super::no_sigpipe(&stdin).expect("fcntl");
+            // SAFETY: as above.
+            let after = unsafe { libc::fcntl(fd, F_GETNOSIGPIPE) };
+            drop(stdin);
+            let _ = child.wait();
+            assert_eq!(before, 0);
+            assert_eq!(after, 1);
+        }
 
         fn wait_dead(spawned: &mut Spawned) {
             let started = Instant::now();

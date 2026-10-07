@@ -290,6 +290,7 @@ fn a_directory_swapped_for_a_symlink_mid_approval_does_not_redirect_run_with_env
                     variables: None,
                     timeout_seconds: 5,
                     output: OutputMode::Scrubbed,
+                    delivery: kagisecure_ipc::protocol::Delivery::Environment,
                 })
                 .expect("call")
         },
@@ -355,6 +356,7 @@ fn nothing_is_reachable_when_the_user_has_made_nothing_visible() {
                     variables: None,
                     timeout_seconds: 5,
                     output: OutputMode::Scrubbed,
+                    delivery: kagisecure_ipc::protocol::Delivery::Environment,
                 })
                 .expect("call"),
         ]

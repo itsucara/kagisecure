@@ -165,7 +165,7 @@ test("a page with no password field is not a login form", () => {
   assert.equal(detected(KsForms.detectLoginForm(document)), null);
 });
 
-test("a registration form is refused, because new-password is a disqualifier", () => {
+test("detectLoginForm refuses registration: new-password is a disqualifier", () => {
   const document = dom(`
     <form>
       <input name="email" type="email" />
@@ -179,7 +179,7 @@ test("a registration form is refused, because new-password is a disqualifier", (
   );
 });
 
-test("a change-password form is refused, because two password fields mean a new one", () => {
+test("detectLoginForm refuses registration: two password fields mean a new one", () => {
   const document = dom(`
     <form>
       <input name="new" type="password" />
@@ -531,4 +531,112 @@ test("the keyword haystack is lowercased and includes every attribute worth read
   assert.match(text, /your email/);
   assert.match(text, /account/);
   assert.match(text, /myid/);
+});
+
+// ---------------------------------------------------------------------------------------
+// The sign-up detector (ADR-0048 §7): strict, and never on a page the login detector takes
+// ---------------------------------------------------------------------------------------
+
+/** The sign-up result as names: `{ username, passwords }`, or `null`. */
+function signup(found) {
+  return found
+    ? { username: nameOf(found.username), passwords: found.passwords.map(nameOf) }
+    : null;
+}
+
+test("detectSignupForm takes the test app's register form: username and both boxes", () => {
+  const document = dom(`
+    <form method="post" action="/register">
+      <input id="username" name="username" type="text" autocomplete="username" />
+      <input id="password" name="password" type="password" autocomplete="new-password" />
+      <input id="confirm" name="confirm" type="password" autocomplete="new-password" />
+      <button type="submit">Create account</button>
+    </form>
+  `);
+  assert.deepEqual(signup(KsForms.detectSignupForm(document)), {
+    username: "username",
+    passwords: ["password", "confirm"],
+  });
+  assert.equal(detected(KsForms.detectLoginForm(document)), null);
+});
+
+test("detectSignupForm takes one declared new-password field", () => {
+  const document = dom(`
+    <form>
+      <input name="email" type="email" />
+      <input name="pw" type="password" autocomplete="new-password" />
+    </form>
+  `);
+  assert.deepEqual(signup(KsForms.detectSignupForm(document)), {
+    username: "email",
+    passwords: ["pw"],
+  });
+});
+
+test("detectSignupForm takes exactly two undeclared password fields in one form", () => {
+  const document = dom(`
+    <form>
+      <input name="user" type="text" />
+      <input name="pw" type="password" />
+      <input name="pw2" type="password" />
+    </form>
+  `);
+  assert.deepEqual(signup(KsForms.detectSignupForm(document)).passwords, ["pw", "pw2"]);
+});
+
+test("detectSignupForm refuses a login form, so the two never claim one page", () => {
+  const document = dom(`
+    <form>
+      <input name="user" type="text" />
+      <input name="pw" type="password" autocomplete="current-password" />
+    </form>
+  `);
+  assert.equal(signup(KsForms.detectSignupForm(document)), null);
+  const undeclared = dom(`<form><input name="user" /><input name="pw" type="password" /></form>`);
+  assert.equal(signup(KsForms.detectSignupForm(undeclared)), null);
+  assert.equal(detected(KsForms.detectLoginForm(undeclared)), "pw");
+});
+
+test("detectSignupForm refuses a change-password form", () => {
+  const document = dom(`
+    <form>
+      <input name="new" type="password" autocomplete="new-password" />
+      <input name="current" type="password" autocomplete="current-password" />
+    </form>
+  `);
+  assert.equal(signup(KsForms.detectSignupForm(document)), null);
+});
+
+test("detectSignupForm refuses three password fields", () => {
+  const document = dom(`
+    <form>
+      <input name="a" type="password" autocomplete="new-password" />
+      <input name="b" type="password" autocomplete="new-password" />
+      <input name="c" type="password" autocomplete="new-password" />
+    </form>
+  `);
+  assert.equal(signup(KsForms.detectSignupForm(document)), null);
+});
+
+test("detectSignupForm refuses a page with both a login form and a sign-up form", () => {
+  const document = dom(`
+    <form id="login">
+      <input name="login_user" type="text" />
+      <input name="login_pw" type="password" />
+    </form>
+    <form id="register">
+      <input name="new_user" type="text" />
+      <input name="new_pw" type="password" autocomplete="new-password" />
+    </form>
+  `);
+  assert.equal(signup(KsForms.detectSignupForm(document)), null);
+});
+
+test("detectSignupForm refuses a hidden or off-canvas password box", () => {
+  const hidden = dom(
+    `<form><input name="a" type="password" autocomplete="new-password" />
+       <input name="b" type="password" autocomplete="new-password" /></form>`,
+    (el) => (el.getAttribute && el.getAttribute("name") === "b" ? null : { width: 200, height: 30 }),
+  );
+  assert.equal(signup(KsForms.detectSignupForm(hidden)), null);
 });

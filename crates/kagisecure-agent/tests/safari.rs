@@ -226,6 +226,7 @@ fn a_fill_through_the_safari_socket_carries_the_value_once_and_records_the_origi
             item_id,
             username,
             password,
+            ..
         } => {
             assert_eq!(item_id, fixture.item_id);
             assert_eq!(username.as_deref(), Some("alice"));

@@ -261,6 +261,7 @@ fn run_request(env: EnvId, cwd: &Path) -> Request {
         variables: Some(vec!["TOKEN".to_owned()]),
         timeout_seconds: 30,
         output: OutputMode::Scrubbed,
+        delivery: kagisecure_ipc::protocol::Delivery::Environment,
     }
 }
 
@@ -430,6 +431,28 @@ fn every_request(env: EnvId, cwd: &Path) -> Vec<Request> {
             lease_id: Some(LeaseId::new()),
             path: None,
         },
+        Request::CreateTestLogin {
+            app: "shop".to_owned(),
+            purpose: "buyer".to_owned(),
+            username: "buyer1@example.test".to_owned(),
+            websites: vec!["http://localhost:47800".to_owned()],
+            generator: None,
+            tags: Vec::new(),
+            reason: None,
+            bind: None,
+        },
+        Request::TrashTestLogins {
+            website: Some("http://localhost:47800".to_owned()),
+            tag: None,
+            reason: "rebuild".to_owned(),
+        },
+        Request::ListTestLogins {
+            website: None,
+            tag: None,
+            query: None,
+            limit: 10,
+            cursor: None,
+        },
         Request::Audit {
             limit: 5,
             verify: false,
@@ -451,6 +474,18 @@ fn every_request(env: EnvId, cwd: &Path) -> Vec<Request> {
             variables: None,
             timeout_seconds: 5,
             output: OutputMode::None,
+            delivery: kagisecure_ipc::protocol::Delivery::Environment,
+        },
+        // Stdin delivery is one approval per run (ADR-0047): no standing grant covers it.
+        Request::RunWithEnv {
+            environment_id: env,
+            command: "/bin/sh".to_owned(),
+            args: vec!["-c".to_owned(), "cat > /dev/null".to_owned()],
+            cwd: cwd.to_string_lossy().into_owned(),
+            variables: None,
+            timeout_seconds: 5,
+            output: OutputMode::None,
+            delivery: kagisecure_ipc::protocol::Delivery::Stdin,
         },
         Request::Hello {
             protocol: kagisecure_ipc::protocol::PROTOCOL_VERSION,
@@ -477,6 +512,9 @@ fn covers(request: &Request) {
         | Request::RunWithEnv { .. }
         | Request::RevokeEnvFile { .. }
         | Request::RequestFill { .. }
+        | Request::CreateTestLogin { .. }
+        | Request::ListTestLogins { .. }
+        | Request::TrashTestLogins { .. }
         | Request::Audit { .. }
         | Request::ListLeases
         | Request::Lock => {}
@@ -541,6 +579,27 @@ fn no_protocol_message_creates_or_changes_a_job_or_a_grant() {
         std::fs::read_to_string(fx.dir.path().canonicalize().unwrap().join(CHILD_REPLIES))
             .expect("the child wrote its replies");
     assert!(replies.contains("NOT_GRANTED"), "{replies}");
+    // Agent test logins are personal and interactive only (ADR-0048 §12): a create or a trash is refused
+    // inside a run, and the list is empty.
+    let line = |tool: &str| {
+        replies
+            .lines()
+            .find(|l| l.starts_with(&format!("{tool} ")))
+            .unwrap_or_else(|| panic!("no reply for {tool}: {replies}"))
+            .to_owned()
+    };
+    assert!(
+        line("create_test_login").contains("NOT_GRANTED"),
+        "{replies}"
+    );
+    assert!(
+        line("list_test_logins").contains(r#""items":[]"#),
+        "{replies}"
+    );
+    assert!(
+        line("trash_test_logins").contains("NOT_GRANTED"),
+        "{replies}"
+    );
     assert_eq!(
         definitions(&fx.section()),
         before,
@@ -795,6 +854,7 @@ fn the_ordinary_socket_serves_machine_environments_with_a_sheet_and_only_while_u
             endpoint: Some(ordinary.clone()),
             queue: None,
             agent_fill: None,
+            test_logins: None,
         },
     )
     .expect("agent");

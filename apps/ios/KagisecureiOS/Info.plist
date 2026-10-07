@@ -27,6 +27,8 @@
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSCameraUsageDescription</key>
+	<string>Kagisecure uses the camera to read one-time password QR codes.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Unlock your kagisecure vault.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

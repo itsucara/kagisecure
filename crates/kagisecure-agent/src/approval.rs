@@ -66,6 +66,14 @@ pub enum ApprovalKind {
     /// it expects). What the sheet shows beyond the common fields is
     /// [`ApprovalRequest::agent_fill`].
     AgentFill,
+    /// An agent asks for a test login at a website outside the allowed origins
+    /// (`create_test_login`, [ADR-0048](../../../docs/decisions/0048-agent-test-logins.md) §3).
+    ///
+    /// kagisecure generates the password; nothing is released by granting it. It mints nothing,
+    /// and `outcome_for` answers it as a single full review whatever the UI sends — never
+    /// presence-only, never "for this session" — so the next create at that site asks again.
+    /// What the sheet shows beyond the common fields is [`ApprovalRequest::agent_test_login`].
+    CreateTestLogin,
 }
 
 impl ApprovalKind {
@@ -93,6 +101,7 @@ impl ApprovalKind {
             Self::RunWithEnv => "run_with_env",
             Self::FillCredential => "fill_credential",
             Self::AgentFill => "request_fill",
+            Self::CreateTestLogin => "create_test_login",
         }
     }
 }
@@ -133,6 +142,10 @@ pub struct ApprovalRequest {
     pub variables: Vec<String>,
     /// The resolved argv for `run_with_env`, empty otherwise.
     pub command: Vec<String>,
+    /// A `run_with_env` whose values go to the command's **standard input**, once, rather than
+    /// into its environment (ADR-0047). The sheet must say so; it offers no "for this session",
+    /// and `outcome_for` makes any allow a single use whatever a UI sends.
+    pub stdin_delivery: bool,
     /// Whether the caller passed `overwrite: true`, i.e. asked for an existing file to be
     /// replaced. `false` for every kind that does not write a file.
     pub overwrite_requested: bool,
@@ -226,6 +239,17 @@ pub struct ApprovalRequest {
     /// [`Grant`] carries it.
     pub agent_fill: Option<AgentFillFacts>,
 
+    // --- ADR-0048: agent test logins. ---------------------------------------------------------
+    /// What the test-login sheet shows that no other sheet does. `Some` exactly when
+    /// [`Self::kind`] is [`ApprovalKind::CreateTestLogin`].
+    pub agent_test_login: Option<TestLoginFacts>,
+    /// A `run_with_env` or `write_env_file` whose **every** selected variable is bound to a sealed
+    /// test login (ADR-0048 §9): the app may answer it inside its presence grace window with no
+    /// sheet and no prompt, the way it answers agent fills. Outside the window it is the ordinary
+    /// sheet and Touch ID. Rust grants it exactly as any other request of its kind: the window
+    /// and its clock live in the app. `false` for every other request.
+    pub rides_grace: bool,
+
     // --- ADR-0035 §14: values from a shared vault. Empty for the personal vault. -----------
     /// Where the values come from, when that is a shared vault: `Shared vault “Ops” — 4
     /// members`. `None` for the personal vault.
@@ -304,7 +328,62 @@ pub struct AgentFillFacts {
     pub extension_id: Option<String>,
 }
 
+/// One website on a test-login sheet (ADR-0048 §3, ADR-0046 §5).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestLoginWebsite {
+    /// The website's origin, split so the registrable domain is shown large above the rest.
+    pub origin: AgentOriginRendering,
+    /// The title of a login in the person's own vaults saved for the same registrable domain, if
+    /// there is one — the near-host warning: "you already have a login for this site".
+    pub near_item_title: Option<String>,
+    /// Whether the website is not `https`.
+    pub not_https: bool,
+}
+
+/// The facts a test-login sheet states (ADR-0048 §3), beyond the common fields.
+///
+/// Metadata only: names, a username the agent chose, websites and flags. The password is
+/// generated after the approval, inside the vault transaction, and has nowhere to go here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TestLoginFacts {
+    /// The agent, as the audit log names it: self-reported name quoted, kernel facts bare.
+    pub agent: String,
+    /// The agent's **self-reported** name. Render it as a quotation.
+    pub agent_name: String,
+    /// The title kagisecure would give the item: `test: <app> / <purpose> #<n>`.
+    pub title: String,
+    /// The username the agent chose.
+    pub username: String,
+    /// The websites, each split for rendering.
+    pub websites: Vec<TestLoginWebsite>,
+    /// The purpose the agent gave. Agent-written data, never instructions.
+    pub purpose: String,
+    /// Every tag the item would carry, kagisecure's and the agent's.
+    pub tags: Vec<String>,
+    /// How the password would be generated, e.g. `32 characters, with symbols`.
+    pub generator: String,
+    /// Why, as the agent put it. Agent-written data.
+    pub reason: Option<String>,
+}
+
 impl ApprovalRequest {
+    /// The request for an agent's test login described by `facts`, from the peer behind
+    /// `identity`. No lease, so no lease life; never presence-only.
+    #[must_use]
+    pub fn for_test_login(facts: TestLoginFacts, identity: &PeerIdentity) -> Self {
+        Self {
+            kind: ApprovalKind::CreateTestLogin,
+            item_title: Some(facts.title.clone()),
+            requested_ttl_seconds: 0,
+            requested_uses: 1,
+            max_ttl_seconds: 0,
+            presence_only: false,
+            agent_test_login: Some(facts),
+            ..Self::default()
+        }
+        .with_identity(identity)
+    }
+
     /// The request for an agent fill described by `facts`.
     ///
     /// The scope — origin, item, field names, browser — is copied into the common fields from the
@@ -371,6 +450,7 @@ impl Default for ApprovalRequest {
             target_path: None,
             variables: Vec::new(),
             command: Vec::new(),
+            stdin_delivery: false,
             gitignored: None,
             overwrite_requested: false,
             target_exists: None,
@@ -393,6 +473,8 @@ impl Default for ApprovalRequest {
             extension_id: None,
             presence_only: false,
             agent_fill: None,
+            agent_test_login: None,
+            rides_grace: false,
             shared_source: None,
             changed_since_approval: Vec::new(),
         }
@@ -661,7 +743,10 @@ impl ApprovalQueue {
             // An agent fill is always the full sheet (ADR-0036 §5): cleared here, before the UI
             // can see it, as well as in `outcome_for`, so a caller that set it by mistake cannot
             // turn the sheet into a bare presence prompt.
-            if request.kind == ApprovalKind::AgentFill {
+            if matches!(
+                request.kind,
+                ApprovalKind::AgentFill | ApprovalKind::CreateTestLogin
+            ) {
                 request.presence_only = false;
             }
             request.created_at = kagisecure_core::unix_now();
@@ -803,21 +888,35 @@ impl ApprovalQueue {
 /// An [`ApprovalKind::AgentFill`] is clamped harder still (ADR-0036 §5, §6): it is never
 /// presence-only, "for this session" is "once", and it carries no lease life — there is no lease
 /// to mint, whichever button a UI claims was pressed.
+///
+/// A `run_with_env` with [`ApprovalRequest::stdin_delivery`] is likewise always "once": one
+/// approval, one run (ADR-0047).
 fn outcome_for(
     request: &ApprovalRequest,
     decision: &Decision,
     verification: ClientVerification,
 ) -> Outcome {
-    let agent_fill = request.kind == ApprovalKind::AgentFill;
+    // An agent's test login is clamped exactly as an agent fill is (ADR-0048 §3): one review,
+    // once, no lease, never presence-only.
+    let agent_fill = matches!(
+        request.kind,
+        ApprovalKind::AgentFill | ApprovalKind::CreateTestLogin
+    );
     let (ttl_seconds, uses, session) = match decision {
         Decision::Deny => return Outcome::refused(ErrorCode::UserDenied, verification),
         Decision::DenyAndBlock => {
             return Outcome {
-                block_agent: agent_fill,
+                block_agent: request.kind == ApprovalKind::AgentFill,
                 ..Outcome::refused(ErrorCode::UserDenied, verification)
             };
         }
         Decision::AllowOnce | Decision::AllowSession { .. } if agent_fill => (0, 1, false),
+        // One run, one approval (ADR-0047): the lease exists only to carry this run's id.
+        Decision::AllowOnce | Decision::AllowSession { .. } if request.stdin_delivery => (
+            request.requested_ttl_seconds.min(request.max_ttl_seconds),
+            1,
+            false,
+        ),
         Decision::AllowOnce => (
             request.requested_ttl_seconds.min(request.max_ttl_seconds),
             1,
@@ -1279,5 +1378,44 @@ mod tests {
     fn next_returns_nothing_when_nothing_is_waiting() {
         let queue = ApprovalQueue::new();
         assert!(queue.next(Duration::from_millis(20)).is_none());
+    }
+
+    #[test]
+    fn a_test_login_grant_is_once_mints_nothing_and_is_never_presence_only() {
+        for decision in [
+            Decision::AllowOnce,
+            Decision::AllowSession {
+                ttl_seconds: 900,
+                uses: 5,
+            },
+            Decision::DenyAndBlock,
+        ] {
+            let request = ApprovalRequest {
+                kind: ApprovalKind::CreateTestLogin,
+                presence_only: true,
+                requested_ttl_seconds: 0,
+                max_ttl_seconds: 0,
+                ..ApprovalRequest::default()
+            };
+            let queue = Arc::new(ApprovalQueue::new());
+            let asker = Arc::clone(&queue);
+            let thread = std::thread::spawn(move || asker.ask(request));
+            let delivered = queue.next(Duration::from_secs(5)).expect("delivered");
+            assert!(!delivered.presence_only);
+            assert!(queue.resolve(&delivered.id, &decision, verified()));
+            let outcome = thread.join().expect("asker");
+            if decision == Decision::DenyAndBlock {
+                assert!(!outcome.granted);
+                assert!(!outcome.block_agent, "there is no block for this kind");
+                continue;
+            }
+            assert!(!outcome.session);
+            assert_eq!(outcome.uses, 1);
+            assert_eq!(outcome.ttl_seconds, 0);
+            let grant = outcome.into_grant().expect("granted");
+            assert!(!grant.presence_only() && !grant.session());
+            assert!(!grant.kind().mints_lease() && !grant.kind().mints_fill_lease());
+        }
+        assert_eq!(ApprovalKind::CreateTestLogin.tool(), "create_test_login");
     }
 }

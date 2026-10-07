@@ -6,7 +6,9 @@ struct KagisecureiOSApp: App {
         environment: .live(), platformKeys: SecureEnclaveKeyService())
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AutoLock.key) private var autoLockSeconds = AutoLock.defaultSeconds
-    @State private var backgroundedAt: Date?
+    /// When the app went to the background, on a clock that keeps counting while the phone sleeps
+    /// and that changing the time in Settings cannot wind back.
+    @State private var backgroundedAt: ContinuousClock.Instant?
 
     var body: some Scene {
         WindowGroup {
@@ -22,14 +24,19 @@ struct KagisecureiOSApp: App {
             // words, to pick a folder in Files — keeps it open.
             switch phase {
             case .background:
-                if autoLockSeconds <= 0 { model.lock() } else { backgroundedAt = Date() }
+                model.store?.link.stopWatching()
+                if autoLockSeconds <= 0 { model.lock() } else { backgroundedAt = ContinuousClock.now }
             case .active:
                 if let since = backgroundedAt,
-                    Date().timeIntervalSince(since) >= Double(autoLockSeconds)
+                    AutoLock.shouldLock(away: ContinuousClock.now - since, seconds: autoLockSeconds)
                 {
                     model.lock()
                 }
                 backgroundedAt = nil
+                if let link = model.store?.link {
+                    link.startWatching()
+                    Task { await link.syncOnForeground() }
+                }
             default:
                 break
             }
@@ -74,4 +81,10 @@ enum AutoLock {
         (String(localized: "Immediately"), 0), (String(localized: "1 minute"), 60),
         (String(localized: "5 minutes"), 300), (String(localized: "15 minutes"), 900),
     ]
+
+    /// Whether being away for `away` passes the chosen limit. A negative or unknown setting
+    /// counts as "Immediately".
+    static func shouldLock(away: Duration, seconds: Int) -> Bool {
+        seconds <= 0 || away >= .seconds(seconds)
+    }
 }

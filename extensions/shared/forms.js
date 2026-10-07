@@ -411,6 +411,34 @@
   }
 
   /**
+   * The sign-up form on this page, or `null` (ADR-0048 §7).
+   *
+   * Strict on purpose, because what it returns is where an agent's sign-up fill writes a test
+   * login's password: one form holding either exactly one password field, declared
+   * `autocomplete="new-password"`, or exactly two password fields (a "password" and "confirm
+   * password" pair). Refused outright when the page has a `current-password` field, three or more
+   * password fields, a password field that is hidden, disabled or off the canvas, password fields
+   * in more than one form, or anything [`detectLoginForm`] accepts — so the two detectors never
+   * both claim a page, and a change-password form (current + new + confirm) is neither.
+   *
+   * @param {Document | ShadowRoot} scope
+   * @returns {{ username: HTMLInputElement | null, passwords: HTMLInputElement[] } | null}
+   */
+  function detectSignupForm(scope) {
+    const all = Array.from(scope.querySelectorAll("input[type=password]"));
+    if (all.length === 0 || all.length >= 3) return null;
+    if (all.some((p) => autocompleteTokens(p).includes("current-password"))) return null;
+    // Every password box must be one a person can see and type into: a hidden or off-canvas one
+    // is either a decoy or a form this detector does not understand.
+    if (!all.every((p) => isFillable(p) && isOnCanvas(p))) return null;
+    const form = formOf(all[0]);
+    if (!all.every((p) => formOf(p) === form)) return null;
+    if (all.length === 1 && !autocompleteTokens(all[0]).includes("new-password")) return null;
+    if (detectLoginForm(scope) !== null) return null;
+    return { username: usernameFor(all[0], scope), passwords: all };
+  }
+
+  /**
    * Whether `el` is a search box rather than a field anything should be filled into.
    *
    * Checked by kind before it is checked by keyword: `type="search"` and `role="searchbox"` are
@@ -604,6 +632,7 @@
     usernameFor,
     detectOtpField,
     detectLoginForm,
+    detectSignupForm,
     detectIdentifierForm,
     setFieldValue,
   };

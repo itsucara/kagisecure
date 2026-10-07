@@ -176,7 +176,7 @@ Every message is wrapped in an envelope carrying a `ksx` channel marker and a co
 | `fill` | `filled` — only the fields that were asked for | only if `fields` names the password: first time per (origin, item) per unlock | **only if asked for** |
 | `totp` | `totp_code` — **the code**, seconds remaining | same | **yes** |
 | `target_report` | `noted` | no | no |
-| `agent_fill` | `filled` (or `totp_code` for a one-time-code grant) — only the granted fields | no — the sheet was the agent's, before the `deliver` push | **yes** |
+| `agent_fill` | `filled` (or `totp_code` for a one-time-code grant) — only the granted fields; for a sign-up grant, `username` and `new_password` and never `password` | no — the sheet was the agent's, before the `deliver` push | **yes** |
 | `agent_fill_outcome` | `noted` | no | no |
 
 The last three belong to agent-requested fills
@@ -207,6 +207,38 @@ Safari front end never declares it (ADR-0036 §12).
 > across two pages, one-time codes and the tripwire's `UNMASKED` report (ADR-0036 Phases 1–3). A
 > session that does not declare `agent_fill` is still never pushed to, and its three requests are
 > still answered `PROTOCOL`.
+
+#### Sign-up fills of agent test logins *(ADR-0048 §7)*
+
+An agent that made a test login with `create_test_login` fills an app's **sign-up** form with
+`request_fill ["username", "new_password"]` ([mcp-server.md](mcp-server.md) §2.10). The extension's
+side is three pieces:
+
+- **The sign-up detector**, `detectSignupForm` in `forms.js`, is strict on purpose: one form holding
+  either exactly one password field declared `autocomplete="new-password"`, or exactly two password
+  fields (a password and a confirmation). It refuses a page with any `current-password` field, three
+  or more password fields, a password field that is hidden, disabled or off the canvas, password
+  fields in more than one form, or anything `detectLoginForm` accepts — so the two detectors never
+  both claim a page, and a change-password form is neither. `detectLoginForm` in turn refuses
+  registration forms. The username box comes from the same `usernameFor` a login uses.
+- **The report.** `target_report`'s `found` gains two booleans, `sign_up` and `sign_up_username`,
+  which the app needs before it grants a sign-up fill (`FoundFields::covers`). An extension that
+  does not send them simply never qualifies for one.
+- **The reply.** `filled` carries a `new_password` member, built only by
+  `Response::filled_sign_up` and only for a sealed test login; the human path's `fill` can never
+  receive it (`carries_only` refuses it). `applyFill` in `content.js` writes `new_password` into
+  every box of the detected sign-up form and nowhere else, writes `password` only when the target
+  is a login form, and writes nothing at all for a reply carrying both members or a `password` on a
+  sign-up target. The ten-second tripwire watches every box written.
+
+None of this changed the extension protocol's version (still 1): the new members are optional, and
+an extension that does not report `sign_up` is never sent a sign-up grant. The MCP side did change,
+to protocol 4, so the sidecar, the app and the native-messaging host ship together.
+
+`e2e/lib/test-app.mjs` is the committed test app for these fills: a dependency-free Node server
+with real `/register` and `/login` pages (passwords kept only as scrypt hashes, bodies never
+logged), bound to `127.0.0.1:47800` by default. `node e2e/lib/test-app.mjs` runs it by hand; the
+e2e suite starts it on a port of its own and reaches it as `shop.test`.
 
 #### Agent-requested fills in the extension: who establishes what
 
@@ -576,6 +608,52 @@ domain are covered; a different scheme or port is not. `http://localhost:3000` a
 `http://localhost:3001` are different sites, and so are `http://` and `https://` versions of the
 same host.
 
+### A browser an agent drives, with the extension: the Playwright recipe
+
+An agent that tests a web app with Playwright needs the kagisecure extension in the browser it
+drives, connected to the running app — that is what makes `request_fill` and the test-login fills
+work there. **Branded Google Chrome 137 and later ignores `--load-extension`** (below), so use
+**Microsoft Edge** (`channel: "msedge"`) or **Playwright's own Chromium**:
+
+```js
+import { chromium } from "playwright";
+import fs from "node:fs";
+import path from "node:path";
+
+const APP = "/Applications/Kagisecure.app";
+const EXTENSION = `${APP}/Contents/Resources/ChromiumExtension`;
+const profile = fs.mkdtempSync("/tmp/ks-agent-profile-");
+
+// The native-messaging manifest, inside this profile only: a browser launched with a user data
+// directory reads its manifests from <profile>/NativeMessagingHosts.
+fs.mkdirSync(path.join(profile, "NativeMessagingHosts"), { recursive: true });
+fs.writeFileSync(
+  path.join(profile, "NativeMessagingHosts", "com.kagisecure.nmhost.json"),
+  JSON.stringify({
+    name: "com.kagisecure.nmhost",
+    description: "kagisecure autofill bridge",
+    path: `${APP}/Contents/Helpers/kagisecure-nmhost`,
+    type: "stdio",
+    allowed_origins: ["chrome-extension://nlijibjnmanccalmafnfbobkcfjiibmd/"],
+  }),
+);
+
+const context = await chromium.launchPersistentContext(profile, {
+  channel: "msedge", // or leave it out for Playwright's Chromium
+  // Headless works too, in new headless mode only: headless: true, "--headless=new" in args and,
+  // for Playwright's Chromium, executablePath: chromium.executablePath() (not the headless shell).
+  headless: false,
+  args: [`--disable-extensions-except=${EXTENSION}`, `--load-extension=${EXTENSION}`],
+});
+```
+
+Leave `KAGISECURE_EXTENSION_SOCKET` **unset**: the native host then finds the app's own socket.
+(The e2e suite sets it only to point at a test harness.) The unpacked copy in the app carries the
+committed `key`, so its id is the pinned `nlijibjnmanccalmafnfbobkcfjiibmd` the app accepts. Agent
+fills must be on (Settings › AI Agents), and agent test logins too for the sign-up fills. Call
+`page.bringToFront()` before each `request_fill`: the tab in front at `origin` is the one asked
+first.
+
 ## 6. Building and testing
 
 ```sh
@@ -589,7 +667,10 @@ make e2e SUITE=extension                                      # a real browser, 
 
 `make e2e SUITE=extension` includes four agent-fill scenarios (ADR-0036), in which a real
 `kagisecure-mcp` asks for the fill and a robot answers the sheet; they are written and wired in and
-**have not yet been run** ([e2e-harness.md](e2e-harness.md) §6). Everything below the browser is
+**have not yet been run** ([e2e-harness.md](e2e-harness.md) §6). Two agent-test-login scenarios
+(ADR-0048) — create, sign up and log in; and an environment rebuilt with `trash_test_logins` — run
+headless against the test app:
+`E2E_HEADLESS=1 node --test --test-name-pattern="test login|test environment" e2e/suites/extension/extension.test.mjs`. Everything below the browser is
 covered headlessly by `cargo test -p kagisecure-agent` (`tests/agent_fill*.rs`) and the
 extension's side by `npm test` (`test/agent_fill.test.js`).
 
@@ -774,7 +855,7 @@ sharper constraint than it looks:
   `headless: false`. The **new headless mode** (`--headless=new`) does load them, and reads the
   profile's manifest, in Edge 154 and Chromium 153 (ADR-0042, "Phase 5: the measurement"): the
   unattended scenario (`unattended.test.mjs`) runs entirely headless.
-- **Chrome 137 removed `--load-extension`.** On Chrome 152 the switch is silently ignored — the
+- **Chrome 137 removed `--load-extension`** from branded Google Chrome. On Chrome 152 the switch is silently ignored — the
   browser starts, the extension is not installed, nothing is logged. Verified here with a
   three-line probe extension. `--enable-unsafe-extension-debugging` does not bring it back.
 - **The native messaging manifest directory follows `--user-data-dir` now.** It did not, and this

@@ -49,17 +49,24 @@ import { recordText } from "../../lib/artifacts.mjs";
 
 const PASSWORD = "correct horse battery staple";
 
-/** The ten tools, and no eleventh. `docs/mcp-server.md` §2 is the list this is held to. */
+/**
+ * The thirteen tools, and no fourteenth. `docs/mcp-server.md` §2 and the pinned list in
+ * `crates/kagisecure-mcp/src/server.rs` are what this is held to. ADR-0048 added the three
+ * `*_test_login*` tools.
+ */
 const EXPECTED_TOOLS = [
   "add_variables",
   "create_environment",
+  "create_test_login",
   "describe_item",
   "list_environments",
   "list_items",
+  "list_test_logins",
   "list_vaults",
   "request_fill",
   "revoke_env_file",
   "run_with_env",
+  "trash_test_logins",
   "write_env_file",
 ];
 
@@ -71,12 +78,20 @@ let counter = 0;
  * The vault holds two logical trees on purpose:
  *
  * * `Acme staging` / `acme / staging` — made visible to agents, with the canary as its value.
- * * `Private thing` / `private / env` — **not** made visible, so "the agent cannot see it" means
- *   the default-deny rule refused rather than the vault being empty.
+ * * `Private thing` / `private / env` — explicitly hidden from agents (`item agent-visible off`,
+ *   and an environment created without `--agent-visible`), so "the agent cannot see it" means
+ *   the rule refused rather than the vault being empty.
  *
- * @param {{ daemonArgs?: string[], label?: string }} options
+ * Since 2026-10-04 a new item is agent-visible by default (the vault's "Show new items to
+ * agents" setting is on), so `Acme staging` is shared by that default alone; a vault itself is
+ * still hidden from agents until the user allows it. `hideVault` skips that grant.
+ *
+ * @param {{ daemonArgs?: string[], label?: string, hideVault?: boolean }} options
  */
-async function fixture(t, { daemonArgs = ["--auto-approve"], label = "mcp" } = {}) {
+async function fixture(
+  t,
+  { daemonArgs = ["--auto-approve"], label = "mcp", hideVault = false } = {},
+) {
   counter += 1;
   const name = `${label}-${counter}`;
   const dir = scratch(name);
@@ -103,6 +118,7 @@ async function fixture(t, { daemonArgs = ["--auto-approve"], label = "mcp" } = {
     ["item", "add", "--password-stdin", "--value-stdin", "--title", "Private thing", "--secret", "key"],
     { vault, stdin: [PASSWORD, `${marker}-PRIVATE`] },
   );
+  cliOk(["item", "agent-visible", "--password-stdin", "off", "--item", "Private thing"], pw);
   cliOk(["env", "create", "--password-stdin", "acme / staging", "--agent-visible"], pw);
   cliOk(
     ["env", "add-var", "--password-stdin", "--environment", "acme / staging",
@@ -110,8 +126,12 @@ async function fixture(t, { daemonArgs = ["--auto-approve"], label = "mcp" } = {
     pw,
   );
   cliOk(["env", "create", "--password-stdin", "private / env"], pw);
-  cliOk(["env", "agent-access", "--password-stdin", "--allow", "--logical-vault", "Personal"], pw);
-  cliOk(["env", "agent-access", "--password-stdin", "--allow", "--item", "Acme staging"], pw);
+  if (!hideVault) {
+    cliOk(
+      ["env", "agent-access", "--password-stdin", "--allow", "--logical-vault", "Personal"],
+      pw,
+    );
+  }
 
   const logPath = path.join(dir, "daemon.log");
   const daemon = await startDaemon({
@@ -182,7 +202,7 @@ async function fixture(t, { daemonArgs = ["--auto-approve"], label = "mcp" } = {
 // The tool surface
 // -------------------------------------------------------------------------------------------
 
-test("the sidecar exposes exactly ten tools, and none of them can take a value", async (t) => {
+test("the sidecar exposes exactly thirteen tools, and none of them can take a value", async (t) => {
   const fx = await fixture(t, { label: "tools" });
 
   const tools = await fx.sidecar.tools();
@@ -190,7 +210,7 @@ test("the sidecar exposes exactly ten tools, and none of them can take a value",
   assert.deepEqual(
     names,
     EXPECTED_TOOLS,
-    "the tool surface is a fixed list; an eleventh tool is a design change, not a patch",
+    "the tool surface is a fixed list; a fourteenth tool is a design change, not a patch",
   );
 
   // The invariant ADR-0002 exists for: there is no property anywhere in any schema that a secret
@@ -233,7 +253,7 @@ test("the sidecar exposes exactly ten tools, and none of them can take a value",
     t.name,
     "tools.txt",
     tools.map((tool) => `${tool.name}\n  ${tool.description}`).join("\n\n"),
-    "the ten tools as the model sees them",
+    "the thirteen tools as the model sees them",
   );
   fx.assertNoLeak(schemas);
 });
@@ -242,7 +262,7 @@ test("the sidecar exposes exactly ten tools, and none of them can take a value",
 // Default-deny
 // -------------------------------------------------------------------------------------------
 
-test("list_vaults, list_items and list_environments respect the default-deny rule", async (t) => {
+test("list_vaults, list_items and list_environments respect agent visibility", async (t) => {
   const fx = await fixture(t, { label: "deny" });
 
   const vaults = await fx.sidecar.call("list_vaults");
@@ -257,7 +277,7 @@ test("list_vaults, list_items and list_environments respect the default-deny rul
   assert.deepEqual(
     titles,
     ["Acme staging"],
-    "only the item the user explicitly shared is listed; `Private thing` is not",
+    "`Acme staging` is listed by the new-items default alone; `Private thing`, explicitly hidden, is not",
   );
 
   const environments = await fx.sidecar.call("list_environments");
@@ -268,17 +288,31 @@ test("list_vaults, list_items and list_environments respect the default-deny rul
     "an environment created without --agent-visible stays hidden",
   );
 
+  // A vault itself stays hidden until allowed, and hides everything in it, whatever its items say.
+  const hidden = await fixture(t, { label: "deny-vault", hideVault: true });
+  const hiddenVaults = await hidden.sidecar.call("list_vaults");
+  assert.equal(hiddenVaults.ok, true, hiddenVaults.text);
+  assert.deepEqual(hiddenVaults.structured.vaults, [], "a vault not allowed to agents is not listed");
+  const hiddenItems = await hidden.sidecar.call("list_items");
+  assert.equal(hiddenItems.ok, true, hiddenItems.text);
+  assert.deepEqual(
+    hiddenItems.structured.items,
+    [],
+    "agent-visible items in a hidden vault are not listed either",
+  );
+  hidden.assertNoLeak(hiddenVaults.text, hiddenItems.text);
+
   recordText(
     t.name,
     "default-deny.txt",
     `list_vaults\n${vaults.text}\n\nlist_items\n${items.text}\n\n` +
       `list_environments\n${environments.text}`,
-    "what an agent can see of a vault with two items and two environments",
+    "what an agent can see of a vault with two items (one hidden) and two environments",
   );
   fx.assertNoLeak(vaults.text, items.text, environments.text);
 });
 
-test("an item the user has not shared is indistinguishable from one that does not exist", async (t) => {
+test("an item hidden from agents is indistinguishable from one that does not exist", async (t) => {
   const fx = await fixture(t, { label: "not-visible" });
 
   // The agent has to name the hidden item somehow. It cannot get the id from `list_items`, which
@@ -649,6 +683,52 @@ test("run_with_env injects into the child and masks the value back out", async (
     "the three things `output` can be",
   );
   fx.assertNoLeak(ran.text, quiet.text, unmasked.text);
+});
+
+test("run_with_env with delivery stdin writes the values to the child's input and nowhere else", async (t) => {
+  const fx = await fixture(t, { label: "stdin" });
+  const envId = await fx.agentVisibleEnvId();
+
+  // ADR-0047: the frame is NAME\0VALUE\0, the environment and the arguments stay clean, and the
+  // command's echo of what it read is scrubbed like an echoed environment.
+  const ran = await fx.sidecar.call("run_with_env", {
+    environment_id: envId,
+    command: "/bin/sh",
+    args: ["-c", "cat > stdin.bin; env > environment.txt; cat stdin.bin | tr '\\0' '\\n'"],
+    cwd: fx.project,
+    delivery: "stdin",
+  });
+  assert.equal(ran.ok, true, ran.text);
+  assert.equal(ran.structured.exit_code, 0);
+  assert.deepEqual(
+    fs.readFileSync(path.join(fx.project, "stdin.bin")),
+    Buffer.from(`ACME_TOKEN\0${fx.marker}\0`),
+    "the child read exactly one NAME\\0VALUE\\0 pair",
+  );
+  const environment = fs.readFileSync(path.join(fx.project, "environment.txt"), "utf8");
+  assert.ok(!environment.includes(fx.marker), "the value reached the child's environment");
+  assert.ok(!/^ACME_TOKEN=/m.test(environment), "the variable reached the child's environment");
+  assert.match(ran.structured.stdout, /\[kagisecure:redacted:ACME_TOKEN\]/);
+
+  // Not an option the tool invents on the fly.
+  const odd = await fx.sidecar.call("run_with_env", {
+    environment_id: envId,
+    command: "/bin/sh",
+    args: ["-c", "true"],
+    cwd: fx.project,
+    delivery: "argv",
+  });
+  assert.equal(odd.ok, false, odd.text);
+
+  const entries = fx.audit();
+  const allowed = entries.filter(
+    (e) => e.tool === "run_with_env" && e.outcome === "Allowed" && `${e.detail || ""}`.startsWith("STDIN "),
+  );
+  assert.equal(allowed.length, 1, JSON.stringify(entries.map((e) => [e.tool, e.outcome, e.detail])));
+  assert.match(allowed[0].detail, /"\/bin\/sh"/);
+
+  recordText(t.name, "run-with-env-stdin.txt", ran.text, "a stdin delivery, as the agent saw it");
+  fx.assertNoLeak(ran.text, odd.text, JSON.stringify(entries));
 });
 
 test("run_with_env does not invoke a shell", async (t) => {

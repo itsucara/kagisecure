@@ -137,6 +137,22 @@ struct SidebarView: View {
                     .accessibilityLabel("\(vault.name) members, \(Int(vault.memberCount))")
                     .accessibilityIdentifier(Self.identifier(for: .sharedMembers(vault.id)))
             }
+            // Empty state (ui-spec.md §16.1): with no shared vault yet, the header's "+" menu is
+            // easy to miss, so its two actions also appear as rows.
+            if store.shared.summaries.isEmpty {
+                Button { store.sharedSheet = .create } label: {
+                    Label("New Shared Vault…", systemImage: "plus.circle")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("ks.sidebar.shared.empty.new")
+                Button { store.sharedSheet = .join } label: {
+                    Label("Join Shared Vault…", systemImage: "person.badge.plus")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("ks.sidebar.shared.empty.join")
+            }
         } header: {
             HStack {
                 Text("Shared")

@@ -49,6 +49,7 @@ struct ApprovalSheet: View {
                         fillTarget
                         if request.topOrigin != nil { frameWarning }
                     }
+                    if let facts = request.testLogin { TestLoginFactsBlock(facts: facts) }
                     if !request.variables.isEmpty { variables }
                     if !request.command.isEmpty { command }
                     location
@@ -111,6 +112,7 @@ struct ApprovalSheet: View {
         case .addVariables: "text.badge.plus"
         case .fillCredential: "key.horizontal"
         case .agentFill: "person.badge.key"
+        case .createTestLogin: "person.badge.plus"
         }
     }
 
@@ -131,6 +133,13 @@ struct ApprovalSheet: View {
             return n == 1
                 ? String(localized: "\(who) wants to write \(n) variable to a .env file")
                 : String(localized: "\(who) wants to write \(n) variables to a .env file")
+        case .runWithEnv where request.stdinDelivery:
+            // ADR-0047: the values go to the command's standard input, once. The environment's
+            // name is the one the user gave it, so it names *which* secrets; the command names
+            // where they go.
+            let n = request.variables.count
+            return "\(who) wants to pass \(n) value\(n == 1 ? "" : "s") from \(safe(request.environmentName ?? "an environment")) "
+                + "to \(safe(request.command.joined(separator: " "), limit: 80)) on its standard input, once"
         case .runWithEnv:
             let cmd = safe(request.command.joined(separator: " "), limit: 80)
             return String(localized: "\(who) wants to run \(cmd) with environment variables")
@@ -153,6 +162,9 @@ struct ApprovalSheet: View {
             // Its own sheet, and its own sentence, which leads with the site rather than the
             // agent's name (ADR-0036 §9.2).
             return AgentFillSheetView.sentence(for: request)
+        case .createTestLogin:
+            let site = request.testLogin.map(TestLoginFactsBlock.leadDomain) ?? String(localized: "an unknown site")
+            return String(localized: "\(who) wants to create a test login for \(site)")
         }
     }
 
@@ -363,8 +375,22 @@ struct ApprovalSheet: View {
             Text("Run directly, with no shell: ; | $() in an argument are just characters.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            if request.stdinDelivery {
+                Text(Self.stdinCaption)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier("ks.approval.stdinCaption")
+            }
         }
     }
+
+    /// What a stdin delivery does with the values, and the one thing to check before allowing it
+    /// (ADR-0047): the values reach whatever the command does with its input.
+    static let stdinCaption =
+        "The values are written to this command's standard input, once, and are not placed in its "
+        + "environment or arguments. Allow it only if this is the command you expect: it can do "
+        + "anything with what it reads."
 
     @ViewBuilder
     private var location: some View {
@@ -456,6 +482,9 @@ struct ApprovalSheet: View {
 
     /// The one-line scope sentence from ui-spec.md §10.2.
     static func summary(for request: ApprovalRequestView, ttlSeconds: UInt64) -> String {
+        if request.action == .createTestLogin {
+            return String(localized: "This saves a new login in the Agent test logins vault with a password kagisecure generates. The agent never receives the password, and each create here asks for Touch ID.")
+        }
         if request.action == .fillCredential {
             let fields = request.fillFields.joined(separator: " and ")
             // `origin` is `Url::origin().ascii_serialization()` and is shown exactly as it
@@ -470,6 +499,11 @@ struct ApprovalSheet: View {
         }
         guard request.mintsLease else {
             return String(localized: "This changes the structure of your vault. It grants no access to any value.")
+        }
+        if request.stdinDelivery {
+            let names = request.variables.isEmpty
+                ? "no variables" : safe(request.variables.joined(separator: ", "), limit: 100)
+            return "This passes \(names) to this one run of the command. The next run asks again."
         }
         let names = request.variables.isEmpty
             ? String(localized: "no variables") : safe(request.variables.joined(separator: ", "), limit: 100)
@@ -495,7 +529,8 @@ struct ApprovalSheet: View {
             // Out of the scroll area and next to the buttons, so the TTL is on screen whenever
             // "Allow for this session" is — it is that button's argument, and a sheet with a
             // long variable list used to scroll it out of sight (ui-spec.md §10.2).
-            if request.mintsLease || isFill {
+            // A stdin delivery is one run, whatever is picked here (ADR-0047): no lease to size.
+            if (request.mintsLease && !request.stdinDelivery) || isFill {
                 lease
                 Divider()
             }
@@ -517,10 +552,12 @@ struct ApprovalSheet: View {
                     .accessibilityIdentifier("ks.approval.deny")
                 Button("Allow once") { approve(.allowOnce) }
                     .accessibilityIdentifier("ks.approval.allowOnce")
-                Button("Allow for this session") {
-                    approve(.allowSession(ttlSeconds: UInt64(ttlSeconds), uses: request.requestedUses))
+                if !request.stdinDelivery && request.action != .createTestLogin {
+                    Button("Allow for this session") {
+                        approve(.allowSession(ttlSeconds: UInt64(ttlSeconds), uses: request.requestedUses))
+                    }
+                    .accessibilityIdentifier("ks.approval.allowSession")
                 }
-                .accessibilityIdentifier("ks.approval.allowSession")
             }
             .disabled(busy)
         }

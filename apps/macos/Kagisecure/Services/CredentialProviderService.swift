@@ -240,6 +240,8 @@ final class SessionAutoFillVault: AutoFillVault {
     /// A login is any item with a password field. Its domains are its saved websites' hosts.
     static func login(from item: ItemView) -> AutoFillLogin? {
         guard item.passwordField != nil else { return nil }
+        // Test logins are never offered to the person (ADR-0048 §8): the URL is agent-chosen.
+        guard !item.inAgentTestVault else { return nil }
         let domains = item.urls.compactMap(AutoFillMatching.host(of:))
         return AutoFillLogin(
             id: item.id, title: item.title, username: item.username, domains: domains,

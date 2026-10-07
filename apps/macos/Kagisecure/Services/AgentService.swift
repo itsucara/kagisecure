@@ -114,6 +114,9 @@ final class AgentService {
     /// class's one-second tick — the app's one clock.
     var agentFill: AgentFillService?
 
+    /// Test-login notices (ADR-0048 §10), drained on the same tick.
+    var testLogins: TestLoginService?
+
     /// Live leases, refreshed on the tick.
     private(set) var leases: [LeaseView] = []
 
@@ -191,6 +194,10 @@ final class AgentService {
     /// grace window is open (ADR-0037 amendment of 2026-10-03): an agent fill — including a
     /// one-time code — unless the stricter `agentFillRequiresSheetKey` setting is on.
     func skipsSheet(_ request: ApprovalRequestView) -> Bool {
+        if request.ridesGrace && (request.action == .runWithEnv || request.action == .writeEnvFile) {
+            // ADR-0048 §9: a run bound only to sealed test logins, inside the window.
+            return presenceGraceCovers(request)
+        }
         guard request.action == .agentFill, !agentFillRequiresSheet() else { return false }
         return presenceGraceCovers(request)
     }
@@ -429,6 +436,7 @@ final class AgentService {
         leases = agentLeases()
         extensionService?.tick()
         agentFill?.tick(now: now)
+        testLogins?.tick()
         dropExpired()
         // A sheet that went up before the grace window opened (say, the person revealed a value
         // in the app meanwhile) is answered now.
@@ -728,6 +736,8 @@ final class AgentService {
             request.variables.count == 1
                 ? String(localized: "approve writing \(request.variables.count) variable to a .env file")
                 : String(localized: "approve writing \(request.variables.count) variables to a .env file")
+        case .runWithEnv where request.stdinDelivery:
+            "approve passing \(request.variables.count) value\(request.variables.count == 1 ? "" : "s") from \(ApprovalSheet.safe(request.environmentName ?? "an environment")) to \(ApprovalSheet.safe(request.command.first.map { ($0 as NSString).lastPathComponent } ?? "a command")) on its standard input, once"
         case .runWithEnv:
             String(localized: "approve running \(ApprovalSheet.safe(request.command.first ?? String(localized: "a command"))) with secrets in its environment")
         case .createEnvironment:
@@ -743,6 +753,9 @@ final class AgentService {
                 : String(localized: "fill \(ApprovalSheet.safe(request.itemTitle ?? String(localized: "a login"))) into \(ApprovalSheet.safe(request.origin ?? String(localized: "this page"), limit: 120))")
         case .agentFill:
             agentFillReason(for: request)
+        case .createTestLogin:
+            // The site first, as the sheet leads with it; the agent's name is not in it.
+            "let an agent create a test login for \(ApprovalSheet.safe(request.testLogin.map(TestLoginFactsBlock.leadDomain) ?? String(localized: "a site"), limit: 120)). Continue only if you asked an agent to"
         }
     }
 

@@ -29,6 +29,7 @@ use crate::approval::{ApprovalQueue, ApprovalRequest, ClientVerification, Decisi
 use crate::children::ChildRegistry;
 use crate::extension::agent_fill::AgentFillBroker;
 use crate::service::Service;
+use crate::test_login::TestLoginBroker;
 use crate::vault::{LockHookGuard, VaultHandle};
 
 /// How long the accept loop sleeps between polls. Long enough not to spin, short enough that a
@@ -99,6 +100,12 @@ pub struct AgentConfig {
     /// what lets an agent's request reach a browser tab. `None` — `kagisecure daemon`, which
     /// serves no browser — answers every `request_fill` with `FILL_UNAVAILABLE`.
     pub agent_fill: Option<Arc<AgentFillBroker>>,
+    /// The test-login broker `create_test_login` and `list_test_logins` are served through
+    /// (ADR-0048).
+    ///
+    /// The app passes one process-wide `Arc`, so an agent's create limit survives a lock and a
+    /// restart of this listener. `None` — `kagisecure daemon` — answers both `TEST_LOGINS_OFF`.
+    pub test_logins: Option<Arc<TestLoginBroker>>,
 }
 
 impl std::fmt::Debug for AgentConfig {
@@ -107,6 +114,7 @@ impl std::fmt::Debug for AgentConfig {
             .field("endpoint", &self.endpoint.as_ref().map(ToString::to_string))
             .field("shared_queue", &self.queue.is_some())
             .field("agent_fill", &self.agent_fill.is_some())
+            .field("test_logins", &self.test_logins.is_some())
             .finish()
     }
 }
@@ -154,6 +162,8 @@ struct Shared {
     /// The machine vault the host attached ([`Agent::attach_machine_vault`]), served beside the
     /// personal vault while it is unlocked, and locked with it (ADR-0042 §2).
     machine: crate::service::MachineSlot,
+    /// The test-login broker, if this host serves agent test logins (ADR-0048). Process-wide.
+    test_logins: Option<Arc<TestLoginBroker>>,
 }
 
 impl Shared {
@@ -304,6 +314,7 @@ impl Agent {
             children: Arc::new(ChildRegistry::new()),
             connections: LiveConnections::new(),
             agent_fill: config.agent_fill.clone(),
+            test_logins: config.test_logins.clone(),
             machine: Arc::new(Mutex::new(None)),
         });
         shared.queue.reopen();
@@ -600,7 +611,7 @@ fn serve_connection(shared: &Arc<Shared>, connection: &mut Connection) {
         return;
     }
 
-    let service = Service::new(
+    let mut service = Service::new(
         Arc::clone(&shared.handle),
         Arc::clone(&shared.leases),
         Arc::clone(&shared.queue),
@@ -610,6 +621,9 @@ fn serve_connection(shared: &Arc<Shared>, connection: &mut Connection) {
         shared.agent_fill.clone(),
     )
     .with_machine(Arc::clone(&shared.machine));
+    if let Some(broker) = &shared.test_logins {
+        service = service.with_test_logins(Arc::clone(broker));
+    }
 
     loop {
         if shared.stopping.load(Ordering::SeqCst) {
@@ -678,6 +692,7 @@ mod tests {
             endpoint: Some(Endpoint::for_instance(dir.path(), "a.sock")),
             queue: None,
             agent_fill: None,
+            test_logins: None,
         };
         let first = Agent::start(Arc::clone(&handle), &config).expect("first agent");
 
@@ -702,6 +717,7 @@ mod tests {
             &AgentConfig {
                 queue: None,
                 agent_fill: None,
+                test_logins: None,
                 endpoint: Some(Endpoint::for_instance(dir.path(), "b.sock")),
             },
         )
@@ -742,6 +758,7 @@ mod tests {
             &AgentConfig {
                 queue: None,
                 agent_fill: None,
+                test_logins: None,
                 endpoint: Some(Endpoint::for_instance(dir.path(), "c.sock")),
             },
         )
@@ -782,6 +799,7 @@ mod tests {
                 endpoint: Some(endpoint.clone()),
                 queue: None,
                 agent_fill: None,
+                test_logins: None,
             },
         )
         .expect("agent");
@@ -816,6 +834,7 @@ mod tests {
             &AgentConfig {
                 queue: None,
                 agent_fill: None,
+                test_logins: None,
                 endpoint: Some(Endpoint::for_instance(dir.path(), "f.sock")),
             },
         )
@@ -890,6 +909,7 @@ mod tests {
             &AgentConfig {
                 queue: None,
                 agent_fill: None,
+                test_logins: None,
                 endpoint: Some(Endpoint::for_instance(dir.path(), "g.sock")),
             },
         )
@@ -932,6 +952,7 @@ mod tests {
             &AgentConfig {
                 queue: None,
                 agent_fill: None,
+                test_logins: None,
                 endpoint: Some(Endpoint::for_instance(dir.path(), "e.sock")),
             },
         )

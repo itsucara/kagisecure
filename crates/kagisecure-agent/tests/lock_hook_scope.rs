@@ -48,6 +48,7 @@ fn stopping_the_mcp_agent_does_not_silence_the_extensions_lock_hook() {
             endpoint: Some(Endpoint::for_instance(dir.path(), "agent.sock")),
             queue: None,
             agent_fill: None,
+            test_logins: None,
         },
     )
     .expect("the mcp agent starts");

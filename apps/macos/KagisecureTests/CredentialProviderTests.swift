@@ -310,4 +310,20 @@ struct CredentialProviderTests {
         }.value
         #expect(reply == .refused(.untrusted, message: "Not this app's AutoFill provider."))
     }
+
+    @Test func testVaultItemsAreNeverOfferedToAutoFill() {
+        func item(inTestVault: Bool) -> ItemView {
+            ItemView(
+                id: "i", vaultId: "v", category: "login", categoryDisplayName: "Login",
+                categorySymbol: "key", title: "t",
+                fields: [FieldView(id: "p", label: "password", kind: .concealed, concealed: true,
+                                   hasValue: true, value: nil, section: nil, agentVisible: true)],
+                tags: [], urls: ["http://localhost:47800"], hasNotes: false, favorite: false,
+                archived: false, trashed: false, agentVisible: true, createdAt: 0, updatedAt: 0,
+                subtitle: nil, username: "u", primarySecretFieldId: "p", revision: "r",
+                inAgentTestVault: inTestVault)
+        }
+        #expect(SessionAutoFillVault.login(from: item(inTestVault: false)) != nil)
+        #expect(SessionAutoFillVault.login(from: item(inTestVault: true)) == nil)
+    }
 }

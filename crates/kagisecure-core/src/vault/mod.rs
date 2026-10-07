@@ -126,6 +126,7 @@ pub mod device;
 pub mod header;
 pub mod lock;
 pub mod machine;
+pub mod test_login;
 
 use std::collections::BTreeMap;
 use std::ops::Deref;

@@ -118,6 +118,7 @@ fn build_fixture(visible: bool) -> Fixture {
             endpoint: Some(endpoint.clone()),
             queue: None,
             agent_fill: None,
+            test_logins: None,
         },
     )
     .expect("the agent should bind a fresh socket");

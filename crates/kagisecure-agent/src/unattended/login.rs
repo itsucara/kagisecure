@@ -116,11 +116,14 @@ impl StandingPass {
     }
 }
 
-fn login_field(field: AgentFillField) -> LoginField {
+/// The standing grant's name for a field. `None` for a sign-up fill's new password, which no
+/// standing grant covers (ADR-0048 §7 serves it only for sealed test logins).
+fn login_field(field: AgentFillField) -> Option<LoginField> {
     match field {
-        AgentFillField::Username => LoginField::Username,
-        AgentFillField::Password => LoginField::Password,
-        AgentFillField::OneTimeCode => LoginField::OneTimeCode,
+        AgentFillField::Username => Some(LoginField::Username),
+        AgentFillField::Password => Some(LoginField::Password),
+        AgentFillField::OneTimeCode => Some(LoginField::OneTimeCode),
+        AgentFillField::NewPassword => None,
     }
 }
 
@@ -129,7 +132,7 @@ fn login_field(field: AgentFillField) -> LoginField {
 fn covers(grant: &LoginGrant, origin: &str, fields: &[AgentFillField]) -> bool {
     (grant.origin == origin || grant.follow_on_origins.iter().any(|o| o == origin))
         && fields.iter().all(|f| {
-            grant.fields.contains(&login_field(*f))
+            login_field(*f).is_some_and(|field| grant.fields.contains(&field))
                 && (*f != AgentFillField::OneTimeCode || grant.one_time_codes)
         })
 }

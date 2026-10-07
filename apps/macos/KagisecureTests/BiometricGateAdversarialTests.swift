@@ -187,7 +187,7 @@ struct BiometricGateAdversarialTests {
         // Every action, with a canary planted in every field a value could plausibly leak from.
         for action in [
             ApprovalAction.writeEnvFile, .runWithEnv, .createEnvironment, .addVariables,
-            .fillCredential, .agentFill,
+            .fillCredential, .agentFill, .createTestLogin,
         ] {
             let request = Self.canaryLadenRequest(action: action)
             let reason = AgentService.reason(for: request)

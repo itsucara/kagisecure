@@ -63,6 +63,7 @@ import { createRequire } from "node:module";
 
 import { exampleBinary, binary, scratch, runDir, waitFor, Sidecar } from "../../lib/harness.mjs";
 import { record, recordText, screenshot } from "../../lib/artifacts.mjs";
+import { startTestApp } from "../../lib/test-app.mjs";
 
 /** The extension source both browsers load: `extensions/shared`, not `extensions/chrome`. */
 const REPO_ROOT = process.env.E2E_REPO_ROOT || path.resolve(import.meta.dirname, "..", "..", "..");
@@ -81,10 +82,19 @@ const SECOND_PASSWORD = "KSE2E-OTHER-CANARY-9b7d2e14ac60f853";
 const SECOND_USERNAME = "bob@example.test";
 const TOTP_URI = "otpauth://totp/Kagisecure:alice?secret=JBSWY3DPEHPK3PXP&issuer=Kagisecure";
 
-const BROWSERS = [
-  { channel: "msedge", expectedName: "Microsoft Edge" },
-  { channel: "chrome", expectedName: "Google Chrome" },
-];
+/**
+ * `E2E_HEADLESS=1` swaps the windowed browsers for Playwright's own Chromium in new headless
+ * mode, which loads an MV3 extension (as `unattended.test.mjs` relies on) and opens no window.
+ * Meant for the scenarios that need no screenshot of a window, run by name.
+ */
+const HEADLESS = process.env.E2E_HEADLESS === "1";
+
+const BROWSERS = HEADLESS
+  ? [{ channel: undefined, headless: true, expectedName: "Chromium" }]
+  : [
+      { channel: "msedge", expectedName: "Microsoft Edge" },
+      { channel: "chrome", expectedName: "Google Chrome" },
+    ];
 
 const MANUAL_SAFARI_STEPS = `
 Safari cannot be driven by automation on this machine, so these scenarios are reported as
@@ -162,7 +172,7 @@ function servePages() {
 function startHarness(
   socket,
   sites,
-  { deny = false, presence = false, second = false, agentSocket = null } = {},
+  { deny = false, presence = false, second = false, agentSocket = null, testLogins = false } = {},
 ) {
   const args = [
     "--socket", socket,
@@ -179,6 +189,8 @@ function startHarness(
   // an identifier-first sign-in. Only the world that tests that asks for it.
   if (second) args.push("--second-username", SECOND_USERNAME, "--second-password", SECOND_PASSWORD);
   if (agentSocket) args.push("--agent-socket", agentSocket, "--agent-fill");
+  // Agent test logins on (ADR-0048): the test-login vault, its switch, and the broker.
+  if (testLogins) args.push("--test-logins");
 
   const child = spawn(exampleBinary("extension_harness"), args, {
     stdio: ["pipe", "pipe", "pipe"],
@@ -278,9 +290,13 @@ async function launchBrowser(chromium, browser, profileDir, socket) {
   try {
     context = await chromium.launchPersistentContext(profileDir, {
       channel: browser.channel,
-      // An MV3 extension does not load in the headless shell — see the module comment.
-      headless: false,
+      // The full Chromium, not the headless shell Playwright picks for `headless: true`.
+      executablePath: browser.headless ? chromium.executablePath() : undefined,
+      // An MV3 extension does not load in the headless shell — see the module comment — but it
+      // does in new headless mode, which `E2E_HEADLESS=1` asks for.
+      headless: browser.headless === true,
       args: [
+        ...(browser.headless ? ["--headless=new"] : []),
         `--disable-extensions-except=${EXTENSION_DIR}`,
         `--load-extension=${EXTENSION_DIR}`,
         // Every hostname in this suite resolves here. Nothing leaves the machine, and the origins
@@ -361,6 +377,7 @@ async function world(mode = "allow") {
     presence: mode === "presence",
     second: mode === "identifier",
     agentSocket,
+    testLogins: mode === "agent-test-logins",
   });
   await harness.ready;
   const sidecar = agentSocket
@@ -1540,7 +1557,8 @@ test("an agent fill on a look-alike site raises no sheet and fills nothing", asy
   assert.equal(believed.structured.code, "NO_MATCHING_TAB", believed.text);
 
   // What the address bar says: the claim now agrees with the tab, and the item is still not
-  // saved for it. The second mismatch in one unlock session blocks the agent (§9.4).
+  // saved for it. Refused again; since the 2026-10-03 amendment a second mismatch no longer
+  // blocks the agent (ADR-0036 §9.4 as amended).
   const claimed = await requestFill(built, page, {
     item_id: itemId,
     origin: built.origins.lookalike,
@@ -1561,30 +1579,32 @@ test("an agent fill on a look-alike site raises no sheet and fills nothing", asy
   assert.ok(!html.includes(USERNAME), "nor the username");
   await screenshot(page, t.name, "02-refused", "still empty: the rule refused, nobody was asked");
 
-  // Blocked until somebody looks: the right page, a moment later, is refused without a sheet.
+  // Not blocked: the right page, a moment later, is filled as any agent fill is. The refusals
+  // above did not escalate (ADR-0036, amendment 2026-10-03, item 3).
   const real = await open(built, built.origins.saved);
   const afterwards = await requestFill(built, real, {
     item_id: itemId,
     origin: built.origins.saved,
   });
-  assert.equal(afterwards.ok, false, afterwards.text);
-  assert.equal(afterwards.structured.code, "USER_DENIED", afterwards.text);
-  assert.equal(built.harness.agentSheets() - sheetsBefore, 0, "and still no sheet");
-  assert.equal(await real.inputValue("#password"), "", "the real site is not filled either");
+  assert.equal(afterwards.ok, true, afterwards.text);
+  assert.equal(afterwards.structured.status, "filled", afterwards.text);
   assertAgentSawNoPassword(built, believed, claimed, afterwards);
 
   const entries = await built.harness.audit();
   const agent = agentFillEntries(entries);
   assert.deepEqual(
-    agent.map((e) => e.detail),
-    [
-      "AGENT_FILL_ORIGIN_MISMATCH",
-      "AGENT_FILL_ORIGIN_MISMATCH (agent blocked)",
-      "AGENT_FILL_BLOCKED",
-    ],
-    `a mismatch, the second that blocked, and the refusal after: ${JSON.stringify(entries)}`,
+    agent.slice(0, 2).map((e) => e.detail),
+    ["AGENT_FILL_ORIGIN_MISMATCH", "AGENT_FILL_ORIGIN_MISMATCH"],
+    `two mismatches, neither of which blocked: ${JSON.stringify(entries)}`,
   );
-  assert.ok(agent.every((e) => e.outcome === "Denied"), "none of them is an allowed outcome");
+  assert.ok(
+    agent.slice(0, 2).every((e) => e.outcome === "Denied"),
+    "both refusals are denied outcomes",
+  );
+  assert.ok(
+    !agent.some((e) => e.detail.startsWith("AGENT_FILL_BLOCKED") || e.detail.includes("agent blocked")),
+    "nothing blocked the agent",
+  );
   assert.equal(agent[0].origin, built.origins.lookalike, "the origin the browser reported");
   assert.equal(agent[1].origin, built.origins.lookalike);
   assert.ok(!JSON.stringify(entries).includes(PASSWORD), "no audit entry contains the password");
@@ -1599,7 +1619,7 @@ test("an agent fill on a look-alike site raises no sheet and fills nothing", asy
       "",
       ...agent.map((e) => `${e.tool.padEnd(16)} ${e.outcome.padEnd(10)} ${e.detail}  ${e.origin}`),
     ].join("\n"),
-    "two refusals by the rule, a block, and no sheet at any point",
+    "two refusals by the rule, no block, then the real site filled",
   );
   await real.close();
   await page.close();
@@ -1754,6 +1774,237 @@ test("an agent one-time code lands in the code field and never on the clipboard"
 // -------------------------------------------------------------------------------------------
 // Safari
 // -------------------------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------------------------
+// Agent test logins (ADR-0048): create, sign up through the sign-up fill, then log in
+// ---------------------------------------------------------------------------------------------
+
+test("an agent creates a test login, signs up with it and logs in, and never sees the password", async (t) => {
+  const built = await requireWorld(t, "agent-test-logins");
+  if (!built) return;
+  t.after(() => closeWorld("agent-test-logins"));
+  // The committed test app, on its own port. `*.test` is an allowed origin with no list entry,
+  // and the browser resolves every host to 127.0.0.1.
+  const app = await startTestApp({ port: 0 });
+  t.after(() => app.close());
+  const origin = `http://shop.test:${new URL(app.url).port}`;
+  const username = "buyer@shop.test";
+
+  await connected(built);
+  const sheetsBefore = built.harness.agentSheets();
+  const created = await built.sidecar.call("create_test_login", {
+    app: "shop",
+    purpose: "buyer",
+    username,
+    websites: [origin],
+  });
+  assert.equal(created.ok, true, created.text);
+  assert.equal(created.structured.status, "created", created.text);
+  const itemId = created.structured.item_id;
+
+  // The sign-up form: the agent asks for the username and a new password; kagisecure types the
+  // generated password into both boxes; the agent presses the button itself.
+  const register = await built.context.newPage();
+  await register.goto(`${origin}/register`);
+  await register.waitForTimeout(1_500);
+  const signedUp = await requestFill(built, register, {
+    item_id: itemId,
+    origin,
+    fields: ["username", "new_password"],
+  });
+  assert.equal(signedUp.ok, true, signedUp.text);
+  assert.deepEqual([...signedUp.structured.fields_written].sort(), ["new_password", "username"]);
+  const generated = await valueOf(register, "#password");
+  assert.ok(generated.length >= 20, "a generated password is in the box");
+  assert.equal(await register.inputValue("#confirm"), generated, "and in the confirm box");
+  assert.equal(await register.inputValue("#username"), username);
+  await screenshot(register, t.name, "01-signed-up", "the register form filled by a sign-up fill");
+  await Promise.all([register.waitForURL(`${origin}/login`), register.click("button[type=submit]")]);
+  assert.ok(app.users.has(username), "the server holds a hash for the new user");
+
+  // Then the login fill, on the page the server sent the browser to.
+  await register.waitForTimeout(1_500);
+  const loggedIn = await requestFill(built, register, { item_id: itemId, origin });
+  assert.equal(loggedIn.ok, true, loggedIn.text);
+  assert.deepEqual([...loggedIn.structured.fields_written].sort(), ["password", "username"]);
+  await Promise.all([register.waitForURL(/\/welcome/), register.click("button[type=submit]")]);
+  assert.match(await register.textContent("body"), /Signed in as/);
+  await screenshot(register, t.name, "02-welcome", "logged in with the password the agent never saw");
+
+  assert.equal(built.harness.agentSheets() - sheetsBefore, 0, "an allowed origin: no sheet at all");
+  for (const [where, haystack] of [
+    ["the sidecar's stdout", built.sidecar.rawStdout],
+    ["the sidecar's stderr", built.sidecar.rawStderr],
+    ["a tool result", JSON.stringify([created, signedUp, loggedIn])],
+  ]) {
+    assert.ok(!haystack.includes(generated), `the generated password reached ${where}`);
+  }
+  const entries = await built.harness.audit();
+  const details = agentFillEntries(entries)
+    .filter((e) => e.outcome === "Allowed")
+    .map((e) => e.detail);
+  assert.deepEqual(details, ["TEST_LOGIN_FILL (automatic, sign-up)", "TEST_LOGIN_FILL (automatic)"]);
+  assert.ok(!JSON.stringify(entries).includes(generated), "no audit entry contains the password");
+  await register.close();
+});
+
+test("an agent rebuilds its test environment: trashes the old test login and signs up a fresh one", async (t) => {
+  const built = await requireWorld(t, "agent-test-logins");
+  if (!built) return;
+  t.after(() => closeWorld("agent-test-logins"));
+  let app = await startTestApp({ port: 0 });
+  t.after(() => app.close());
+  const port = new URL(app.url).port;
+  const origin = `http://shop.test:${port}`;
+  const username = "rebuilt@shop.test";
+
+  await connected(built);
+  const sheetsBefore = built.harness.agentSheets();
+  // One tab for the whole run, as an agent driving a browser would keep.
+  const page = await built.context.newPage();
+  t.after(() => page.close());
+  const signUp = async (itemId) => {
+    await page.goto(`${origin}/register`);
+    await page.waitForTimeout(1_500);
+    const filled = await requestFill(built, page, {
+      item_id: itemId,
+      origin,
+      fields: ["username", "new_password"],
+    });
+    assert.equal(filled.ok, true, filled.text);
+    const generated = await valueOf(page, "#password");
+    await Promise.all([page.waitForURL(`${origin}/login`), page.click("button[type=submit]")]);
+    return { filled, generated };
+  };
+
+  const first = await built.sidecar.call("create_test_login", {
+    app: "shop",
+    purpose: "rebuild",
+    username,
+    websites: [origin],
+  });
+  assert.equal(first.structured.status, "created", first.text);
+  const before = await signUp(first.structured.item_id);
+  assert.ok(app.users.has(username));
+
+  // The environment is rebuilt: the app comes back empty on the same port, so the old test user
+  // is gone there, and the agent cleans up kagisecure's side before creating a new one.
+  await app.close();
+  app = await startTestApp({ port: Number(port) });
+  assert.ok(!app.users.has(username), "the rebuilt app has no users");
+  const trashed = await built.sidecar.call("trash_test_logins", {
+    website: origin,
+    reason: "rebuilt the shop test environment",
+  });
+  assert.equal(trashed.ok, true, trashed.text);
+  assert.equal(trashed.structured.trashed, 1, trashed.text);
+  assert.deepEqual(trashed.structured.item_ids, [first.structured.item_id]);
+  const listed = await built.sidecar.call("list_test_logins", { website: origin });
+  assert.deepEqual(listed.structured.items, [], "a trashed test login is not listed");
+
+  const second = await built.sidecar.call("create_test_login", {
+    app: "shop",
+    purpose: "rebuild",
+    username,
+    websites: [origin],
+  });
+  assert.equal(second.structured.status, "created", "the trashed login is not reused");
+  assert.notEqual(second.structured.item_id, first.structured.item_id);
+  assert.equal(second.structured.title, "test: shop / rebuild #2");
+  const after = await signUp(second.structured.item_id);
+  assert.ok(app.users.has(username), "signed up again in the rebuilt app");
+  assert.notEqual(after.generated, before.generated, "a fresh generated password");
+
+  assert.equal(built.harness.agentSheets() - sheetsBefore, 0, "no sheet anywhere");
+  const results = JSON.stringify([first, trashed, listed, second, before.filled, after.filled]);
+  for (const generated of [before.generated, after.generated]) {
+    assert.ok(!results.includes(generated), "a generated password reached a tool result");
+    assert.ok(!built.sidecar.rawStdout.includes(generated), "or the sidecar's stdout");
+  }
+  const entries = await built.harness.audit();
+  assert.ok(
+    entries.some((e) => e.tool === "trash_test_logins" && e.detail === "TEST_LOGINS_TRASHED matched=1"),
+    "the trash is audited once, with its count",
+  );
+});
+
+test("an agent fill reaches a new tab opened after the last one on that origin was closed", async (t) => {
+  const built = await requireWorld(t, "agent-test-logins");
+  if (!built) return;
+  t.after(() => closeWorld("agent-test-logins"));
+  const app = await startTestApp({ port: 0 });
+  t.after(() => app.close());
+  const origin = `http://shop.test:${new URL(app.url).port}`;
+  const username = "reopen@shop.test";
+
+  await connected(built);
+  const created = await built.sidecar.call("create_test_login", {
+    app: "shop",
+    purpose: "reopen",
+    username,
+    websites: [origin],
+  });
+  assert.equal(created.structured.status, "created", created.text);
+  const itemId = created.structured.item_id;
+
+  // Sign up in one tab, then close it, as an agent that is done with a page does.
+  const register = await built.context.newPage();
+  await register.goto(`${origin}/register`);
+  await register.waitForTimeout(1_500);
+  const signedUp = await requestFill(built, register, {
+    item_id: itemId,
+    origin,
+    fields: ["username", "new_password"],
+  });
+  assert.equal(signedUp.ok, true, signedUp.text);
+  await Promise.all([register.waitForURL(`${origin}/login`), register.click("button[type=submit]")]);
+  await register.close();
+
+  // A fresh tab at the same origin: the fill reaches the tab that is open now, twice over.
+  for (let round = 1; round <= 2; round += 1) {
+    const page = await built.context.newPage();
+    await page.goto(`${origin}/login`);
+    await page.waitForTimeout(1_500);
+    const filled = await requestFill(built, page, { item_id: itemId, origin });
+    assert.equal(filled.ok, true, `round ${round}: ${filled.text}`);
+    assert.equal(filled.structured.status, "filled", `round ${round}: ${filled.text}`);
+    assert.equal(await page.inputValue("#username"), username, `round ${round}`);
+    await page.close();
+  }
+});
+
+test("an agent that closes page one's tab and asks for the password in a new tab gets a new sheet, not NO_MATCHING_TAB", async (t) => {
+  const built = await requireWorld(t, "agent-identifier");
+  if (!built) return;
+  t.after(() => closeWorld("agent-identifier"));
+
+  await connected(built);
+  const itemId = await agentItemId(built);
+  const sheetsBefore = built.harness.agentSheets();
+  const page = await open(built, built.origins.saved, "identifier-first/step1.html");
+  const first = await requestFill(built, page, { item_id: itemId, origin: built.origins.saved });
+  assert.equal(first.ok, true, first.text);
+  assert.deepEqual(first.structured.fields_pending, ["password"], first.text);
+  await page.close();
+
+  // Page one's tab is gone, so step two can never come there: the password request in the new
+  // tab is a request of its own, approved on a sheet of its own.
+  const next = await open(built, built.origins.saved, "identifier-first/step2.html");
+  const second = await requestFill(built, next, {
+    item_id: itemId,
+    origin: built.origins.saved,
+    fields: ["password"],
+  });
+  assert.equal(second.ok, true, second.text);
+  assert.deepEqual(second.structured.fields_written, ["password"], second.text);
+  assert.equal(await valueOf(next, "#password"), PASSWORD, "the new tab gets the password");
+  assert.equal(built.harness.agentSheets() - sheetsBefore, 2, "one sheet per request");
+  assertAgentSawNoPassword(built, first, second);
+  const details = agentFillEntries(await built.harness.audit()).map((e) => e.detail);
+  assert.ok(!details.includes("AGENT_FILL_NO_TARGET"), JSON.stringify(details));
+  assert.ok(details.some((d) => d.startsWith("AGENT_FILL_PENDING_REFUSED")), JSON.stringify(details));
+  await next.close();
+});
 
 test("Safari: autofill through the App Group socket", (t) => {
   // Reported as skipped, never as a failure, and with the steps in the report so the manual pass

@@ -24,7 +24,7 @@ use clap::Parser;
 
 use cli::{
     Cli, Command, EnvCommand, ItemCommand, McpCommand, SharedCommand, SharedEnvCommand,
-    SharedItemCommand, VaultCommand,
+    SharedItemCommand, TestLoginsCommand, VaultCommand,
 };
 use prompt::SecretInput;
 
@@ -73,6 +73,12 @@ fn dispatch(args: &Cli) -> anyhow::Result<u8> {
         Command::Mcp(McpCommand::Path) => commands::mcp::path()?,
         Command::Mcp(McpCommand::Install(a)) => commands::mcp::install(a)?,
         Command::Import(a) => commands::import::import(&path, a, &mut input)?,
+        Command::TestLogins(TestLoginsCommand::List(a)) => {
+            commands::test_logins::list(&path, a, &mut input)?;
+        }
+        Command::TestLogins(TestLoginsCommand::Trash(a)) => {
+            commands::test_logins::trash(&path, a, &mut input)?;
+        }
         Command::Shared(SharedCommand::Create(a)) => {
             commands::shared::create(&path, a, &mut input)?
         }
@@ -369,10 +375,9 @@ mod tests {
             "VaultSchemaTooNew" | "UnsupportedFormatVersion" => cli::EXIT_VAULT_TOO_NEW,
             "VaultNotInConflict" | "NestedTransaction" | "TransactionAborted" | "VaultTooLarge"
             | "BadMagic" | "BodyDecode" | "NoSuchSlot" | "Unsupported" | "KdfFailed"
-            | "NonUtf8EnvValue" | "InvalidEnvFileName" | "EnvFileExists" | "InvalidPath" | "Io"
-            | "Rng" | "Generator" | "Totp" | "DeviceKey" | "MachineVault" | "Spawn" => {
-                cli::EXIT_ERROR
-            }
+            | "NonUtf8EnvValue" | "UnsendableOnStdin" | "InvalidEnvFileName" | "EnvFileExists"
+            | "InvalidPath" | "Io" | "Rng" | "Generator" | "Totp" | "DeviceKey"
+            | "MachineVault" | "Spawn" => cli::EXIT_ERROR,
             other => panic!(
                 "kagisecure_core::Error::{other} has no exit-code mapping in this test's table \
                  (see expected_exit_code in kagisecure-cli's main.rs) or in exit_code_for itself. \

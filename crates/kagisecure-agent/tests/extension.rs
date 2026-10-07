@@ -285,6 +285,7 @@ fn a_real_native_host_fills_a_matched_login_end_to_end() {
             item_id,
             username,
             password,
+            ..
         } => {
             assert_eq!(item_id, &fixture.item_id);
             assert_eq!(username.as_deref(), Some("alice"));
@@ -808,6 +809,7 @@ fn a_username_only_fill_needs_no_approval_and_carries_no_password() {
             item_id,
             username,
             password,
+            ..
         } => {
             assert_eq!(item_id, &fixture.item_id);
             assert_eq!(username.as_deref(), Some("alice"));

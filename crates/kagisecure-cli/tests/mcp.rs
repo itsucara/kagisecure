@@ -416,13 +416,16 @@ fn every_tool_works_end_to_end_and_the_marker_never_reaches_stdout() {
         [
             "add_variables",
             "create_environment",
+            "create_test_login",
             "describe_item",
             "list_environments",
             "list_items",
+            "list_test_logins",
             "list_vaults",
             "request_fill",
             "revoke_env_file",
             "run_with_env",
+            "trash_test_logins",
             "write_env_file",
         ]
     );
@@ -908,7 +911,7 @@ async fn every_tool_through_the_rmcp_client_api() {
         .map(|t| t.name.to_string())
         .collect();
     names.sort();
-    assert_eq!(names.len(), 10, "{names:?}");
+    assert_eq!(names.len(), 13, "{names:?}");
 
     // Everything the client is handed, concatenated, so one assertion covers the lot.
     let mut seen = String::new();
@@ -1012,6 +1015,32 @@ async fn every_tool_through_the_rmcp_client_api() {
         fill["structuredContent"]["code"], "FILL_UNAVAILABLE",
         "{fill}"
     );
+
+    // Agent test logins are personal and interactive (ADR-0048 §12): the headless daemon serves
+    // none of the three tools, and says so with one fixed code, even under --auto-approve.
+    for (name, args) in [
+        (
+            "create_test_login",
+            serde_json::json!({
+                "app": "shop",
+                "purpose": "buyer",
+                "username": "buyer1@example.test",
+                "websites": ["http://localhost:47800"],
+            }),
+        ),
+        ("list_test_logins", serde_json::json!({})),
+        (
+            "trash_test_logins",
+            serde_json::json!({ "tag": "app:shop", "reason": "rebuild" }),
+        ),
+    ] {
+        let reply = call(name, args).await;
+        seen.push_str(&reply.to_string());
+        assert_eq!(
+            reply["structuredContent"]["code"], "TEST_LOGINS_OFF",
+            "{name}: {reply}"
+        );
+    }
 
     assert!(
         !seen.contains(MARKER),

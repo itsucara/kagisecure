@@ -64,7 +64,7 @@ struct KagisecureApp: App {
         guard model.store != nil else { return "lock.fill" }
         let waiting =
             model.agent.status.pendingApprovals > 0 || model.agentFill.unseen > 0
-            || model.unattended.attention > 0
+            || model.unattended.attention > 0 || model.testLogins.createdCount > 0
         return waiting ? "lock.open.trianglebadge.exclamationmark" : "lock.open.fill"
     }
 
@@ -78,6 +78,9 @@ struct KagisecureApp: App {
         if pending > 0 { label += String(localized: ", \(pending) approval(s) waiting") }
         if notices > 0 { label += String(localized: ", \(notices) agent-fill notice(s)") }
         label += armed
+        if model.testLogins.createdCount > 0 {
+            label += String(localized: ", \(model.testLogins.createdCount) test login(s) created by agents")
+        }
         if model.unattended.attention > 0 {
             label += String(localized: ", \(model.unattended.attention) unattended event(s)")
         }
@@ -127,6 +130,13 @@ struct MenuBarPanel: View {
                     model.showAgentFillNotices()
                 }
                 .accessibilityIdentifier("ks.menuBar.agentFillNotices")
+            }
+            if model.testLogins.createdCount > 0 {
+                Button(TestLoginService.menuTitle(count: model.testLogins.createdCount)) {
+                    NSApp.activate(ignoringOtherApps: true)
+                    model.testLogins.acknowledge()
+                }
+                .accessibilityIdentifier("ks.menuBar.testLoginsCreated")
             }
             (agent.status.running
                 ? Text("Serving agents · \(agent.status.activeLeases) active lease(s)")

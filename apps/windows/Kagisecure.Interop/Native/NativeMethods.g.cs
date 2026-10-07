@@ -4038,6 +4038,15 @@ namespace Kagisecure.Interop.Native
         ///  module docs). A host that does receive it denies it.
         /// </summary>
         AgentFill = 5,
+        /// <summary>
+        ///  An agent asks for a test login at a site outside the allowed origins (ADR-0048 §3).
+        ///
+        ///  Here only because the conversion from [`ApprovalAction`] is exhaustive. Agent test logins
+        ///  are macOS only today, so a Windows host never receives this tag in practice, and the facts
+        ///  such a sheet would show are not in [`crate::capi::KgsApprovalRequest`]. A host that does
+        ///  receive it denies it.
+        /// </summary>
+        CreateTestLogin = 6,
     }
 
     /// <summary>

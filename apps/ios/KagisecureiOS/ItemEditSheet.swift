@@ -7,6 +7,8 @@ struct ItemEditSheet: View {
     let done: () -> Void
     @State private var message: String?
     @State private var stale = false
+    @State private var scanning = false
+    @State private var confirmingRemoveNotes = false
 
     var body: some View {
         NavigationStack {
@@ -26,6 +28,15 @@ struct ItemEditSheet: View {
                                 .textInputAutocapitalization(.never)
                                 .autocorrectionDisabled()
                                 .accessibilityIdentifier("edit.totp")
+                                if QRScannerView.canScan {
+                                    Button {
+                                        scanning = true
+                                    } label: {
+                                        Label("Scan QR Code", systemImage: "qrcode.viewfinder")
+                                    }
+                                    .buttonStyle(.borderless)
+                                    .accessibilityIdentifier("edit.totp.scan")
+                                }
                             } else if field.concealed {
                                 HStack {
                                     SecureField(
@@ -71,7 +82,15 @@ struct ItemEditSheet: View {
                             .accessibilityIdentifier("edit.notes")
                     }
                     if model.hasStoredNotes {
-                        Toggle("Remove Note", isOn: $model.removeNotes)
+                        Toggle("Remove Note", isOn: Binding(
+                            get: { model.removeNotes },
+                            set: { on in
+                                if on && model.removeNotesNeedsConfirmation {
+                                    confirmingRemoveNotes = true
+                                } else {
+                                    model.setRemoveNotes(on)
+                                }
+                            }))
                             .accessibilityIdentifier("edit.removeNotes")
                     }
                 } header: {
@@ -86,6 +105,14 @@ struct ItemEditSheet: View {
                     Button("Save", action: save).accessibilityIdentifier("edit.save")
                 }
             }
+            .confirmationDialog(
+                "Discard the note you typed?", isPresented: $confirmingRemoveNotes, titleVisibility: .visible
+            ) {
+                Button("Discard and Remove Note", role: .destructive) { model.setRemoveNotes(true) }
+                    .accessibilityIdentifier("edit.confirmRemoveNotes")
+            } message: {
+                Text("Removing the note also discards what you typed here.")
+            }
             .alert("Changed elsewhere – reload", isPresented: $stale) {
                 Button("Reload") {
                     if let fresh = store.item(id: model.itemId) {
@@ -99,6 +126,26 @@ struct ItemEditSheet: View {
             .alert("Error", isPresented: .constant(message != nil)) {
                 Button("OK") { message = nil }
             } message: { Text(message ?? "") }
+        }
+        .sheet(isPresented: $scanning) {
+            NavigationStack {
+                QRScannerView { payload in
+                    scanning = false
+                    do {
+                        try model.applyScannedTotp(payload)
+                    } catch {
+                        message = error.localizedDescription
+                    }
+                }
+                .ignoresSafeArea()
+                .navigationTitle("Scan QR Code")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { scanning = false }
+                    }
+                }
+            }
         }
         .interactiveDismissDisabled()
     }

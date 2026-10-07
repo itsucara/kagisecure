@@ -114,10 +114,84 @@ struct NotesTests {
         #expect(try await store.revealNotes(kept) == "remember this")
 
         var remove = ItemEditModel(item: kept)
-        remove.removeNotes = true
+        remove.setRemoveNotes(true)
         #expect(remove.draft.notes == "")
         let removed = try store.save(remove.draft)
         #expect(!removed.hasNotes)
+    }
+}
+
+@MainActor
+struct ResidualTests {
+    @Test func emptyTrashAttemptsEveryItemAndReportsFailures() async throws {
+        let (model, _) = await makeUnlockedModel()
+        let store = try #require(model.store)
+        for t in ["A", "B", "C"] { try store.delete(try store.create(category: "login", title: t)) }
+        var attempted: [String] = []
+        let error = #expect(throws: EmptyTrashError.self) {
+            try store.emptyTrash { item in
+                attempted.append(item.title)
+                if item.title == "A" { throw FfiError.Invalid(message: "boom") }
+                let current = try store.session.item(itemId: item.id)
+                try store.session.deleteItem(itemId: item.id, revision: current.revision)
+            }
+        }
+        #expect(attempted.sorted() == ["A", "B", "C"])
+        #expect(error?.failures.map(\.title) == ["A"])
+        #expect(error?.errorDescription?.contains("A") == true)
+        #expect(store.trashedItems.map(\.title) == ["A"])
+        try store.emptyTrash()
+        #expect(store.trashedItems.isEmpty)
+    }
+
+    @Test func addedButEmptyTotpFieldIsNotSaved() async throws {
+        let (model, _) = await makeUnlockedModel()
+        let store = try #require(model.store)
+        let item = try store.create(category: "login", title: "Site")
+        let before = item.fields.filter { $0.kind == .totp }.count
+        var edit = ItemEditModel(item: item)
+        edit.addTotpField()
+        #expect(edit.draft.fields.filter { $0.kind == .totp }.count == before)
+        let saved = try store.save(edit.validatedDraft())
+        #expect(saved.fields.filter { $0.kind == .totp }.count == before)
+        edit.fields[edit.fields.count - 1].newValue = "   "
+        #expect(edit.draft.fields.filter { $0.kind == .totp }.count == before)
+        edit.fields[edit.fields.count - 1].newValue = TotpTests.rfcSecret
+        #expect(edit.draft.fields.filter { $0.kind == .totp }.count == before + 1)
+    }
+
+    @Test func removeNoteNeedsConfirmationAndClearsTypedNote() async throws {
+        let (model, _) = await makeUnlockedModel()
+        let store = try #require(model.store)
+        var first = ItemEditModel(item: try store.create(category: "login", title: "Site"))
+        first.newNotes = "old"
+        let saved = try store.save(first.draft)
+        var edit = ItemEditModel(item: saved)
+        #expect(!edit.removeNotesNeedsConfirmation)
+        edit.newNotes = "typed"
+        #expect(edit.removeNotesNeedsConfirmation)
+        edit.setRemoveNotes(true)
+        #expect(edit.newNotes.isEmpty && edit.removeNotes)
+        #expect(edit.draft.notes == "")
+    }
+
+    @Test func foregroundSyncRunsOnlyWhenSomethingIsLinked() async throws {
+        let (model, _) = await makeUnlockedModel()
+        let store = try #require(model.store)
+        #expect(await store.link.syncOnForeground() == false)
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("ks-fg-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        try store.link.folders.remember(folder)
+        #expect(await store.link.syncOnForeground() == true)
+        #expect(store.link.lastSynced != nil)
+        // Right after our own sync: inside the write-back window, so no second sync.
+        #expect(await store.link.syncOnForeground() == false)
+    }
+
+    @Test func folderPathsAreComparedNormalized() {
+        #expect(LinkModel.samePath("/private/var/tmp", "/var/tmp"))
+        #expect(LinkModel.samePath("/a/b/../c/", "/a/c"))
+        #expect(!LinkModel.samePath("/a/c", "/a/d"))
     }
 }
 
@@ -129,5 +203,59 @@ struct LocalizationTests {
         #expect(ja.localizedString(forKey: "Trash", value: nil, table: nil) == "ゴミ箱")
         #expect(ja.localizedString(forKey: "Sync Now", value: nil, table: nil) == "今すぐ同期")
         #expect(ja.localizedString(forKey: "Delete Permanently", value: nil, table: nil) == "完全に削除")
+    }
+}
+
+struct AutoLockTests {
+    @Test func locksOnlyAfterTheChosenTime() {
+        #expect(!AutoLock.shouldLock(away: .seconds(59), seconds: 60))
+        #expect(AutoLock.shouldLock(away: .seconds(60), seconds: 60))
+        #expect(AutoLock.shouldLock(away: .milliseconds(1), seconds: 0))
+        #expect(AutoLock.shouldLock(away: .zero, seconds: -5))
+    }
+
+    @Test func awayTimeComesFromAClockThatCannotBeWoundBack() {
+        // The instant is ContinuousClock's, not the wall clock's: elapsed time is never negative.
+        let start = ContinuousClock.now
+        #expect(ContinuousClock.now - start >= .zero)
+    }
+}
+
+@MainActor
+struct TotpScanTests {
+    static let uri = "otpauth://totp/Example:alice?secret=JBSWY3DPEHPK3PXP&issuer=Example"
+
+    @Test func scannedURIFillsTheOneTimePasswordField() async throws {
+        var model = ItemEditModel(item: try await emptyItem())
+        try model.applyScannedTotp("  \(Self.uri)\n")
+        #expect(model.fields.filter { $0.kind == .totp }.map(\.newValue) == [Self.uri])
+        // Scanning again replaces the setup instead of adding a second field.
+        try model.applyScannedTotp(Self.uri.replacingOccurrences(of: "alice", with: "bob"))
+        #expect(model.fields.filter { $0.kind == .totp }.count == 1)
+        #expect(try model.validatedDraft().fields.first { $0.kind == .totp }?.value?.contains("bob") == true)
+    }
+
+    @Test func googleAuthenticatorExportIsRejectedWithItsOwnMessage() async throws {
+        var model = ItemEditModel(item: try await emptyItem())
+        let before = model
+        #expect(throws: TotpScanError.migrationExport) {
+            try model.applyScannedTotp("otpauth-migration://offline?data=CjEKCkhlbGxvId6tvu8")
+        }
+        #expect(model == before)
+        #expect(TotpScanError.migrationExport.errorDescription?.contains("Google Authenticator") == true)
+    }
+
+    @Test func otherQRCodesAreRejected() async throws {
+        var model = ItemEditModel(item: try await emptyItem())
+        let before = model
+        #expect(throws: TotpScanError.notOneTimePassword) { try model.applyScannedTotp("https://example.com") }
+        #expect(throws: TotpScanError.notOneTimePassword) { try model.applyScannedTotp("otpauth://totp/x?secret=!!") }
+        #expect(model == before)
+    }
+
+    private func emptyItem() async throws -> ItemView {
+        let (model, _) = await makeUnlockedModel()
+        let store = try #require(model.store)
+        return try store.create(category: "login", title: "Example")
     }
 }

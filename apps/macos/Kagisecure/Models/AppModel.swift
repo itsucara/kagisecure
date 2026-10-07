@@ -107,6 +107,9 @@ final class AppModel {
     /// itself is `agent`'s, on the same queue as every other approval.
     let agentFill: AgentFillService
 
+    /// Agent test logins' switch, allowed domains and notice (ADR-0048).
+    let testLogins: TestLoginService
+
     /// Unattended jobs (ADR-0042 Phase 3): the engine is started at launch, and re-armed from the
     /// Keychain, whether or not the vault is ever unlocked.
     let unattended: UnattendedService
@@ -163,6 +166,7 @@ final class AppModel {
         self.presence = presence
         self.agent = AgentService(presence: presence)
         self.agentFill = AgentFillService(presence: presence)
+        self.testLogins = TestLoginService(presence: presence)
         self.unattended = UnattendedService(presence: presence)
         self.credentialProvider = CredentialProviderService(presence: presence)
         let panel = masterPasswordPanel
@@ -190,6 +194,7 @@ final class AppModel {
         browserPrompt.bind(browserExtension)
         // Agent-fill notices are drained on the same tick (ADR-0036 implementation decision 11).
         agent.agentFill = agentFill
+        agent.testLogins = testLogins
         // The switch the user chose, pushed to Rust's in-memory flag (off in every new process)
         // at launch. Pushed again on every unlock, in `adopt`, before either listener starts.
         agentFill.applyStoredSwitch()
@@ -347,6 +352,7 @@ final class AppModel {
         // Before either listener starts, so no `request_fill` reaches the broker under a flag other
         // than the one the user set (ADR-0036 implementation decision 12).
         agentFill.applyStoredSwitch()
+        testLogins.attach(session)
         // Serving agents is the whole of M4, and it starts the moment there is a key to serve
         // with. A failure to bind is not fatal — the vault still works — so it is recorded on the
         // service and shown in Agent access rather than raised as a modal.
@@ -409,6 +415,7 @@ final class AppModel {
         browserPrompt.vaultLocked()
         // The recent agent-fill notices name items; they go with the key. Blocks stay (Rust's).
         agentFill.vaultLocked()
+        testLogins.vaultLocked()
         // What was read from the machine vault goes with the key; armed jobs keep running.
         unattended.vaultLocked()
         credentialProvider.vaultLocked()
@@ -508,8 +515,13 @@ final class AppModel {
 
     func newItem(category: String) {
         guard let store else { return }
-        perform { try store.createItem(category: category) }
-        editRequest += 1
+        var created = false
+        perform {
+            try store.createItem(category: category)
+            created = true
+        }
+        // A refused create (e.g. a shared vault that is not open) opens no editor.
+        if created { editRequest += 1 }
     }
 
     func beginEditingSelection() {

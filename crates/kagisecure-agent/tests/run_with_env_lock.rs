@@ -85,6 +85,7 @@ fn locking_kills_a_run_with_env_child_and_its_grandchild_within_the_grace_period
         variables: None,
         timeout_seconds: 60,
         output: OutputMode::Scrubbed,
+        delivery: kagisecure_ipc::protocol::Delivery::Environment,
     };
 
     let (tx, rx) = mpsc::channel();
@@ -203,6 +204,7 @@ fn a_socket_level_lock_kills_a_running_child_before_the_host_ever_takes_the_vaul
         variables: None,
         timeout_seconds: 60,
         output: OutputMode::Scrubbed,
+        delivery: kagisecure_ipc::protocol::Delivery::Environment,
     };
 
     let (tx, rx) = mpsc::channel();

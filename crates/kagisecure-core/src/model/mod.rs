@@ -39,9 +39,87 @@ pub struct VaultMeta {
     /// Unix seconds.
     #[serde(default)]
     pub created_at: u64,
+    /// What this logical vault is for, when it is not an ordinary vault of the person's: today
+    /// only the agent test-login vault of ADR-0048 §2. A vault is recognised by this key, never
+    /// by its name, which the person may change.
+    ///
+    /// Additive, `#[serde(default)]` and skipped when `None`, so an ordinary vault encodes exactly
+    /// as it did before the key existed (vault-format §9).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub purpose: Option<VaultPurpose>,
     /// Top-level keys this build does not recognize, preserved verbatim (vault-format §9 rule 1).
     #[serde(flatten)]
     pub unknown: BTreeMap<String, ciborium::Value>,
+}
+
+/// What a logical vault is for ([`VaultMeta::purpose`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum VaultPurpose {
+    /// The one personal vault agent test logins live in (ADR-0048 §2), with the policy that
+    /// governs them (§1, §3). The policy lives here, inside the encrypted body, rather than in
+    /// app defaults, so every change to it is a transactional, audited vault write.
+    AgentTestLogins(TestLoginPolicy),
+    /// A purpose a newer build wrote that this one does not know, kept verbatim so rewriting the
+    /// vault does not destroy it (vault-format §9 rule 1). A vault with it is an ordinary vault
+    /// to this build.
+    Unknown(ciborium::Value),
+}
+
+/// The encoding of the purposes this build knows.
+#[derive(Serialize, Deserialize)]
+enum KnownPurpose<P> {
+    AgentTestLogins(P),
+}
+
+impl Serialize for VaultPurpose {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::AgentTestLogins(policy) => {
+                KnownPurpose::AgentTestLogins(policy).serialize(serializer)
+            }
+            Self::Unknown(value) => value.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for VaultPurpose {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = ciborium::Value::deserialize(deserializer)?;
+        Ok(
+            match value.deserialized::<KnownPurpose<TestLoginPolicy>>() {
+                Ok(KnownPurpose::AgentTestLogins(policy)) => Self::AgentTestLogins(policy),
+                Err(_) => Self::Unknown(value),
+            },
+        )
+    }
+}
+
+/// The agent test-login policy (ADR-0048 §1, §3): the Settings switch and the registrable
+/// domains the person allowed beside the loopback and reserved names that are always allowed.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TestLoginPolicy {
+    /// "Agent test logins" in Settings. Off by default; with it off nothing creates, lists or
+    /// fills a test login on an agent's behalf.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Registrable domains (eTLD+1, lower-case ASCII) the person added, where a create or a fill
+    /// of a sealed item needs no sheet.
+    #[serde(default)]
+    pub auto_domains: Vec<String>,
+    /// Keys this build does not recognize, preserved verbatim (vault-format §9 rule 1).
+    #[serde(flatten)]
+    pub unknown: BTreeMap<String, ciborium::Value>,
+}
+
+impl VaultMeta {
+    /// The test-login policy, when this is the agent test-login vault.
+    #[must_use]
+    pub fn test_login_policy(&self) -> Option<&TestLoginPolicy> {
+        match &self.purpose {
+            Some(VaultPurpose::AgentTestLogins(policy)) => Some(policy),
+            _ => None,
+        }
+    }
 }
 
 impl VaultMeta {
@@ -54,6 +132,7 @@ impl VaultMeta {
             agent_visible: false,
             new_items_agent_visible: true,
             created_at: crate::unix_now(),
+            purpose: None,
             unknown: BTreeMap::new(),
         }
     }

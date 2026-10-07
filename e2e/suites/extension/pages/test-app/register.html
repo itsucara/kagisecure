@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Create account</title>
+<h1>Create account</h1>
+<form method="post" action="/register">
+  <label for="username">Email or username</label>
+  <input id="username" name="username" type="text" autocomplete="username" />
+  <label for="password">Password</label>
+  <input id="password" name="password" type="password" autocomplete="new-password" />
+  <label for="confirm">Confirm password</label>
+  <input id="confirm" name="confirm" type="password" autocomplete="new-password" />
+  <button type="submit">Create account</button>
+</form>
+<p><a href="/login">Already have an account? Sign in</a></p>

@@ -37,6 +37,7 @@ use kagisecure_core::model::{Field, Item};
 use kagisecure_extension_ipc::protocol::{FillField, FillValue, Response};
 
 use crate::approval::{ApprovalKind, Grant};
+use crate::test_login::TestLoginPass;
 use crate::unattended::login::StandingPass;
 
 /// The field name a one-time-code request is approved and audited under.
@@ -49,10 +50,12 @@ const AGENT_CODE_FIELD: &str = "one_time_code";
 
 /// A fill somebody granted, and the scope they granted it for.
 ///
-/// Two constructors, and fields private to this module, so the parent module cannot build one
-/// with a struct literal either: [`Self::from_grant`], from a person's grant, and — for a
+/// Three constructors, and fields private to this module, so the parent module cannot build one
+/// with a struct literal either: [`Self::from_grant`], from a person's grant; — for a
 /// machine-vault login under a standing login grant, with nobody present (ADR-0042 §12.6) —
-/// [`Self::from_standing`], from a [`StandingPass`] only the unattended engine can make.
+/// [`Self::from_standing`], from a [`StandingPass`] only the unattended engine can make; and — for
+/// a sealed agent test login at an allowed origin (ADR-0048 §7) — [`Self::from_test_login`], from
+/// a [`TestLoginPass`] only `crate::test_login` can make.
 #[derive(Debug)]
 pub(super) struct Approved {
     /// Which path asked for it: the human's own fill or an agent's.
@@ -72,6 +75,9 @@ pub(super) struct Approved {
     reviewed_earlier: bool,
     /// The standing login grant and run this fill is released under, when no person granted it.
     standing: Option<String>,
+    /// Whether this fill is a sealed agent test login's, released with no sheet (ADR-0048 §7).
+    /// The release re-checks the seal, the switch and the origin inside its transaction.
+    test_login: bool,
 }
 
 impl Approved {
@@ -110,6 +116,7 @@ impl Approved {
             fields: grant.fill_fields().to_vec(),
             reviewed_earlier: grant.presence_only(),
             standing: None,
+            test_login: false,
         })
     }
 
@@ -134,7 +141,39 @@ impl Approved {
             fields: pass.fields().to_vec(),
             reviewed_earlier: false,
             standing: Some(pass.label().to_owned()),
+            test_login: false,
         })
+    }
+
+    /// Turn a test-login pass into permission for one crossing of `fields` from `item_id` at
+    /// `origin` — the third constructor, ADR-0048 §7's `Approved::from_test_login`: the shape of
+    /// [`Self::from_standing`], and as separate from a person's grant. It never fakes a
+    /// [`Grant`]. The pass exists only for a sealed item of the test-login vault at an origin
+    /// §3 allows, with the switch on ([`TestLoginPass::for_fill`]), so no other item can reach
+    /// here. `None` when the pass does not cover what is asked.
+    pub(super) fn from_test_login(
+        pass: TestLoginPass,
+        origin: &str,
+        item_id: &str,
+        fields: &[String],
+    ) -> Option<Self> {
+        let covers = pass.origin() == origin
+            && pass.item_id() == item_id
+            && fields.iter().all(|f| pass.fields().contains(f));
+        covers.then(|| Self {
+            kind: ApprovalKind::AgentFill,
+            origin: origin.to_owned(),
+            item_id: item_id.to_owned(),
+            fields: pass.fields().to_vec(),
+            reviewed_earlier: false,
+            standing: None,
+            test_login: true,
+        })
+    }
+
+    /// Whether this is a sealed test login's fill, released with no sheet (ADR-0048 §7).
+    pub(super) fn test_login(&self) -> bool {
+        self.test_login
     }
 
     /// The standing grant and run this fill is released under, if no person granted it.
@@ -219,6 +258,40 @@ pub(super) fn username_only(
         &[FillField::Username],
         Some(username),
         None,
+    ))
+}
+
+/// Build the `Filled` reply for an approved sign-up fill of a sealed test login (ADR-0048 §7):
+/// the item's password as `new_password`, and the username when the approval names it. Never a
+/// `password` member.
+///
+/// By value and inside the committing transaction, for the reasons [`filled`] gives. `None` when
+/// the approval is not an agent fill's or does not name `new_password` (and the username, if
+/// asked), the item is not a sealed test login in `vault`, or it has no password.
+pub(super) fn sign_up_filled(
+    approved: Approved,
+    vault: &kagisecure_core::vault::Vault,
+    item: &Item,
+    with_username: bool,
+    username: Option<String>,
+) -> Option<Response> {
+    let names: &[&str] = if with_username {
+        &["username", "new_password"]
+    } else {
+        &["new_password"]
+    };
+    if approved.kind != ApprovalKind::AgentFill
+        || !approved.covers(item, names)
+        || !vault.test_login_sealed(item)
+    {
+        return None;
+    }
+    let username = if with_username { Some(username?) } else { None };
+    Some(Response::filled_sign_up(
+        item.id.to_string(),
+        with_username,
+        username,
+        FillValue::new(password_of(item)?),
     ))
 }
 
@@ -498,6 +571,27 @@ mod tests {
             1,
             "one constructor sets `standing`: from_standing"
         );
+        assert_eq!(
+            crossing
+                .matches(["test_login", ": true"].concat().as_str())
+                .count(),
+            1,
+            "one constructor sets `test_login`: from_test_login"
+        );
+        for (file, text) in [
+            ("extension.rs", include_str!("../extension.rs")),
+            ("extension/agent_fill.rs", include_str!("agent_fill.rs")),
+            ("service.rs", include_str!("../service.rs")),
+            (
+                "unattended/service.rs",
+                include_str!("../unattended/service.rs"),
+            ),
+        ] {
+            assert!(
+                !text.contains(["TestLoginPass", " {"].concat().as_str()),
+                "{file} builds a test-login pass: only test_login/mod.rs may"
+            );
+        }
     }
 
     #[test]
@@ -531,6 +625,13 @@ mod tests {
             (
                 "unattended/browser.rs",
                 include_str!("../unattended/browser.rs"),
+            ),
+            // Agent test logins (ADR-0048): the pass that stands in for a person's grant, and the
+            // service code that generates the password, never open a value either.
+            ("test_login/mod.rs", include_str!("../test_login/mod.rs")),
+            (
+                "test_login/limits.rs",
+                include_str!("../test_login/limits.rs"),
             ),
         ] {
             for needle in SECRET_READS.into_iter().chain([

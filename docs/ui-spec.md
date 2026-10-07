@@ -628,6 +628,7 @@ no covering lease exists.
 | Git status | If the target is inside a git work tree not covered by `.gitignore`: a red "Not gitignored" callout. **The one-click "Add to `.gitignore`" button is not built** — writing to a user's repository from inside an approval dialog wants its own design, particularly about *which* `.gitignore` in a nested work tree. |
 | TTL / uses | The requested lease TTL (default 15 min) and use count, shown as an editable control — the user may shorten TTL but not lengthen it beyond the tool's max (mcp-server.md §5). *(As built: a slider plus a minutes field and stepper bound to the same TTL, from one minute up to what the caller asked for; a number typed outside that is taken as the nearer bound. It sits in the sheet's fixed footer, directly above the buttons — never in the scrolling part — because it is "Allow for this session"'s argument and must be on screen whenever that button is.)* |
 | Scope summary | One line: "This grants access to `DATABASE_URL`, `STRIPE_SECRET_KEY` in `~/code/acme` for 15 minutes, up to 10 uses." |
+| Stdin delivery | For `run_with_env` with `delivery: "stdin"` ([ADR-0047](decisions/0047-stdin-delivery.md)): the sentence reads "“Claude Code” wants to pass 4 values from `‹environment›` to `‹command›` on its standard input, once"; under the command, a caption says the values are written to its standard input once, not placed in its environment or arguments, and that the command can do anything with what it reads; there is no TTL control, the summary is "This passes `A`, `B` to this one run of the command. The next run asks again.", and **Allow for this session** is not shown. The Touch ID prompt reads "approve passing 4 values from ‹environment› to ‹program› on its standard input, once". |
 
 ### 10.3 Actions
 
@@ -849,7 +850,7 @@ login, now. Same queue and 60-second countdown as §10.1–§10.3; its own layou
 - **§8.2's sentence, verbatim**, where the other sheets say what is not shown to the caller —
   because on this path an agent that can run script in the page *can* read the value there, and
   approving is done knowing that.
-- **Two variants, for the two other shapes a request can take** (ADR-0036 §7.3, §7.4):
+- **Variants, for the other shapes a request can take** (ADR-0036 §7.3, §7.4; ADR-0048 §7):
   - **An identifier-first, two-page sign-in** (`AgentFillFactsView.twoStep`) keeps the same
     headline, and adds a line under it and §8.2's sentence: *"The username is filled now. The
     password follows on the next page of the same site, without asking you again. This approval
@@ -861,6 +862,10 @@ login, now. Same queue and 60-second countdown as §10.1–§10.3; its own layou
     'Example (work)' on login.example.com"*. The Fill row says *"a one-time code — not the
     password"*. The Allow button is unchanged — *"Fill on example.com…"* — since it still names
     the site, not the field.
+  - **A sign-up fill** of an agent test login (ADR-0048 §7, `fields` naming `.newPassword`) keeps
+    the headline; the Fill row says *"username and a new password (create account)"*, or *"a new
+    password (create account)"* without the username. In a field list the member reads *"new
+    password"*. At an allowed origin this fill raises no sheet at all; elsewhere it is this sheet.
   - The Touch ID prompt behind the button (§5) names the same distinction in its own sentence —
     a plain sign-in, "the password on the next page without asking again", or "the one-time code"
     — always the site and the item, never the agent's name.
@@ -986,6 +991,32 @@ username · first website — with logins for the requested site first, **Cancel
 
 **Settings › Security & Unlock › Confirmation:** "Always show the AutoFill sheet in other apps"
 (`ks.settings.nativeAutofillRequiresConfirmation`, `nativeAutofillRequiresConfirmation`, off).
+
+### 10.10 Agent test logins *(built on macOS, [ADR-0048](decisions/0048-agent-test-logins.md) Phase 1a)*
+
+**Settings › AI Agents › Agent test logins.** A switch, "Let agents create test logins"
+(`ks.settings.agentTestLogins`), off by default. Turning it on asks for Touch ID or the login
+password and then creates the "Agent test logins" vault; turning it off asks nothing. While on, a
+list shows the registrable domains allowed without a sheet (localhost, `*.localhost` and `*.test`
+are always allowed), each with Remove, and a field with **Add...** (presence every time). The
+section footer is the honest wording: kagisecure never returns the password, but an agent that
+runs script in the page, chooses the command or controls the app under test can read it, which is
+accepted for random test values.
+
+**The create sheet** (the generic approval sheet, no lease, no "Allow for this session"): the
+agent's identity block, then each website with its registrable domain large above the full URL
+(host dimmed, domain underlined), the near-host and not-encrypted flags, then Title, Username,
+Purpose and Reason (both labelled "as written by the agent"), and the generator summary. Allow is
+Touch ID every time; the presence grace never covers it.
+
+**The notice.** Each create posts a system notification, "“Claude Code” created test login
+“test: shop / buyer #1” for localhost:47800", and the menu-bar menu shows "N test logins created
+by agents" until it is used. Nothing is asked of the person. A `run_with_env` or `write_env_file`
+request bound only to test logins skips its sheet inside the grace window and is the ordinary
+sheet plus Touch ID outside it.
+
+**In the app.** Items in the test vault are not offered by system AutoFill, and their password
+field in the editor offers only **Regenerate** (`ks.edit.fieldRegenerate.<label>`).
 
 ## 11. Keyboard shortcuts
 
@@ -1665,6 +1696,10 @@ rows: its name, with its item count, which shows its items in the usual three co
 **+** menu has **New Shared Vault…** and **Join Shared Vault…**. A vault row's context menu has
 **Invite…** (admins), **Members**, **Sync Now** and **Show Folder in Finder** (when it has a
 folder).
+
+With no shared vault yet, the section is not left empty: it shows two rows, **New Shared Vault…**
+and **Join Shared Vault…**, which open the same sheets as the **+** menu (§16.2, §16.3). They
+disappear once the first vault is created or joined.
 
 While a shared vault is selected the window's title is its name and the status line reads
 "Shared · *n* items · *m* members". A vault whose copy on this Mac does not open shows a warning

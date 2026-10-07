@@ -168,6 +168,9 @@ pub fn run(path: &Path, args: &DaemonArgs, input: &mut SecretInput) -> Result<()
         // Nor does it serve agent fills: with no broker, every `request_fill` is
         // `FILL_UNAVAILABLE` before anything is looked up (ADR-0036 §3.1).
         agent_fill: None,
+        // Nor agent test logins, which are personal and interactive (ADR-0048 §12): with no
+        // broker, both test-login tools answer `TEST_LOGINS_OFF`.
+        test_logins: None,
     };
     let agent = Agent::start(Arc::clone(&handle), &config)
         .context("could not start the kagisecure agent")?;
@@ -244,6 +247,12 @@ fn decide(
         uses: request.requested_uses,
     };
     match mode {
+        // A test login is personal and interactive (ADR-0048 §12): never approved unseen.
+        ApprovalMode::AutoApprove if request.kind == ApprovalKind::CreateTestLogin => {
+            println!("kagisecure daemon: refusing create_test_login (never auto-approved)");
+            let _ = std::io::stdout().flush();
+            return Decision::Deny;
+        }
         ApprovalMode::AutoApprove => {
             println!(
                 "kagisecure daemon: auto-approving {} (debug build, --auto-approve)",
@@ -328,7 +337,11 @@ fn stdin_lines() -> Arc<Mutex<Receiver<String>>> {
 fn print_prompt(request: &ApprovalRequest) {
     println!();
     println!("  ┌─ kagisecure approval ─────────────────────────────────────────");
-    println!("  │ A caller wants to {}.", what(request.kind));
+    if request.stdin_delivery {
+        println!("  │ A caller wants to pass secrets to a command's standard input, once.");
+    } else {
+        println!("  │ A caller wants to {}.", what(request.kind));
+    }
     println!("  │");
     println!("  │ caller      {}", caller_line(request));
     if let Some(cwd) = request.client_cwd.as_deref() {
@@ -340,7 +353,12 @@ fn print_prompt(request: &ApprovalRequest) {
     println!("  │");
     println!("  │ No secret value is shown to the caller either way.");
     println!("  └───────────────────────────────────────────────────────────────");
-    print!("  Allow? [y = this session / o = once / N = deny] ");
+    if request.stdin_delivery {
+        // One approval, one run (ADR-0047): there is no session to offer.
+        print!("  Allow this one run? [o = once / N = deny] ");
+    } else {
+        print!("  Allow? [y = this session / o = once / N = deny] ");
+    }
     let _ = std::io::stdout().flush();
 }
 
@@ -357,6 +375,9 @@ fn what(kind: ApprovalKind) -> &'static str {
         // error here too.
         ApprovalKind::FillCredential => "fill a credential into a web page",
         ApprovalKind::AgentFill => "have a login typed into a browser tab",
+        // Unreachable for the same reason: with no test-login broker, `create_test_login` is
+        // `TEST_LOGINS_OFF` before any sheet (ADR-0048 §12).
+        ApprovalKind::CreateTestLogin => "create a test login whose password kagisecure generates",
     }
 }
 
@@ -419,7 +440,11 @@ fn facts(request: &ApprovalRequest) -> Vec<String> {
     if !request.variables.is_empty() {
         facts.push(format!("variables   {}", request.variables.join(", ")));
     }
-    if request.kind.mints_lease() {
+    if request.stdin_delivery {
+        facts.push(
+            "delivery    standard input, this one run only; not in its environment".to_owned(),
+        );
+    } else if request.kind.mints_lease() {
         facts.push(format!(
             "for         {} s, up to {} uses",
             request.requested_ttl_seconds, request.requested_uses
@@ -546,6 +571,18 @@ mod tests {
                 ttl_seconds: 900,
                 uses: 10
             }
+        );
+    }
+
+    #[test]
+    fn auto_approve_never_creates_a_test_login() {
+        let request = ApprovalRequest {
+            kind: ApprovalKind::CreateTestLogin,
+            ..write_request()
+        };
+        assert_eq!(
+            decide(ApprovalMode::AutoApprove, None, &request),
+            Decision::Deny
         );
     }
 

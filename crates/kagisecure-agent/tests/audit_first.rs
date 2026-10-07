@@ -66,6 +66,7 @@ fn run(fx: &Fixture, command: &str, args: &[&str], timeout_seconds: u64) -> Requ
         variables: None,
         timeout_seconds,
         output: OutputMode::Scrubbed,
+        delivery: kagisecure_ipc::protocol::Delivery::Environment,
     }
 }
 

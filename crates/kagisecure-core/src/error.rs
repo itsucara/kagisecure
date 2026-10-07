@@ -196,6 +196,15 @@ pub enum Error {
     #[error("the value of {0:?} is not valid UTF-8 and cannot be placed in a process environment")]
     NonUtf8EnvValue(String),
 
+    /// A value was to be written to a child's standard input (ADR-0047) but cannot be framed:
+    /// it contains a NUL byte, which is the frame's separator, or the values together pass
+    /// [`crate::inject::MAX_STDIN_PAYLOAD`]. Carries the variable's name, never the value.
+    #[error(
+        "the value of {0:?} cannot be passed on standard input (it contains a NUL byte, or the \
+         values together are longer than 8 KiB)"
+    )]
+    UnsendableOnStdin(String),
+
     /// A `.env` file name was not a plain file name.
     #[error("{0:?} is not a usable file name for a .env file")]
     InvalidEnvFileName(String),
@@ -367,6 +376,7 @@ impl Error {
             ),
             ("NotASecret", Error::NotASecret(s())),
             ("NonUtf8EnvValue", Error::NonUtf8EnvValue(s())),
+            ("UnsendableOnStdin", Error::UnsendableOnStdin(s())),
             ("InvalidEnvFileName", Error::InvalidEnvFileName(s())),
             ("EnvFileExists", Error::EnvFileExists(p())),
             ("InvalidPath", Error::InvalidPath(p())),
@@ -425,6 +435,7 @@ impl Error {
                 | Error::FieldNotFound { .. }
                 | Error::NotASecret(_)
                 | Error::NonUtf8EnvValue(_)
+                | Error::UnsendableOnStdin(_)
                 | Error::InvalidEnvFileName(_)
                 | Error::EnvFileExists(_)
                 | Error::InvalidPath(_)

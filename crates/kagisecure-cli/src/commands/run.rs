@@ -6,7 +6,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 use kagisecure_core::audit::AuditDraft;
-use kagisecure_core::inject::{EnvInjection, RunRequest, run_with_env};
+use kagisecure_core::inject::{Delivery, EnvInjection, RunRequest, run_with_env};
 use kagisecure_core::model::{FieldValue, Secret};
 use kagisecure_core::proto::{Outcome, VarName};
 use kagisecure_core::{Error, Vault};
@@ -138,6 +138,7 @@ pub fn run(path: &Path, args: &RunArgs, input: &mut SecretInput) -> Result<u8> {
         program,
         args: rest,
         env: &injections,
+        delivery: Delivery::Environment,
         cwd: args.cwd.as_deref(),
         mask_output: !args.no_masking,
         max_output: kagisecure_core::inject::DEFAULT_MAX_OUTPUT,

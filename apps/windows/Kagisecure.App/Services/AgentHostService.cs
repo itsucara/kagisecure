@@ -78,6 +78,13 @@ public sealed partial class AgentHostService : ObservableObject, IDisposable
     public const string AgentFillUnsupportedEvidence =
         "agent-requested browser fills are not offered on Windows";
 
+    /// <summary>
+    /// Evidence recorded for a test-login create (ADR-0048), which Windows never offers: denied on
+    /// arrival, never shown, never granted.
+    /// </summary>
+    public const string TestLoginUnsupportedEvidence =
+        "agent test logins are not offered on Windows";
+
     /// <summary>Evidence recorded for a request retired because its window closed.</summary>
     public const string ExpiredEvidence = "the request expired before it was answered";
 
@@ -419,6 +426,12 @@ public sealed partial class AgentHostService : ObservableObject, IDisposable
         if (request.Action == ApprovalAction.AgentFill)
         {
             DenyUnseen(request, AgentFillUnsupportedEvidence);
+            return;
+        }
+
+        if (request.Action == ApprovalAction.CreateTestLogin)
+        {
+            DenyUnseen(request, TestLoginUnsupportedEvidence);
             return;
         }
 

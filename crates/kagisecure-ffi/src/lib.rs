@@ -102,10 +102,10 @@ pub use shared::{
     SharedRosterWarning, SharedSyncSummary, SharedVaultSession, SharedVaultSummary,
 };
 pub use types::{
-    AgentVisibilityScopeView, BulkVisibilityView, CategoryInfo, DivergedFileView, EnvVarView,
-    EnvironmentView, FieldDraft, FieldKind, FieldView, ItemDraft, ItemFilter, ItemSort, ItemView,
-    KeepAppVersionOutcome, SidebarCounts, TagCount, UnlockKind, VarBinding,
-    VaultConflictDetailsView, VaultConflictKindView, VaultView,
+    AgentTestLoginSettingsView, AgentVisibilityScopeView, BulkVisibilityView, CategoryInfo,
+    DivergedFileView, EnvVarView, EnvironmentView, FieldDraft, FieldKind, FieldView, ItemDraft,
+    ItemFilter, ItemSort, ItemView, KeepAppVersionOutcome, SidebarCounts, TagCount, UnlockKind,
+    VarBinding, VaultConflictDetailsView, VaultConflictKindView, VaultView,
 };
 pub use unattended::{
     UnattendedNoticeView, UnattendedPresence, UnattendedRunView, UnattendedStatusView,

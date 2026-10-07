@@ -428,6 +428,11 @@ kagisecure holds; **CAPTCHAs** and any other human-verification challenge, which
 by a human; **security questions, payment cards and identities**, which are separate features with
 their own sheet design. An agent that meets any of these hands control back to the human.
 
+**Registration forms** stay refused on this path for every ordinary item. The one exception is a
+`new_password` fill of a login kagisecure itself generated for a test account, proposed in
+[ADR-0048](0048-agent-test-logins.md) §7; it is served only for those items and never lands a
+current password in a new-password box.
+
 ### 8. What the agent can see after the fill
 
 This is the part of the design that decides what may be claimed about it, so it is stated before

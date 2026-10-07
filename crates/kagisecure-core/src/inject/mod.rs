@@ -1,7 +1,8 @@
 //! The injector: the only code that materializes plaintext outside the vault.
 //!
-//! Two things live here: running a child process with extra environment variables (the core of
-//! the CLI's `kagisecure run` and of the MCP `run_with_env` tool, mcp-server.md §2.8), and
+//! Two things live here: running a child process with extra environment variables — or, with
+//! [`Delivery::Stdin`], with the values written once to its standard input (ADR-0047) — (the core
+//! of the CLI's `kagisecure run` and of the MCP `run_with_env` tool, mcp-server.md §2.8), and
 //! writing a `.env` file ([`envfile`], mcp-server.md §2.7).
 //!
 //! Two rules from that spec are load-bearing and are enforced here rather than by convention:
@@ -27,12 +28,14 @@
 pub mod envfile;
 
 use std::ffi::{OsStr, OsString};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 pub use kagisecure_childproc::{ChildKillHandle, Spawned};
+
+use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 use crate::model::Secret;
@@ -55,6 +58,28 @@ pub const KILL_GRACE: Duration = Duration::from_secs(2);
 /// something outside the group — a process that deliberately left it — still holds open. After
 /// this the call returns with what it has, and marks that stream truncated.
 pub const OUTPUT_GRACE: Duration = Duration::from_millis(500);
+
+/// The most bytes [`Delivery::Stdin`] writes, all pairs together, separators included.
+///
+/// Small on purpose: below the pipe capacity of every platform kagisecure runs on (macOS starts a
+/// pipe at 16 KiB, Linux at 64 KiB), so the write completes whether or not the child ever reads,
+/// and the thread that makes it never lingers holding the values. Credentials are far shorter;
+/// a payload that is not is refused with [`Error::UnsendableOnStdin`] before anything starts.
+pub const MAX_STDIN_PAYLOAD: usize = 8 * 1024;
+
+/// How the values reach the child.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Delivery {
+    /// As variables in the child's environment block.
+    #[default]
+    Environment,
+    /// Written once to the child's standard input as `NAME\0VALUE\0` pairs, in the order of
+    /// [`RunRequest::env`], after which the pipe is closed (ADR-0047). Nothing is added to the
+    /// environment — which every descendant of the child inherits and which `ps -E` can show the
+    /// same user — and the child decides what, if anything, to pass on. A value containing a NUL
+    /// byte cannot be framed and is refused.
+    Stdin,
+}
 
 /// One variable to place in the child's environment.
 pub struct EnvInjection {
@@ -82,8 +107,11 @@ pub struct RunRequest<'a> {
     pub program: &'a OsStr,
     /// Arguments, passed to the OS verbatim.
     pub args: &'a [OsString],
-    /// Variables to add to the inherited environment.
+    /// Variables to add to the inherited environment — or, with [`Delivery::Stdin`], to write
+    /// to the child's standard input. Either way these are also what masking looks for.
     pub env: &'a [EnvInjection],
+    /// How [`Self::env`] reaches the child.
+    pub delivery: Delivery,
     /// Working directory for the child; the parent's if `None`.
     pub cwd: Option<&'a Path>,
     /// Replace injected values in the captured output with `[kagisecure:redacted:NAME]`.
@@ -122,6 +150,7 @@ impl<'a> RunRequest<'a> {
             program,
             args,
             env,
+            delivery: Delivery::Environment,
             cwd: None,
             mask_output: true,
             max_output: DEFAULT_MAX_OUTPUT,
@@ -154,8 +183,9 @@ pub struct RunOutcome {
 ///
 /// # Errors
 ///
-/// [`Error::NonUtf8EnvValue`] if a value cannot be represented as an environment value, and
-/// [`Error::Spawn`] if the program could not be started. Neither error carries a value.
+/// [`Error::NonUtf8EnvValue`] if a value cannot be represented as an environment value,
+/// [`Error::UnsendableOnStdin`] if one cannot be framed for [`Delivery::Stdin`], and
+/// [`Error::Spawn`] if the program could not be started. No error carries a value.
 pub fn run_with_env(request: &RunRequest<'_>) -> Result<RunOutcome> {
     run_with_env_tracked(request, |_handle| {})
 }
@@ -178,15 +208,23 @@ pub fn run_with_env_tracked(
 ) -> Result<RunOutcome> {
     let mut command = Command::new(request.program);
     command.args(request.args);
-    command.stdin(Stdio::null());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
     if let Some(dir) = request.cwd {
         command.current_dir(dir);
     }
-    for injection in request.env {
-        command.env(injection.name.as_str(), env_value(injection)?);
-    }
+    // Built before the spawn, so a value that cannot be framed starts nothing.
+    let payload = match request.delivery {
+        Delivery::Environment => {
+            command.stdin(Stdio::null());
+            set_env(&mut command, request.env)?;
+            None
+        }
+        Delivery::Stdin => {
+            command.stdin(Stdio::piped());
+            Some(stdin_payload(request.env)?)
+        }
+    };
 
     // `Spawned` owns the child *and* what a kill acts on (on Windows the job object, whose last
     // close kills the child), so neither goes away until `wait_for` below has reaped it — however
@@ -199,6 +237,19 @@ pub fn run_with_env_tracked(
     // Before anything else, including draining the pipes below: the window between `spawn` and
     // this call is exactly when a lock arriving would otherwise see no tracked child at all.
     on_spawn(spawned.kill_handle());
+
+    if let Some(payload) = payload
+        && let Some(pipe) = spawned.child_mut().stdin.take()
+        && let Err(e) = feed_stdin(pipe, payload)
+    {
+        // Nothing was written; end what started rather than leave it waiting on its input.
+        spawned.kill();
+        let _ = spawned.reap();
+        return Err(Error::Spawn {
+            program: request.program.to_string_lossy().into_owned(),
+            reason: e.to_string(),
+        });
+    }
 
     // Both pipes are drained on their own threads. Reading them in sequence would deadlock the
     // moment a child fills the other pipe's buffer, which is exactly what a chatty build does.
@@ -251,6 +302,51 @@ pub fn run_with_env_tracked(
         masked,
         timed_out,
     })
+}
+
+/// The bytes [`Delivery::Stdin`] writes: `NAME\0VALUE\0` for each injection, in order.
+///
+/// # Errors
+///
+/// [`Error::UnsendableOnStdin`], naming the variable, for a value with a NUL byte in it or once
+/// the whole passes [`MAX_STDIN_PAYLOAD`].
+pub fn stdin_payload(env: &[EnvInjection]) -> Result<Zeroizing<Vec<u8>>> {
+    let mut payload = Zeroizing::new(Vec::with_capacity(MAX_STDIN_PAYLOAD));
+    for injection in env {
+        let value = injection.value.expose();
+        let name = injection.name.as_str().as_bytes();
+        if value.contains(&0) || payload.len() + name.len() + value.len() + 2 > MAX_STDIN_PAYLOAD {
+            return Err(Error::UnsendableOnStdin(injection.name.to_string()));
+        }
+        payload.extend_from_slice(name);
+        payload.push(0);
+        payload.extend_from_slice(value);
+        payload.push(0);
+    }
+    Ok(payload)
+}
+
+/// Write `payload` to the child's standard input on a thread of its own, then close it.
+///
+/// A thread, not an inline write, so a child that never reads cannot stall the caller before it
+/// reaches its wait loop — although with [`MAX_STDIN_PAYLOAD`] under every pipe's capacity the
+/// write completes at once either way. A write the child refuses (it exited, or closed its input)
+/// is not an error here: the command's own exit status says what happened. Before anything is
+/// written, a closed reader is made an `EPIPE` rather than a `SIGPIPE`
+/// ([`kagisecure_childproc::no_sigpipe`]); that is the one failure returned.
+fn feed_stdin(
+    mut pipe: std::process::ChildStdin,
+    payload: Zeroizing<Vec<u8>>,
+) -> std::io::Result<()> {
+    kagisecure_childproc::no_sigpipe(&pipe)?;
+    std::thread::Builder::new()
+        .name("kagisecure-stdin".to_owned())
+        .spawn(move || {
+            let _ = pipe.write_all(&payload);
+            drop(pipe);
+            drop(payload);
+        })
+        .map(|_| ())
 }
 
 /// What a draining thread has read so far, shared with the caller so a bounded call can take it

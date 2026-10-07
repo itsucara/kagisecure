@@ -71,13 +71,14 @@ pub mod release;
 pub mod service;
 pub mod setup;
 pub mod shared;
+pub mod test_login;
 pub mod unattended;
 pub mod vault;
 
 pub use agent::{Agent, AgentConfig, AgentError, AgentStatus};
 pub use approval::{
     APPROVAL_TIMEOUT_SECONDS, AgentFillFacts, ApprovalKind, ApprovalQueue, ApprovalRequest,
-    ClientVerification, Decision,
+    ClientVerification, Decision, TestLoginFacts, TestLoginWebsite,
 };
 pub use extension::agent_fill::{
     AgentFillBlock, AgentFillBlockReason, AgentFillBroker, AgentFillClock, AgentFillNotice,
@@ -90,6 +91,7 @@ pub use fill_lease::{FillLease, FillLeaseStore};
 /// socket location has to be able to build one without depending on `kagisecure-ipc` directly.
 pub use kagisecure_ipc::endpoint::{Endpoint, EndpointError};
 pub use shared::{ReplicaSource, SharedAttachment, SharedSource};
+pub use test_login::{TestLoginBroker, TestLoginNotice};
 pub use unattended::browser::RunBrowserSetup;
 pub use unattended::{
     Engine as UnattendedEngine, UnattendedConfig, UnattendedError, UnattendedNotice,

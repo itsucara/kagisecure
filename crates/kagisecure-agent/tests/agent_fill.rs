@@ -209,6 +209,7 @@ fn an_approved_fill_types_the_value_into_the_page_and_tells_the_agent_only_field
             item_id,
             username,
             password,
+            ..
         } => {
             assert_eq!(item_id, &fx.item);
             assert_eq!(username.as_deref(), Some("alice"));

@@ -25,13 +25,15 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kagisecure_core::audit::AuditDraft;
-use kagisecure_core::inject::{EnvInjection, RunOutcome, RunRequest, run_with_env_tracked};
+use kagisecure_core::inject::{
+    Delivery as InjectDelivery, EnvInjection, RunOutcome, RunRequest, run_with_env_tracked,
+};
 use kagisecure_core::model::VarSource;
 use kagisecure_core::proto::{EnvId, LeaseId, Outcome};
 use kagisecure_core::unix_now;
 use kagisecure_core::vault::machine::{CommandGrant, GrantId, MachineSection};
 use kagisecure_ipc::protocol::{
-    ClientInfo, ErrorCode, MAX_RUN_ARGS, PROTOCOL_VERSION, Request, Response, rfc3339,
+    ClientInfo, Delivery, ErrorCode, MAX_RUN_ARGS, PROTOCOL_VERSION, Request, Response, rfc3339,
 };
 use kagisecure_ipc::server::{Connection, peer_is_same_user};
 
@@ -163,12 +165,30 @@ pub(crate) fn handle(core: &Arc<Core>, request: &Request, connection: &mut Conne
     match request {
         Request::RunWithEnv {
             environment_id,
+            variables,
+            delivery: Delivery::Stdin,
+            ..
+        } => {
+            // A standing grant covers an exact command run with its environment; stdin delivery
+            // is one approval per run by design (ADR-0047), so no grant can cover it, and asking
+            // is a strike like any other request outside the job's grants.
+            ctx.strike(
+                "run_with_env",
+                Some(*environment_id),
+                variables.clone().unwrap_or_default(),
+                "NO_GRANT",
+            );
+            not_granted()
+        }
+        Request::RunWithEnv {
+            environment_id,
             command,
             args,
             cwd,
             variables,
             timeout_seconds: _,
             output: _,
+            delivery: Delivery::Environment,
         } => ctx.run_with_env(*environment_id, command, args, cwd, variables.as_deref()),
         Request::WriteEnvFile {
             environment_id,
@@ -201,8 +221,15 @@ pub(crate) fn handle(core: &Arc<Core>, request: &Request, connection: &mut Conne
             shredded: Vec::new(),
         },
         Request::ListLeases => Response::Leases { leases: Vec::new() },
+        // Agent test logins are personal and interactive only (ADR-0048 §12): nothing to list.
+        Request::ListTestLogins { .. } => Response::TestLogins {
+            items: Vec::new(),
+            next_cursor: None,
+        },
         Request::CreateEnvironment { .. }
         | Request::AddVariables { .. }
+        | Request::CreateTestLogin { .. }
+        | Request::TrashTestLogins { .. }
         | Request::Audit { .. } => {
             // Changes to the vault, and its log, are the person's: refused, not a strike — none
             // of these releases anything.
@@ -524,6 +551,7 @@ impl Ctx<'_> {
                         program: &program,
                         args: &os_args,
                         env: &injections,
+                        delivery: InjectDelivery::Environment,
                         cwd: Some(&dir),
                         mask_output: true,
                         max_output: kagisecure_core::inject::DEFAULT_MAX_OUTPUT,

@@ -222,5 +222,14 @@ ios-project:
 ios: ios-project
 	$(XCODEBUILD) -project $(IOS_XCODEPROJ) -scheme KagisecureiOS -destination '$(IOS_DESTINATION)' build
 
+# The unit bundle uses Swift Testing, so its XCTest summary always reads "Executed 0 tests"; the
+# real counts are Swift Testing's "Test run with N tests" and the UI bundle's XCTest summary.
+# Both are printed at the end, and a run where either is zero fails.
+IOS_TEST_LOG := build/ios-test.log
 ios-test: ios-project
-	$(XCODEBUILD) -project $(IOS_XCODEPROJ) -scheme KagisecureiOS -destination '$(IOS_DESTINATION)' test
+	@mkdir -p build
+	set -o pipefail; $(XCODEBUILD) -project $(IOS_XCODEPROJ) -scheme KagisecureiOS -destination '$(IOS_DESTINATION)' test 2>&1 | tee $(IOS_TEST_LOG)
+	@unit=$$(sed -n 's/.*Test run with \([0-9][0-9]*\) tests.*passed.*/\1/p' $(IOS_TEST_LOG) | tail -1); \
+	ui=$$(awk "/Test Suite 'KagisecureiOSUITests.xctest' (passed|failed)/{getline; print}" $(IOS_TEST_LOG) | sed -n 's/.*Executed \([0-9][0-9]*\) test.*/\1/p' | tail -1); \
+	echo "ios-test: unit=$${unit:-0} ui=$${ui:-0}"; \
+	test "$${unit:-0}" -gt 0 && test "$${ui:-0}" -gt 0 || { echo "ios-test: a test bundle ran 0 tests" >&2; exit 1; }
