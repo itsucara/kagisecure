@@ -11,7 +11,8 @@ store install has a different id from an unpacked load.
 
 Decided by the owner: **publicly listed from the first release**, published under the same
 publisher as the macOS app's Developer ID (ITSUCARA, K.K.). The first upload is made by hand in the
-developer dashboard — the store's API can update an item but cannot create one.
+developer dashboard — the store's API can update an item but cannot create one. Updates go
+through the API (§8).
 
 ---
 
@@ -293,15 +294,145 @@ If that is done:
    says which one was missed. The store refuses an upload whose version is not higher than the
    published one.
 2. `cargo xtask chrome-package`.
-3. Dashboard → the item → **Package → Upload new package** → the new zip. Update the listing or
-   the privacy answers if what the extension does changed — a new permission, a new data flow or
-   a broader match pattern needs new justifications and is reviewed more closely.
-4. Submit for review. If the update needs a newer app (a protocol change), publish it only once
-   that app release is out.
+3. Upload and submit for review with `cargo xtask chrome-publish` (§8). Update the listing or the
+   privacy answers in the dashboard first if what the extension does changed — a new permission, a
+   new data flow or a broader match pattern needs new justifications and is reviewed more closely.
+   The dashboard route (**Package → Upload new package**, then **Submit for review**) still works
+   as a fallback.
+4. If the update needs a newer app (a protocol change), publish it only once that app release is
+   out: `chrome-publish` submits with the default publish type, which makes the version live as
+   soon as review approves it.
 
 Nothing about ids changes on an update.
 
-## 8. Open points for the owner
+## 8. Publishing with the API
+
+Updates are uploaded and submitted by `cargo xtask chrome-publish` through Google's Chrome Web
+Store API. Chrome does not let any extension script Chrome Web Store pages — Claude in Chrome
+included — so the dashboard cannot be driven from a browser; the API is the supported unattended
+path.
+
+**API version: v2** (publisher-scoped resources,
+[reference](https://developer.chrome.com/docs/webstore/api/reference/rest),
+[guide](https://developer.chrome.com/docs/webstore/using-api)). v1.1 is supported only until
+2026-10-15 ([announcement](https://developer.chrome.com/blog/cws-api-v2)). The calls used:
+
+| Step | Request |
+|------|---------|
+| Access token | `POST https://oauth2.googleapis.com/token` (`grant_type=refresh_token`) |
+| Upload | `POST https://chromewebstore.googleapis.com/upload/v2/publishers/{publisher}/items/{item}:upload`, the zip as the body |
+| Upload status | `GET https://chromewebstore.googleapis.com/v2/publishers/{publisher}/items/{item}:fetchStatus` (`lastAsyncUploadState`, while the upload answered `IN_PROGRESS`) |
+| Submit | `POST https://chromewebstore.googleapis.com/v2/publishers/{publisher}/items/{item}:publish` (empty body: default publish type, reviewed) |
+
+OAuth scope: `https://www.googleapis.com/auth/chromewebstore`. Publisher id
+`3edd5ef8-a197-45cc-b770-5ba58afbefa3`, item id `jgfpjhijkkjngmihmammolbcicgkicji`, both
+constants in `xtask/src/chrome_publish.rs`.
+
+The API cannot create an item (§6) and publishes with the visibility already set in the
+dashboard; if the visibility is changed there, publish once by hand before using the API again.
+
+### One-time setup (owner)
+
+1. **Google Cloud project.** In the [Google Cloud console](https://console.cloud.google.com/),
+   signed in as the account that owns the publisher, create a project (for example
+   `kagisecure-cws`) and enable the **Chrome Web Store API** (APIs & Services → Library).
+2. **OAuth consent screen** (Google Auth Platform → Branding / Audience): user type **External**,
+   app name `kagisecure release`, support and developer contact emails. Add the owner's account as
+   a **test user**, and add the scope `https://www.googleapis.com/auth/chromewebstore` under Data
+   Access.
+   - While the app is in **Testing**, Google expires its refresh tokens **after 7 days**, which
+     would mean running `chrome-auth` before almost every release. Switch Audience → **Publish
+     app** → **In production**. An app used only by its own developer account does not need to
+     complete verification to work; if the console lists this scope as *sensitive*, the consent
+     page shows an "unverified app" warning that the owner passes with **Advanced → Go to
+     kagisecure release**, and the refresh token then lasts until it is revoked or unused for six
+     months. Check the scope's classification on the Data Access page; nothing here depends on it.
+3. **OAuth client**: Clients → Create client → application type **Desktop app**. (Google's guide
+   uses a Web application with the OAuth Playground; a Desktop client is what the loopback flow
+   below needs, and needs no redirect URI registered.) **Download the client JSON** (for example
+   to `~/Downloads/client_secret.json`). Do not open it, copy from it, or paste it anywhere.
+4. **Client credentials into kagisecure**, with no one seeing them. An agent calls
+   `store_command_output` ([ADR-0049](decisions/0049-store-command-output.md)) once per value; the
+   owner approves each call on the sheet with Touch ID, and the agent never receives the value:
+
+   ```text
+   store_command_output
+     command: /usr/bin/jq          (or /opt/homebrew/bin/jq; an absolute path)
+     args:    ["-r", ".installed.client_secret", "/Users/<you>/Downloads/client_secret.json"]
+     cwd:     <repo>
+     new_item: { title: "Chrome Web Store API" }
+     field_label: client_secret
+
+   store_command_output
+     command: /usr/bin/jq
+     args:    ["-r", ".installed.client_id", "/Users/<you>/Downloads/client_secret.json"]
+     cwd:     <repo>
+     item_id: <the item id the first call returned>
+     field_label: client_id
+   ```
+
+   Then the agent creates the environment **`chrome-web-store`** (`create_environment`) and binds
+   `CWS_CLIENT_ID` and `CWS_CLIENT_SECRET` to the two fields (`add_variables` with `bind_to`; the
+   field ids come from `describe_item`). The item and its fields are agent-visible because an
+   approved agent request made them.
+5. **Refresh token, once.** The agent calls `store_command_output` again, with the environment
+   fed to the command's standard input:
+
+   ```text
+   store_command_output
+     command: <repo>/target/debug/xtask
+     args:    ["chrome-auth"]
+     cwd:     <repo>
+     timeout_seconds: 600
+     item_id: <the Chrome Web Store API item>
+     field_label: refresh_token
+     stdin_environment: { environment_id: <chrome-web-store>,
+                          variables: ["CWS_CLIENT_ID", "CWS_CLIENT_SECRET"] }
+   ```
+
+   One sheet covers both the values written to the command and the stored output. `chrome-auth`
+   opens Google's consent page (loopback redirect on `127.0.0.1`, PKCE); the owner consents in the
+   browser; it exchanges the code and writes **only** the refresh token to its standard output,
+   which kagisecure stores in the concealed field `refresh_token`. Its status lines go to standard
+   error, which the agent sees, scrubbed. `chrome-auth` refuses to run with a terminal on standard
+   output, so the token cannot be printed on a screen: `store_command_output` is the only way to
+   run it. The agent then binds `CWS_REFRESH_TOKEN` in `chrome-web-store` to the new field
+   (`add_variables`).
+6. **Delete the downloaded JSON** (`~/Downloads/client_secret.json`) and empty the trash; the
+   vault holds the only copy.
+
+Run step 5 again whenever `chrome-publish` reports `invalid_grant`. `store_command_output` never
+replaces a value, so first delete the old `refresh_token` field in the app (or store into a new
+label and rebind `CWS_REFRESH_TOKEN`).
+
+### Each release
+
+1. `cargo xtask chrome-package`, and `cargo build -p xtask` so the binary below is current.
+2. Run, with stdin delivery from `chrome-web-store` (`run_with_env`, delivery `stdin`, cwd the
+   repository):
+
+   ```text
+   command: <repo>/target/debug/xtask chrome-publish
+   ```
+
+   Options: `--zip PATH` for a package other than `dist/kagisecure-chrome-<version>.zip`,
+   `--dry-run` to check the package and the credentials' presence and print the requests without
+   sending anything.
+
+`run_with_env` children get the app's minimal `PATH`, so the command is the built binary's
+absolute path: it finds the repository from its own build location, and calls `/usr/bin/curl`
+and `/usr/bin/open` by absolute path. (`cargo xtask chrome-publish` by its absolute path, `$HOME/.cargo/bin/cargo`, with
+the repository as cwd works too, but rebuilds through rustup under that minimal `PATH`.)
+
+What it does: reads `CWS_CLIENT_ID`, `CWS_CLIENT_SECRET` and `CWS_REFRESH_TOKEN` from the stdin
+frame (`NAME\0VALUE\0` pairs, ADR-0047) and from nowhere else; refuses a package whose
+`manifest.json` version is not the workspace version; exchanges the refresh token; uploads;
+polls `fetchStatus` while the upload is `IN_PROGRESS` (up to 5 minutes); submits; prints the item
+id, the uploaded version and the resulting state (normally `PENDING_REVIEW`). Every value travels
+to curl on its standard input as a config file, never as an argument, and any API error is shown
+with Google's message and with the credential values redacted.
+
+## 9. Open points for the owner
 
 1. **The ticked data categories** in §3 are deliberately conservative (Web history, Website
    content). Untick only with a reason that would survive a reviewer reading this extension's code.

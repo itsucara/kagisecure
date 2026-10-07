@@ -1018,6 +1018,23 @@ sheet plus Touch ID outside it.
 **In the app.** Items in the test vault are not offered by system AutoFill, and their password
 field in the editor offers only **Regenerate** (`ks.edit.fieldRegenerate.<label>`).
 
+### 10.11 Store command output *(built on macOS, [ADR-0049](decisions/0049-store-command-output.md))*
+
+An agent asks to run a command and keep what it prints as a concealed field. The sheet is the
+standard agent sheet (identity block first) with, in order: the sentence "“Claude Code” wants to run
+`‹command›` and store its output in “‹item›”"; an orange callout, "What this command prints becomes
+a stored secret. The agent will not see it."; **Store in** (new item with its category, or the
+existing item, and its vault); **Field** (the label, and whether it is new or an empty field being
+filled); **Time limit**; **Reason, as written by the agent**; then the generic blocks: the full
+**Command** (run directly, no shell), **Directory**, and, with a stdin environment, its
+**Environment** name and **Variables** names with the stdin caption of ADR-0047.
+
+There is no TTL control and no **Allow for this session**: only **Deny** and **Allow once**, and
+every allow asks for Touch ID. The presence grace window never applies and the sheet is never
+skipped. The summary is "This runs the command once and stores what it prints as a secret. The agent
+never receives the output, and each run asks for Touch ID." The Touch ID prompt reads "store what
+‹program› prints as a secret in ‹item›. Continue only if you asked an agent to".
+
 ## 11. Keyboard shortcuts
 
 | Shortcut | Action | Source |

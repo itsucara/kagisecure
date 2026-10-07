@@ -36,6 +36,13 @@ public enum ApprovalAction : uint
     /// so this arrives only if something is wrong; the app denies it unseen.
     /// </summary>
     CreateTestLogin = (uint)KgsApprovalAction.CreateTestLogin,
+
+    /// <summary>
+    /// An agent asks to store a command's output in the vault (ADR-0049). The agent refuses
+    /// store_command_output on Windows before asking, so this arrives only if something is wrong;
+    /// the app denies it unseen.
+    /// </summary>
+    StoreCommandOutput = (uint)KgsApprovalAction.StoreCommandOutput,
 }
 
 /// <summary>

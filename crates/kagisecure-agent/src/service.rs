@@ -76,6 +76,8 @@ use crate::test_login::bind::{
 use crate::test_login::{self, TestLoginBroker, TestLoginNotice};
 use crate::vault::{REQUEST_LOCK_TIMEOUT, VaultHandle, WriteFailure, sync_could_not_read};
 
+mod store_output;
+
 /// The name this process answers the handshake with.
 pub const SERVER_NAME: &str = "kagisecure-agent";
 
@@ -592,6 +594,28 @@ impl Service {
                 query.as_deref(),
                 *limit,
                 cursor.as_deref(),
+                connection,
+            ),
+            Request::StoreCommandOutput {
+                command,
+                args,
+                cwd,
+                timeout_seconds,
+                target,
+                field_label,
+                stdin_environment,
+                reason,
+            } => self.store_command_output(
+                &store_output::StoreArgs {
+                    command,
+                    args,
+                    cwd,
+                    timeout_seconds: *timeout_seconds,
+                    target,
+                    field_label,
+                    stdin_environment: stdin_environment.as_ref(),
+                    reason: reason.as_deref(),
+                },
                 connection,
             ),
             Request::Audit { limit, verify } => self.audit(*limit, *verify),

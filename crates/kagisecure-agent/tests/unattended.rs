@@ -453,6 +453,24 @@ fn every_request(env: EnvId, cwd: &Path) -> Vec<Request> {
             limit: 10,
             cursor: None,
         },
+        // A stored command output is a vault change (ADR-0049 §7): refused, never granted.
+        Request::StoreCommandOutput {
+            command: "/bin/echo".to_owned(),
+            args: vec!["planted".to_owned()],
+            cwd: cwd.to_string_lossy().into_owned(),
+            timeout_seconds: 5,
+            target: kagisecure_ipc::protocol::StoreTarget::NewItem {
+                title: "planted".to_owned(),
+                category: None,
+                vault_id: None,
+            },
+            field_label: "token".to_owned(),
+            stdin_environment: Some(kagisecure_ipc::protocol::StdinEnvironment {
+                environment_id: env,
+                variables: None,
+            }),
+            reason: None,
+        },
         Request::Audit {
             limit: 5,
             verify: false,
@@ -515,6 +533,7 @@ fn covers(request: &Request) {
         | Request::CreateTestLogin { .. }
         | Request::ListTestLogins { .. }
         | Request::TrashTestLogins { .. }
+        | Request::StoreCommandOutput { .. }
         | Request::Audit { .. }
         | Request::ListLeases
         | Request::Lock => {}

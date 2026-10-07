@@ -279,6 +279,12 @@ pub enum KgsApprovalAction {
     /// such a sheet would show are not in [`crate::capi::KgsApprovalRequest`]. A host that does
     /// receive it denies it.
     CreateTestLogin = 6,
+    /// An agent asks to run a command and store its output in the vault (ADR-0049).
+    ///
+    /// Here only because the conversion from [`ApprovalAction`] is exhaustive. The agent refuses
+    /// `store_command_output` on Windows before anything is asked, so a Windows host never
+    /// receives this tag in practice. A host that does receive it denies it.
+    StoreCommandOutput = 7,
 }
 tags!(
     KgsApprovalAction,
@@ -291,6 +297,7 @@ tags!(
         FillCredential,
         AgentFill,
         CreateTestLogin,
+        StoreCommandOutput,
     }
 );
 

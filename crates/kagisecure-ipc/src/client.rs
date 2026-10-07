@@ -211,6 +211,7 @@ fn reply_name(response: &Response) -> &'static str {
         Response::TestLoginCreated { .. } => "TestLoginCreated",
         Response::TestLogins { .. } => "TestLogins",
         Response::TestLoginsTrashed { .. } => "TestLoginsTrashed",
+        Response::StoredCommandOutput { .. } => "StoredCommandOutput",
         Response::Revoked { .. } => "Revoked",
         Response::Audit { .. } => "Audit",
         Response::Leases { .. } => "Leases",

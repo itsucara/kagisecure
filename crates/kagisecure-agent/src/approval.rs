@@ -74,9 +74,28 @@ pub enum ApprovalKind {
     /// presence-only, never "for this session" — so the next create at that site asks again.
     /// What the sheet shows beyond the common fields is [`ApprovalRequest::agent_test_login`].
     CreateTestLogin,
+    /// An agent asks to run a command and store its standard output in a concealed field
+    /// (`store_command_output`, [ADR-0049](../../../docs/decisions/0049-store-command-output.md)).
+    ///
+    /// It mints nothing, and `outcome_for` answers it as a single full review whatever the UI
+    /// sends — never presence-only, never "for this session", no grace window — so every stored
+    /// value costs its own fingerprint. What the sheet shows beyond the common fields (the argv in
+    /// [`ApprovalRequest::command`], the directory, and for a stdin environment its name and
+    /// variables) is [`ApprovalRequest::store_output`].
+    StoreCommandOutput,
 }
 
 impl ApprovalKind {
+    /// Whether this kind is one full review, once, with no lease and never presence-only,
+    /// whatever a UI answers: the agent kinds whose grant nothing may remember.
+    #[must_use]
+    pub fn single_review(self) -> bool {
+        matches!(
+            self,
+            Self::AgentFill | Self::CreateTestLogin | Self::StoreCommandOutput
+        )
+    }
+
     /// Whether granting this mints a lease. Never for [`Self::AgentFill`].
     #[must_use]
     pub fn mints_lease(self) -> bool {
@@ -102,6 +121,7 @@ impl ApprovalKind {
             Self::FillCredential => "fill_credential",
             Self::AgentFill => "request_fill",
             Self::CreateTestLogin => "create_test_login",
+            Self::StoreCommandOutput => "store_command_output",
         }
     }
 }
@@ -243,6 +263,11 @@ pub struct ApprovalRequest {
     /// What the test-login sheet shows that no other sheet does. `Some` exactly when
     /// [`Self::kind`] is [`ApprovalKind::CreateTestLogin`].
     pub agent_test_login: Option<TestLoginFacts>,
+
+    // --- ADR-0049: storing a command's output. ------------------------------------------------
+    /// What the store-output sheet shows that no other sheet does. `Some` exactly when
+    /// [`Self::kind`] is [`ApprovalKind::StoreCommandOutput`].
+    pub store_output: Option<StoreOutputFacts>,
     /// A `run_with_env` or `write_env_file` whose **every** selected variable is bound to a sealed
     /// test login (ADR-0048 §9): the app may answer it inside its presence grace window with no
     /// sheet and no prompt, the way it answers agent fills. Outside the window it is the ordinary
@@ -366,7 +391,60 @@ pub struct TestLoginFacts {
     pub reason: Option<String>,
 }
 
+/// The facts a store-output sheet states (ADR-0049 §3), beyond the common fields.
+///
+/// Metadata only: titles, a label, names and flags. The output does not exist yet when the sheet
+/// is shown, and has nowhere to go here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoreOutputFacts {
+    /// The agent, as the audit log names it: self-reported name quoted, kernel facts bare.
+    pub agent: String,
+    /// The item's title: the new item's, or the existing one's.
+    pub item_title: String,
+    /// The existing item's id; `None` for a new item.
+    pub item_id: Option<String>,
+    /// The new item's category, canonical name; `None` for an existing item.
+    pub new_item_category: Option<String>,
+    /// The name of the vault the item is (or will be) in.
+    pub vault_name: String,
+    /// The field's label.
+    pub field_label: String,
+    /// Whether an existing, empty field is filled rather than a new field added.
+    pub fills_empty_field: bool,
+    /// The child's wall-clock limit, in seconds.
+    pub timeout_seconds: u64,
+    /// Why, as the agent put it. Agent-written data.
+    pub reason: Option<String>,
+}
+
 impl ApprovalRequest {
+    /// The request for an agent's store-output run described by `facts`, running `argv` in
+    /// `directory`, from the peer behind `identity`. No lease, so no lease life; never
+    /// presence-only. A stdin environment is added by the caller on the common fields.
+    #[must_use]
+    pub fn for_store_output(
+        facts: StoreOutputFacts,
+        argv: Vec<String>,
+        directory: String,
+        identity: &PeerIdentity,
+    ) -> Self {
+        Self {
+            kind: ApprovalKind::StoreCommandOutput,
+            item_id: facts.item_id.clone(),
+            item_title: Some(facts.item_title.clone()),
+            command: argv,
+            directory: Some(directory),
+            requested_ttl_seconds: 0,
+            requested_uses: 1,
+            max_ttl_seconds: 0,
+            presence_only: false,
+            rides_grace: false,
+            store_output: Some(facts),
+            ..Self::default()
+        }
+        .with_identity(identity)
+    }
+
     /// The request for an agent's test login described by `facts`, from the peer behind
     /// `identity`. No lease, so no lease life; never presence-only.
     #[must_use]
@@ -474,6 +552,7 @@ impl Default for ApprovalRequest {
             presence_only: false,
             agent_fill: None,
             agent_test_login: None,
+            store_output: None,
             rides_grace: false,
             shared_source: None,
             changed_since_approval: Vec::new(),
@@ -743,11 +822,12 @@ impl ApprovalQueue {
             // An agent fill is always the full sheet (ADR-0036 §5): cleared here, before the UI
             // can see it, as well as in `outcome_for`, so a caller that set it by mistake cannot
             // turn the sheet into a bare presence prompt.
-            if matches!(
-                request.kind,
-                ApprovalKind::AgentFill | ApprovalKind::CreateTestLogin
-            ) {
+            if request.kind.single_review() {
                 request.presence_only = false;
+                // No grace window for these: every one is its own review (ADR-0049 §3).
+                if request.kind == ApprovalKind::StoreCommandOutput {
+                    request.rides_grace = false;
+                }
             }
             request.created_at = kagisecure_core::unix_now();
             request.expires_at = request.created_at + APPROVAL_TIMEOUT_SECONDS;
@@ -898,10 +978,8 @@ fn outcome_for(
 ) -> Outcome {
     // An agent's test login is clamped exactly as an agent fill is (ADR-0048 §3): one review,
     // once, no lease, never presence-only.
-    let agent_fill = matches!(
-        request.kind,
-        ApprovalKind::AgentFill | ApprovalKind::CreateTestLogin
-    );
+    // So is a store-output run (ADR-0049 §3).
+    let agent_fill = request.kind.single_review();
     let (ttl_seconds, uses, session) = match decision {
         Decision::Deny => return Outcome::refused(ErrorCode::UserDenied, verification),
         Decision::DenyAndBlock => {

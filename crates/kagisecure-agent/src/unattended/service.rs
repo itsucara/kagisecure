@@ -230,6 +230,7 @@ pub(crate) fn handle(core: &Arc<Core>, request: &Request, connection: &mut Conne
         | Request::AddVariables { .. }
         | Request::CreateTestLogin { .. }
         | Request::TrashTestLogins { .. }
+        | Request::StoreCommandOutput { .. }
         | Request::Audit { .. } => {
             // Changes to the vault, and its log, are the person's: refused, not a strike — none
             // of these releases anything.

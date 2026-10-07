@@ -536,6 +536,32 @@ fn every_request(shared: &Shared) -> Vec<Request> {
             limit: 10,
             cursor: None,
         },
+        Request::StoreCommandOutput {
+            command: "/bin/echo".to_owned(),
+            args: vec!["planted".to_owned()],
+            cwd: shared.project(),
+            timeout_seconds: 5,
+            target: kagisecure_ipc::protocol::StoreTarget::Item {
+                item_id: shared.item_id,
+            },
+            field_label: "token".to_owned(),
+            stdin_environment: None,
+            reason: None,
+        },
+        Request::StoreCommandOutput {
+            command: "/bin/echo".to_owned(),
+            args: vec!["planted".to_owned()],
+            cwd: shared.project(),
+            timeout_seconds: 5,
+            target: kagisecure_ipc::protocol::StoreTarget::NewItem {
+                title: "planted".to_owned(),
+                category: None,
+                vault_id: Some(shared.vault_id),
+            },
+            field_label: "token".to_owned(),
+            stdin_environment: None,
+            reason: None,
+        },
         Request::Audit {
             limit: 10,
             verify: false,
@@ -564,6 +590,7 @@ fn every_request(shared: &Shared) -> Vec<Request> {
             | Request::CreateTestLogin { .. }
             | Request::ListTestLogins { .. }
             | Request::TrashTestLogins { .. }
+            | Request::StoreCommandOutput { .. }
             | Request::Audit { .. }
             | Request::ListLeases
             | Request::Lock => {}

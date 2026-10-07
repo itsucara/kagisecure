@@ -6211,6 +6211,13 @@ public struct ApprovalRequestView: Equatable, Hashable {
      */
     public var ridesGrace: Bool
     /**
+     * What the store-output sheet shows beyond the fields above. `Some` exactly when
+     * [`Self::action`] is [`ApprovalAction::StoreCommandOutput`].
+     *
+     * `#[uniffi(default = None)]` so hand-built views in the Swift tests keep compiling.
+     */
+    public var storeOutput: StoreOutputFactsView?
+    /**
      * Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
      * members` — to be shown as a fact on the sheet. `None` for the personal vault.
      */
@@ -6391,6 +6398,12 @@ public struct ApprovalRequestView: Equatable, Hashable {
          * `#[uniffi(default = false)]` so hand-built views in the Swift tests keep compiling.
          */ridesGrace: Bool = false, 
         /**
+         * What the store-output sheet shows beyond the fields above. `Some` exactly when
+         * [`Self::action`] is [`ApprovalAction::StoreCommandOutput`].
+         *
+         * `#[uniffi(default = None)]` so hand-built views in the Swift tests keep compiling.
+         */storeOutput: StoreOutputFactsView? = nil, 
+        /**
          * Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
          * members` — to be shown as a fact on the sheet. `None` for the personal vault.
          */sharedSource: String? = nil, 
@@ -6439,6 +6452,7 @@ public struct ApprovalRequestView: Equatable, Hashable {
         self.agentFill = agentFill
         self.testLogin = testLogin
         self.ridesGrace = ridesGrace
+        self.storeOutput = storeOutput
         self.sharedSource = sharedSource
         self.changedSinceApproval = changedSinceApproval
     }
@@ -6499,6 +6513,7 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
                 agentFill: FfiConverterOptionTypeAgentFillFactsView.read(from: &buf), 
                 testLogin: FfiConverterOptionTypeTestLoginFactsView.read(from: &buf), 
                 ridesGrace: FfiConverterBool.read(from: &buf), 
+                storeOutput: FfiConverterOptionTypeStoreOutputFactsView.read(from: &buf), 
                 sharedSource: FfiConverterOptionString.read(from: &buf), 
                 changedSinceApproval: FfiConverterSequenceString.read(from: &buf)
         )
@@ -6545,6 +6560,7 @@ public struct FfiConverterTypeApprovalRequestView: FfiConverterRustBuffer {
         FfiConverterOptionTypeAgentFillFactsView.write(value.agentFill, into: &buf)
         FfiConverterOptionTypeTestLoginFactsView.write(value.testLogin, into: &buf)
         FfiConverterBool.write(value.ridesGrace, into: &buf)
+        FfiConverterOptionTypeStoreOutputFactsView.write(value.storeOutput, into: &buf)
         FfiConverterOptionString.write(value.sharedSource, into: &buf)
         FfiConverterSequenceString.write(value.changedSinceApproval, into: &buf)
     }
@@ -11356,6 +11372,146 @@ public func FfiConverterTypeSidebarCounts_lower(_ value: SidebarCounts) -> RustB
 
 
 /**
+ * [`kagisecure_agent::StoreOutputFacts`]: where a command's output would be stored (ADR-0049
+ * §3). Metadata only; the output does not exist yet when the sheet is shown.
+ */
+public struct StoreOutputFactsView: Equatable, Hashable {
+    /**
+     * The agent as the audit log names it.
+     */
+    public var agent: String
+    /**
+     * The item's title: the new item's, or the existing one's.
+     */
+    public var itemTitle: String
+    /**
+     * The existing item's id; `None` for a new item.
+     */
+    public var itemId: String?
+    /**
+     * The new item's category, canonical name; `None` for an existing item.
+     */
+    public var newItemCategory: String?
+    /**
+     * The vault the item is, or will be, in.
+     */
+    public var vaultName: String
+    /**
+     * The field's label.
+     */
+    public var fieldLabel: String
+    /**
+     * Whether an existing, empty field is filled rather than a new field added.
+     */
+    public var fillsEmptyField: Bool
+    /**
+     * The command's wall-clock limit, in seconds.
+     */
+    public var timeoutSeconds: UInt64
+    /**
+     * Why, as the agent put it: agent-written data.
+     */
+    public var reason: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The agent as the audit log names it.
+         */agent: String, 
+        /**
+         * The item's title: the new item's, or the existing one's.
+         */itemTitle: String, 
+        /**
+         * The existing item's id; `None` for a new item.
+         */itemId: String?, 
+        /**
+         * The new item's category, canonical name; `None` for an existing item.
+         */newItemCategory: String?, 
+        /**
+         * The vault the item is, or will be, in.
+         */vaultName: String, 
+        /**
+         * The field's label.
+         */fieldLabel: String, 
+        /**
+         * Whether an existing, empty field is filled rather than a new field added.
+         */fillsEmptyField: Bool, 
+        /**
+         * The command's wall-clock limit, in seconds.
+         */timeoutSeconds: UInt64, 
+        /**
+         * Why, as the agent put it: agent-written data.
+         */reason: String?) {
+        self.agent = agent
+        self.itemTitle = itemTitle
+        self.itemId = itemId
+        self.newItemCategory = newItemCategory
+        self.vaultName = vaultName
+        self.fieldLabel = fieldLabel
+        self.fillsEmptyField = fillsEmptyField
+        self.timeoutSeconds = timeoutSeconds
+        self.reason = reason
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension StoreOutputFactsView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeStoreOutputFactsView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> StoreOutputFactsView {
+        return
+            try StoreOutputFactsView(
+                agent: FfiConverterString.read(from: &buf), 
+                itemTitle: FfiConverterString.read(from: &buf), 
+                itemId: FfiConverterOptionString.read(from: &buf), 
+                newItemCategory: FfiConverterOptionString.read(from: &buf), 
+                vaultName: FfiConverterString.read(from: &buf), 
+                fieldLabel: FfiConverterString.read(from: &buf), 
+                fillsEmptyField: FfiConverterBool.read(from: &buf), 
+                timeoutSeconds: FfiConverterUInt64.read(from: &buf), 
+                reason: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: StoreOutputFactsView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.agent, into: &buf)
+        FfiConverterString.write(value.itemTitle, into: &buf)
+        FfiConverterOptionString.write(value.itemId, into: &buf)
+        FfiConverterOptionString.write(value.newItemCategory, into: &buf)
+        FfiConverterString.write(value.vaultName, into: &buf)
+        FfiConverterString.write(value.fieldLabel, into: &buf)
+        FfiConverterBool.write(value.fillsEmptyField, into: &buf)
+        FfiConverterUInt64.write(value.timeoutSeconds, into: &buf)
+        FfiConverterOptionString.write(value.reason, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStoreOutputFactsView_lift(_ buf: RustBuffer) throws -> StoreOutputFactsView {
+    return try FfiConverterTypeStoreOutputFactsView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeStoreOutputFactsView_lower(_ value: StoreOutputFactsView) -> RustBuffer {
+    return FfiConverterTypeStoreOutputFactsView.lower(value)
+}
+
+
+/**
  * What the meter under the generator's field shows.
  */
 public struct StrengthView: Equatable, Hashable {
@@ -13887,6 +14043,16 @@ public enum ApprovalAction: Equatable, Hashable {
      * sheet shows are in [`ApprovalRequestView::test_login`].
      */
     case createTestLogin
+    /**
+     * An agent asks to run a command and store its standard output in a concealed field
+     * (ADR-0049). Always the full sheet with Touch ID — never presence-only, never "for this
+     * session", never inside the grace window — and it mints nothing. The argv is in
+     * [`ApprovalRequestView::command`], the directory in [`ApprovalRequestView::directory`], a
+     * stdin environment in the environment and variable fields with
+     * [`ApprovalRequestView::stdin_delivery`]; the target is in
+     * [`ApprovalRequestView::store_output`].
+     */
+    case storeCommandOutput
 
 
 
@@ -13922,6 +14088,8 @@ public struct FfiConverterTypeApprovalAction: FfiConverterRustBuffer {
         
         case 7: return .createTestLogin
         
+        case 8: return .storeCommandOutput
+        
         default: throw UniffiInternalError.unexpectedEnumCase
         }
     }
@@ -13956,6 +14124,10 @@ public struct FfiConverterTypeApprovalAction: FfiConverterRustBuffer {
         
         case .createTestLogin:
             writeInt(&buf, Int32(7))
+        
+        
+        case .storeCommandOutput:
+            writeInt(&buf, Int32(8))
         
         }
     }
@@ -16876,6 +17048,30 @@ fileprivate struct FfiConverterOptionTypeDivergedFileView: FfiConverterRustBuffe
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterTypeDivergedFileView.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeStoreOutputFactsView: FfiConverterRustBuffer {
+    typealias SwiftType = StoreOutputFactsView?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeStoreOutputFactsView.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeStoreOutputFactsView.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }

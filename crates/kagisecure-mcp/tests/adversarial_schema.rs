@@ -274,6 +274,7 @@ fn the_served_tool_list_is_exactly_the_documented_one() {
             "request_fill",
             "revoke_env_file",
             "run_with_env",
+            "store_command_output",
             "trash_test_logins",
             "write_env_file",
         ]

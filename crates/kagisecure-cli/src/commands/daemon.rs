@@ -247,9 +247,18 @@ fn decide(
         uses: request.requested_uses,
     };
     match mode {
-        // A test login is personal and interactive (ADR-0048 §12): never approved unseen.
-        ApprovalMode::AutoApprove if request.kind == ApprovalKind::CreateTestLogin => {
-            println!("kagisecure daemon: refusing create_test_login (never auto-approved)");
+        // A test login is personal and interactive (ADR-0048 §12), and a stored command output
+        // is a new secret the person has not seen (ADR-0049 §3): never approved unseen.
+        ApprovalMode::AutoApprove
+            if matches!(
+                request.kind,
+                ApprovalKind::CreateTestLogin | ApprovalKind::StoreCommandOutput
+            ) =>
+        {
+            println!(
+                "kagisecure daemon: refusing {} (never auto-approved)",
+                request.kind.tool()
+            );
             let _ = std::io::stdout().flush();
             return Decision::Deny;
         }
@@ -337,7 +346,7 @@ fn stdin_lines() -> Arc<Mutex<Receiver<String>>> {
 fn print_prompt(request: &ApprovalRequest) {
     println!();
     println!("  ┌─ kagisecure approval ─────────────────────────────────────────");
-    if request.stdin_delivery {
+    if request.stdin_delivery && request.kind != ApprovalKind::StoreCommandOutput {
         println!("  │ A caller wants to pass secrets to a command's standard input, once.");
     } else {
         println!("  │ A caller wants to {}.", what(request.kind));
@@ -353,8 +362,8 @@ fn print_prompt(request: &ApprovalRequest) {
     println!("  │");
     println!("  │ No secret value is shown to the caller either way.");
     println!("  └───────────────────────────────────────────────────────────────");
-    if request.stdin_delivery {
-        // One approval, one run (ADR-0047): there is no session to offer.
+    if request.stdin_delivery || request.kind == ApprovalKind::StoreCommandOutput {
+        // One approval, one run (ADR-0047, ADR-0049): there is no session to offer.
         print!("  Allow this one run? [o = once / N = deny] ");
     } else {
         print!("  Allow? [y = this session / o = once / N = deny] ");
@@ -378,6 +387,9 @@ fn what(kind: ApprovalKind) -> &'static str {
         // Unreachable for the same reason: with no test-login broker, `create_test_login` is
         // `TEST_LOGINS_OFF` before any sheet (ADR-0048 §12).
         ApprovalKind::CreateTestLogin => "create a test login whose password kagisecure generates",
+        ApprovalKind::StoreCommandOutput => {
+            "run a command and store what it prints as a secret (the agent will not see it)"
+        }
     }
 }
 
@@ -439,6 +451,37 @@ fn facts(request: &ApprovalRequest) -> Vec<String> {
     }
     if !request.variables.is_empty() {
         facts.push(format!("variables   {}", request.variables.join(", ")));
+    }
+    if let Some(store) = request.store_output.as_ref() {
+        let place = if store.item_id.is_none() {
+            format!(
+                "a new {} item in vault {}",
+                store
+                    .new_item_category
+                    .as_deref()
+                    .unwrap_or("api-credential"),
+                store.vault_name
+            )
+        } else {
+            format!("an existing item in vault {}", store.vault_name)
+        };
+        facts.push(format!("stores      what the command prints, in {place}"));
+        facts.push(format!(
+            "field       {:?} ({})",
+            store.field_label,
+            if store.fills_empty_field {
+                "an empty field, filled"
+            } else {
+                "a new field"
+            }
+        ));
+        facts.push(format!("timeout     {} s", store.timeout_seconds));
+        if let Some(reason) = store.reason.as_deref() {
+            facts.push(format!("reason      {reason:?} (written by the caller)"));
+        }
+        facts.push(
+            "note        the output becomes a stored secret; the caller never sees it".to_owned(),
+        );
     }
     if request.stdin_delivery {
         facts.push(

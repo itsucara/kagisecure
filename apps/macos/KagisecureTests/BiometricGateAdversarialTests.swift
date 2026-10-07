@@ -188,6 +188,7 @@ struct BiometricGateAdversarialTests {
         for action in [
             ApprovalAction.writeEnvFile, .runWithEnv, .createEnvironment, .addVariables,
             .fillCredential, .agentFill, .createTestLogin,
+            .storeCommandOutput,
         ] {
             let request = Self.canaryLadenRequest(action: action)
             let reason = AgentService.reason(for: request)

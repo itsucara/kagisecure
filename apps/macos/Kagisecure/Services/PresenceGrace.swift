@@ -95,6 +95,8 @@ struct PresenceGrace {
         case .writeEnvFile, .runWithEnv: request.ridesGrace
         // A test-login create outside the allowed origins is Touch ID every time (ADR-0048 §3).
         case .createEnvironment, .addVariables, .createTestLogin: false
+        // Command output stored as a secret is Touch ID every time (ADR-0049 §3).
+        case .storeCommandOutput: false
         }
     }
 

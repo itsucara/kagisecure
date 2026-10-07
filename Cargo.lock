@@ -1154,7 +1154,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-agent"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "directories",
  "kagisecure-core",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-childproc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "libc",
  "windows-sys",
@@ -1178,7 +1178,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-cli"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -1205,7 +1205,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-core"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "argon2",
  "chacha20poly1305",
@@ -1228,7 +1228,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-extension-ipc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "idna",
  "interprocess",
@@ -1245,7 +1245,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-ffi"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "ciborium",
@@ -1267,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-import"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ciborium",
  "csv",
@@ -1285,7 +1285,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-ipc"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "directories",
  "interprocess",
@@ -1301,7 +1301,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "kagisecure-core",
  "kagisecure-ipc",
@@ -1316,7 +1316,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-nmhost"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "kagisecure-extension-ipc",
  "serde_json",
@@ -1325,7 +1325,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-shared"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "ciborium",
  "ed25519-dalek",
@@ -1347,7 +1347,7 @@ dependencies = [
 
 [[package]]
 name = "kagisecure-test-support"
-version = "0.2.0"
+version = "0.3.0"
 
 [[package]]
 name = "libc"
@@ -2733,12 +2733,13 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "camino",
  "csbindgen",
  "serde_json",
+ "sha2",
  "uniffi",
  "zip",
 ]

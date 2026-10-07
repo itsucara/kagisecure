@@ -425,6 +425,7 @@ fn every_tool_works_end_to_end_and_the_marker_never_reaches_stdout() {
             "request_fill",
             "revoke_env_file",
             "run_with_env",
+            "store_command_output",
             "trash_test_logins",
             "write_env_file",
         ]
@@ -911,7 +912,7 @@ async fn every_tool_through_the_rmcp_client_api() {
         .map(|t| t.name.to_string())
         .collect();
     names.sort();
-    assert_eq!(names.len(), 13, "{names:?}");
+    assert_eq!(names.len(), 14, "{names:?}");
 
     // Everything the client is handed, concatenated, so one assertion covers the lot.
     let mut seen = String::new();
@@ -1041,6 +1042,24 @@ async fn every_tool_through_the_rmcp_client_api() {
             "{name}: {reply}"
         );
     }
+
+    // A stored command output is never approved unseen, even under --auto-approve (ADR-0049 §3).
+    let refused = call(
+        "store_command_output",
+        serde_json::json!({
+            "command": "/bin/echo",
+            "args": ["x"],
+            "cwd": std::env::temp_dir().canonicalize().unwrap().display().to_string(),
+            "new_item": { "title": "Never" },
+            "field_label": "token",
+        }),
+    )
+    .await;
+    seen.push_str(&refused.to_string());
+    assert_eq!(
+        refused["structuredContent"]["code"], "USER_DENIED",
+        "{refused}"
+    );
 
     assert!(
         !seen.contains(MARKER),

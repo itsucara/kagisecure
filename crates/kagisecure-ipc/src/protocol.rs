@@ -47,7 +47,25 @@ use kagisecure_core::proto::{
 ///   `TEST_LOGINS_OFF`; and
 ///   `RATE_LIMITED` with two more fixed messages, for the create rate limit and the vault's cap.
 ///   The sidecar, the app, the extension and the native-messaging host ship together.
-pub const PROTOCOL_VERSION: u32 = 4;
+/// * 5 — storing a command's output (ADR-0049): [`Request::StoreCommandOutput`] and
+///   [`Response::StoredCommandOutput`].
+pub const PROTOCOL_VERSION: u32 = 5;
+
+/// Longest `store_command_output` field label, in characters (ADR-0049 §1). One line, not empty.
+pub const MAX_STORED_FIELD_LABEL_CHARS: usize = 64;
+
+/// Longest `store_command_output` new item title, in characters (ADR-0049 §2). One line.
+pub const MAX_STORED_ITEM_TITLE_CHARS: usize = 128;
+
+/// Longest `store_command_output` reason, in characters (ADR-0049 §1). One line.
+pub const MAX_STORE_REASON_CHARS: usize = 200;
+
+/// Most bytes of standard output `store_command_output` stores, after one trailing newline is
+/// removed (ADR-0049 §6).
+pub const MAX_STORED_OUTPUT_BYTES: usize = 16 * 1024;
+
+/// The categories `store_command_output` may give a new item (ADR-0049 §2), by canonical name.
+pub const STORE_OUTPUT_CATEGORIES: [&str; 4] = ["api-credential", "password", "server", "database"];
 
 /// Longest `create_environment` name, in characters (mcp-server.md §2.5). One line, not empty.
 pub const MAX_ENVIRONMENT_NAME_CHARS: usize = 128;
@@ -707,6 +725,29 @@ pub enum Request {
         #[serde(default)]
         cursor: Option<String>,
     },
+    /// Run a command and store its standard output in a concealed field (ADR-0049). The reply is
+    /// [`Response::StoredCommandOutput`] — whether it was stored and where, never what.
+    StoreCommandOutput {
+        /// Executable. Not a shell string.
+        command: String,
+        /// Arguments, passed to the OS verbatim.
+        args: Vec<String>,
+        /// Absolute working directory.
+        cwd: String,
+        /// Wall-clock limit for the child, in seconds. Clamped by the receiver.
+        timeout_seconds: u64,
+        /// Where the output goes.
+        target: StoreTarget,
+        /// The field's label.
+        field_label: String,
+        /// An environment whose values are written to the command's standard input (ADR-0047's
+        /// frame) before it runs.
+        #[serde(default)]
+        stdin_environment: Option<StdinEnvironment>,
+        /// Why, for the sheet. One line.
+        #[serde(default)]
+        reason: Option<String>,
+    },
     /// Read the audit log, newest last.
     Audit {
         /// Maximum number of entries, taken from the end.
@@ -739,9 +780,92 @@ impl Request {
             Self::CreateTestLogin { .. } => "create_test_login",
             Self::ListTestLogins { .. } => "list_test_logins",
             Self::TrashTestLogins { .. } => "trash_test_logins",
+            Self::StoreCommandOutput { .. } => "store_command_output",
             Self::Audit { .. } => "audit",
             Self::ListLeases => "list_leases",
             Self::Lock => "lock",
+        }
+    }
+}
+
+/// Where `store_command_output` writes (ADR-0049 §2): exactly one of an existing item or a new one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreTarget {
+    /// An existing item: a field is added, or an empty concealed one filled. Never replaced.
+    Item {
+        /// The item.
+        item_id: ItemId,
+    },
+    /// A new item, with no websites and no username.
+    NewItem {
+        /// Its title.
+        title: String,
+        /// Its category, one of [`STORE_OUTPUT_CATEGORIES`]; `api-credential` when absent.
+        #[serde(default)]
+        category: Option<String>,
+        /// The logical vault; the default one when absent.
+        #[serde(default)]
+        vault_id: Option<VaultId>,
+    },
+}
+
+/// The environment `store_command_output` feeds to the command's standard input.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StdinEnvironment {
+    /// The environment.
+    pub environment_id: EnvId,
+    /// Subset of variable names, in frame order; all of them when absent.
+    #[serde(default)]
+    pub variables: Option<Vec<String>>,
+}
+
+/// Whether `store_command_output` stored anything.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StoreStatus {
+    /// The output is in the field.
+    Stored,
+    /// Nothing was written.
+    NotStored,
+}
+
+/// Why `store_command_output` stored nothing after the command ran (ADR-0049 §6). Fixed tokens:
+/// none says more about the output than its class.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotStoredReason {
+    /// The command exited with a non-zero status.
+    ExitStatus,
+    /// The command ran past its deadline.
+    TimedOut,
+    /// The vault locked while it ran.
+    KilledOnLock,
+    /// It printed nothing.
+    Empty,
+    /// It printed more than [`MAX_STORED_OUTPUT_BYTES`].
+    TooLarge,
+    /// Its output contains a NUL byte.
+    NulByte,
+    /// Its output is not UTF-8.
+    NotUtf8,
+    /// Its output has more than one line.
+    MultiLine,
+}
+
+impl NotStoredReason {
+    /// The wire spelling, also the audit token.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ExitStatus => "exit_status",
+            Self::TimedOut => "timed_out",
+            Self::KilledOnLock => "killed_on_lock",
+            Self::Empty => "empty",
+            Self::TooLarge => "too_large",
+            Self::NulByte => "nul_byte",
+            Self::NotUtf8 => "not_utf8",
+            Self::MultiLine => "multi_line",
         }
     }
 }
@@ -887,6 +1011,27 @@ pub enum Response {
         items: Vec<TestLoginSummary>,
         /// Continuation token, if there is more.
         next_cursor: Option<String>,
+    },
+    /// `store_command_output` finished. No member carries the output or its length.
+    StoredCommandOutput {
+        /// Whether the output was stored.
+        status: StoreStatus,
+        /// Why not, when it was not.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<NotStoredReason>,
+        /// The item written, when stored.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        item_id: Option<ItemId>,
+        /// The field's label.
+        field_label: String,
+        /// Whether the item was created by this call.
+        item_created: bool,
+        /// The command's exit status, or `None` if it was killed.
+        exit_code: Option<i32>,
+        /// Its standard error, scrubbed.
+        stderr: String,
+        /// Whether standard error hit the cap.
+        stderr_truncated: bool,
     },
     /// Files were shredded and leases dropped.
     Revoked {

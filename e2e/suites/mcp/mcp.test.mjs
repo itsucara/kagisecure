@@ -50,9 +50,9 @@ import { recordText } from "../../lib/artifacts.mjs";
 const PASSWORD = "correct horse battery staple";
 
 /**
- * The thirteen tools, and no fourteenth. `docs/mcp-server.md` §2 and the pinned list in
+ * The fourteen tools, and no fifteenth. `docs/mcp-server.md` §2 and the pinned list in
  * `crates/kagisecure-mcp/src/server.rs` are what this is held to. ADR-0048 added the three
- * `*_test_login*` tools.
+ * `*_test_login*` tools; ADR-0049 added `store_command_output`.
  */
 const EXPECTED_TOOLS = [
   "add_variables",
@@ -66,6 +66,7 @@ const EXPECTED_TOOLS = [
   "request_fill",
   "revoke_env_file",
   "run_with_env",
+  "store_command_output",
   "trash_test_logins",
   "write_env_file",
 ];
@@ -202,7 +203,7 @@ async function fixture(
 // The tool surface
 // -------------------------------------------------------------------------------------------
 
-test("the sidecar exposes exactly thirteen tools, and none of them can take a value", async (t) => {
+test("the sidecar exposes exactly fourteen tools, and none of them can take a value", async (t) => {
   const fx = await fixture(t, { label: "tools" });
 
   const tools = await fx.sidecar.tools();
@@ -253,7 +254,7 @@ test("the sidecar exposes exactly thirteen tools, and none of them can take a va
     t.name,
     "tools.txt",
     tools.map((tool) => `${tool.name}\n  ${tool.description}`).join("\n\n"),
-    "the thirteen tools as the model sees them",
+    "the fourteen tools as the model sees them",
   );
   fx.assertNoLeak(schemas);
 });

@@ -78,7 +78,7 @@ pub mod vault;
 pub use agent::{Agent, AgentConfig, AgentError, AgentStatus};
 pub use approval::{
     APPROVAL_TIMEOUT_SECONDS, AgentFillFacts, ApprovalKind, ApprovalQueue, ApprovalRequest,
-    ClientVerification, Decision, TestLoginFacts, TestLoginWebsite,
+    ClientVerification, Decision, StoreOutputFacts, TestLoginFacts, TestLoginWebsite,
 };
 pub use extension::agent_fill::{
     AgentFillBlock, AgentFillBlockReason, AgentFillBroker, AgentFillClock, AgentFillNotice,

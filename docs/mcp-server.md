@@ -1,6 +1,6 @@
 # MCP server (`kagisecure-mcp`)
 
-Status: **implemented in M2, and served by the macOS app since M4.** All thirteen tools below exist
+Status: **implemented in M2, and served by the macOS app since M4.** All fourteen tools below exist
 and are exercised end to end by `crates/kagisecure-cli/tests/mcp.rs` (against the CLI daemon) and
 `crates/kagisecure-agent/tests/sidecar.rs` (against the library the app hosts). The thing on the
 other end of the IPC socket is now the native app, with a Touch ID approval sheet — see §11.
@@ -63,14 +63,15 @@ the characters.
 | `create_test_login` | write (a generated login) | none at an allowed origin; elsewhere a sheet and biometric, every time; `bind` adds one `add_variables` sheet | item id, username, websites, title; the binding's names |
 | `list_test_logins` | read (metadata) | no | test logins with their usernames |
 | `trash_test_logins` | cleanup (soft trash) | no — refused outright if any match is outside the allowed origins | how many, and their item ids |
+| `store_command_output` | write (a command's output into a concealed field) | yes, a sheet and biometric, every time; never a grace window | `stored` with the item id, or `not_stored` with a reason; the command's stderr, scrubbed — **never the output or its length** |
 
-All thirteen are implemented — `request_fill` as §2.10 describes — and since M4 both of the behaviours this paragraph used to defer are
+All fourteen are implemented — `request_fill` as §2.10 describes — and since M4 both of the behaviours this paragraph used to defer are
 real: the approval is a Touch ID (or login-password) gate in the app's own sheet, and
 `add_variables`'s pending entries are typed into a `SecureField` in the app's Agent access →
 Environments editor. `kagisecure env add-var` still works and is what the headless daemon points
 you at.
 
-Thirteen tools. The list is fixed; there is no plugin mechanism. That is deliberate — a small,
+Fourteen tools. The list is fixed; there is no plugin mechanism. That is deliberate — a small,
 auditable surface is the product.
 
 Compare 1Password's Environments MCP server (`authenticate`, `create_environment`,
@@ -888,6 +889,83 @@ is recorded. A trashed login is no longer listed, reused as `exists` or filled. 
 stays the user's act; so does trashing a login at a site that is not allowed (in the app, or with
 `kagisecure test-logins trash`).
 
+### 2.14 `store_command_output`
+
+*([ADR-0049](decisions/0049-store-command-output.md).)* The reverse of `run_with_env`: run a
+command, and store what it prints on standard output in a concealed field. The value never comes
+back to the agent.
+
+```json
+{
+  "name": "store_command_output",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "command":           { "type": "string", "description": "Executable, absolute path. Not a shell string." },
+      "args":              { "type": "array", "items": { "type": "string" }, "maxItems": 64 },
+      "cwd":               { "type": "string", "description": "Absolute working directory." },
+      "timeout_seconds":   { "type": "integer", "description": "1-3600, default 300." },
+      "item_id":           { "type": "string", "description": "An existing item. Exactly one of item_id and new_item." },
+      "new_item":          { "type": "object", "properties": {
+                               "title":    { "type": "string", "description": "1-128 characters, one line." },
+                               "category": { "type": "string", "description": "api-credential (default), password, server or database." },
+                               "vault_id": { "type": "string" } },
+                             "required": ["title"], "additionalProperties": false },
+      "field_label":       { "type": "string", "description": "1-64 characters, one line." },
+      "stdin_environment": { "type": "object", "properties": {
+                               "environment_id": { "type": "string" },
+                               "variables":      { "type": "array", "items": { "type": "string" } } },
+                             "required": ["environment_id"], "additionalProperties": false },
+      "reason":            { "type": "string", "description": "One line, at most 200 characters, shown on the sheet." }
+    },
+    "required": ["command", "cwd", "field_label"],
+    "additionalProperties": false
+  }
+}
+```
+
+Results:
+
+```json
+{ "status": "stored", "item_id": "...", "field_label": "refresh_token", "item_created": false,
+  "exit_code": 0, "stderr": "...", "stderr_truncated": false }
+{ "status": "not_stored", "reason": "multi_line", "field_label": "refresh_token",
+  "exit_code": 0, "stderr": "...", "stderr_truncated": false }
+```
+
+- **Where it writes.** A new item (`new_item`) gets one concealed field, which is its primary
+  secret; it has no websites and no username, so it is never an autofill target. An existing item
+  (`item_id`, personal, agent-visible, not archived) gets a new concealed field, or its **empty**
+  concealed field with that label (case-insensitive) is filled. A field with that label that holds
+  a value, or is not concealed, is refused, and so is the primary secret of an item with websites
+  (the password autofill types) — `INVALID_ARGUMENT`, before any sheet. A shared vault or item is
+  refused (`INVALID_ARGUMENT`, as in §2.1). The item and the field are agent-visible afterwards, so
+  the agent can bind them with `add_variables`.
+- **Approval.** A sheet with the agent's identity, the full argv, the directory, the target item
+  and field, and the plain statement that the output becomes a stored secret the agent will not
+  see; Touch ID every time. Allow once only: no grace window, no lease, not even the stdin lease.
+  `kagisecure daemon --auto-approve` refuses it.
+- **`stdin_environment`** writes an environment's values to the command's standard input, as
+  `run_with_env`'s `delivery: "stdin"` does (ADR-0047's frame), under the same sheet. A variable
+  with no value is `NOT_POPULATED` before the sheet. Without it, standard input is `/dev/null`.
+- **Execution** is `run_with_env`'s: no shell, its own process group, the deadline, killed if the
+  vault locks.
+- **Output rules.** Standard output only, never masked. One trailing newline (`\n` or `\r\n`) is
+  removed. Nothing is stored — `not_stored` with `reason` — for a non-zero exit (`exit_status`), a
+  timeout (`timed_out`), a kill on lock (`killed_on_lock`), empty output (`empty`), more than
+  16 KiB (`too_large`), a NUL byte (`nul_byte`), output that is not UTF-8 (`not_utf8`), or more
+  than one line (`multi_line`). Standard error comes back with injected values and the output
+  itself replaced by `[kagisecure:redacted:NAME]` / `[kagisecure:redacted:output]` — best effort,
+  as for `run_with_env`.
+- **Audit.** An `Allowed` entry `STORE_OUTPUT [argv]` before the command starts (with the stdin
+  environment and variable names), then `STORED` in the same transaction as the write, or `Failed`
+  `NOT_STORED <reason>`; denials as `Denied`. Every entry names the agent in full (`mcp` followed by
+  its self-reported name and kernel facts), as test-login entries do.
+- **Not** on the unattended socket (`NO_GRANT`), and not on Windows (`INVALID_ARGUMENT`).
+- **What it protects.** The agent chose the command, so it could have run it itself and read the
+  output. This tool keeps a value out of the transcript and the model provider's logs for an agent
+  that uses it; it is not a boundary against a malicious agent.
+
 ## 3. How the invariant is enforced
 
 Not by review, not by a redaction filter. By the type system and the crate graph.
@@ -1094,7 +1172,7 @@ message is written for the *model*, so it should say what to do next.
 | `APPROVAL_TIMEOUT` | No response in 60 s | May retry once, after telling the user. |
 | `NOT_FOUND` | Unknown vault/item/environment id, **or** one the user has not made visible to agents | Re-list. |
 | `INVALID_PATH` | Path not absolute, not a directory, or refused by policy | Fix the path. |
-| `INVALID_ARGUMENT` | An argument breaks a documented rule of the tool's schema — a variable name that does not match `^[A-Za-z_][A-Za-z0-9_]*$`, a name repeated in one request or already in the environment, a string over its length limit, a `request_fill` field set that is empty, repeats a field or combines `one_time_code` or `new_password` with a field it may not ride with, a `create_test_login` generator length off the menu or a `bind` whose names are malformed or taken, a `trash_test_logins` with neither `website` nor `tag`, or one whose matches include a login at a site that is not allowed (one fixed sentence that names no login) — or `create_environment` / `add_variables` names a shared vault or shared environment the agent can see (agents cannot change a shared vault, §2.1); nothing was asked and nothing changed | Fix the argument. Do not retry it unchanged. |
+| `INVALID_ARGUMENT` | An argument breaks a documented rule of the tool's schema — a variable name that does not match `^[A-Za-z_][A-Za-z0-9_]*$`, a name repeated in one request or already in the environment, a string over its length limit, a `request_fill` field set that is empty, repeats a field or combines `one_time_code` or `new_password` with a field it may not ride with, a `create_test_login` generator length off the menu or a `bind` whose names are malformed or taken, a `trash_test_logins` with neither `website` nor `tag`, or one whose matches include a login at a site that is not allowed (one fixed sentence that names no login), a `store_command_output` target that would replace a value or write an autofill password, or a malformed target, label or reason — or `create_environment` / `add_variables` names a shared vault or shared environment the agent can see (agents cannot change a shared vault, §2.1); nothing was asked and nothing changed | Fix the argument. Do not retry it unchanged. |
 | `FILE_EXISTS` | Target exists and `overwrite` is false | Ask the user, then retry with `overwrite: true`. |
 | `VAULT_BUSY` | Another kagisecure process (the CLI, a second app) held the vault file's write lock for more than 5 s; nothing was changed | Wait a few seconds, then retry once. |
 | `VAULT_CONFLICT` | The vault file on disk was restored from an older copy, replaced, or removed while the vault was unlocked; the app refuses to build on it or overwrite it, so nothing is changed or released | Tell the user to open kagisecure and resolve it. Do not retry until they have. |
@@ -1102,10 +1180,10 @@ message is written for the *model*, so it should say what to do next.
 | `NOTHING_TO_FILL` | `request_fill` named a field the item has no value for, or an archived item; or asked for `new_password` for an item that is not a sealed test login | Check `describe_item`; for a sign-up form, use a login from `create_test_login`. |
 | `NO_MATCHING_TAB` | `request_fill` found no tab to fill: the tab in front is not at `origin`, is not a sign-in page kagisecure recognizes (for a one-time code: has no code field), is not visible, is not a site saved for this item, or changed before the fill; or more than one browser has such a tab in front; or page two of an identifier-first sign-in is not the same sign-in in the same tab | Bring the right tab to the front; retry at most once. |
 | `RATE_LIMITED` | `request_fill` was refused without asking because another agent fill is in progress and they are served one at a time. Answered before the item is looked up. Also `create_test_login` from an agent that created 10 test logins in the last 10 minutes, or when the test vault already holds 200; nothing was created | For `request_fill`, retry once after it finishes. For `create_test_login`, reuse one (`list_test_logins`) or wait. |
-| `AUDIT_UNAVAILABLE` | `write_env_file` or `run_with_env` was about to release values, and the audit entry that must be written first could not be (a full disk, a broken or conflicting vault file, another process holding the write lock); **nothing was released** — no file written, no command run | Tell the user the vault cannot be written right now. Do not retry in a loop. |
+| `AUDIT_UNAVAILABLE` | `write_env_file`, `run_with_env` or `store_command_output` was about to release values, and the audit entry that must be written first could not be (a full disk, a broken or conflicting vault file, another process holding the write lock); **nothing was released** — no file written, no command run | Tell the user the vault cannot be written right now. Do not retry in a loop. |
 | `NOT_GRANTED` | Only on the unattended socket (§5.1): the request is not covered by a standing grant of the calling run's job, or does not come from a run kagisecure started. One message for every reason; a request no grant covers has suspended every grant of the job and ended the run | Stop. Do not retry or try variations; the owner has been told. |
 | `UNATTENDED_PAUSED` | Only on the unattended socket (§5.1): unattended jobs are not armed, so nothing is released | Tell the user unattended jobs are paused; do not retry. |
-| `NOT_POPULATED` | `run_with_env` with `delivery: "stdin"` selected variables that have no value yet (declared by `add_variables`, not yet entered by the user). The message names them. Answered before any sheet; nothing was asked or run | Tell the user which variables to fill in kagisecure; call again once `list_environments` shows them populated. |
+| `NOT_POPULATED` | `run_with_env` with `delivery: "stdin"` (or `store_command_output` with `stdin_environment`) selected variables that have no value yet (declared by `add_variables`, not yet entered by the user). The message names them. Answered before any sheet; nothing was asked or run | Tell the user which variables to fill in kagisecure; call again once `list_environments` shows them populated. |
 | `TEST_LOGINS_OFF` | `create_test_login`, `list_test_logins` or `trash_test_logins` while agent test logins are turned off (or there is no test vault, or the caller cannot be identified, or the host is `kagisecure daemon`). Answered before anything is looked up; nothing was created, listed or trashed | Tell the user they can turn on agent test logins in Settings. Do not retry until they have. |
 | `INTERNAL` | Bug | Report it. |
 
@@ -1150,7 +1228,9 @@ says.) Both codes arrived with protocol version 2.
 with `create_test_login`, `list_test_logins` and `trash_test_logins`, the `new_password` fill field
 and `RATE_LIMITED`'s two create messages. A peer that speaks another version is refused at
 `Hello`, so the sidecar, the app, the browser extension and the native-messaging host ship
-together. (Version 3 was `run_with_env`'s `delivery`, ADR-0047.)
+together. (Version 3 was `run_with_env`'s `delivery`, ADR-0047.) Version **5** added
+`store_command_output` ([ADR-0049](decisions/0049-store-command-output.md)); it brought no new
+code.
 
 `AUDIT_UNAVAILABLE` is what "audit before release" (§6) answers when it cannot keep its promise.
 `write_env_file` and `run_with_env` release a value only after the entry recording the release is

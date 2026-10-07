@@ -8,6 +8,21 @@ Versions before 1.0.0 may change the vault format. When they do, the change is l
 what it means for a vault written by an earlier build — see
 [docs/vault-format.md](docs/vault-format.md) §9 for the compatibility rules the format follows.
 
+## 0.3.0 — 2026-10-07
+
+New:
+
+- **`store_command_output`** ([ADR-0049](docs/decisions/0049-store-command-output.md)): an agent
+  asks kagisecure to run a command and store what it prints in a new item or an empty field, after
+  Touch ID. The value is never returned to the agent.
+
+Changed:
+
+- `xtask chrome-auth` prints only the refresh token, for `store_command_output`
+  ([docs/chrome-web-store.md](docs/chrome-web-store.md)).
+- The IPC protocol is now version 5: the app, its MCP sidecar, the browser extension and the
+  native-messaging host must come from the same build.
+
 ## 0.2.0 — 2026-10-07
 
 New:

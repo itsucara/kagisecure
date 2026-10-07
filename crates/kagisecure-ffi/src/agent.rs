@@ -112,6 +112,14 @@ pub enum ApprovalAction {
     /// ID — never presence-only, never "for this session" — and it mints nothing. The facts the
     /// sheet shows are in [`ApprovalRequestView::test_login`].
     CreateTestLogin,
+    /// An agent asks to run a command and store its standard output in a concealed field
+    /// (ADR-0049). Always the full sheet with Touch ID — never presence-only, never "for this
+    /// session", never inside the grace window — and it mints nothing. The argv is in
+    /// [`ApprovalRequestView::command`], the directory in [`ApprovalRequestView::directory`], a
+    /// stdin environment in the environment and variable fields with
+    /// [`ApprovalRequestView::stdin_delivery`]; the target is in
+    /// [`ApprovalRequestView::store_output`].
+    StoreCommandOutput,
 }
 
 impl From<ApprovalKind> for ApprovalAction {
@@ -124,6 +132,7 @@ impl From<ApprovalKind> for ApprovalAction {
             ApprovalKind::FillCredential => Self::FillCredential,
             ApprovalKind::AgentFill => Self::AgentFill,
             ApprovalKind::CreateTestLogin => Self::CreateTestLogin,
+            ApprovalKind::StoreCommandOutput => Self::StoreCommandOutput,
         }
     }
 }
@@ -271,6 +280,14 @@ pub struct ApprovalRequestView {
     #[uniffi(default = false)]
     pub rides_grace: bool,
 
+    // --- ADR-0049: storing a command's output. -----------------------------------------------
+    /// What the store-output sheet shows beyond the fields above. `Some` exactly when
+    /// [`Self::action`] is [`ApprovalAction::StoreCommandOutput`].
+    ///
+    /// `#[uniffi(default = None)]` so hand-built views in the Swift tests keep compiling.
+    #[uniffi(default = None)]
+    pub store_output: Option<StoreOutputFactsView>,
+
     // --- ADR-0035 §14: values from a shared vault. Empty for the personal vault. ------------
     /// Where the values come from when that is a shared vault — `Shared vault “Ops” — 4
     /// members` — to be shown as a fact on the sheet. `None` for the personal vault.
@@ -281,6 +298,46 @@ pub struct ApprovalRequestView {
     /// Names, labels and times only. Empty for the personal vault and when nothing changed.
     #[uniffi(default = [])]
     pub changed_since_approval: Vec<String>,
+}
+
+/// [`kagisecure_agent::StoreOutputFacts`]: where a command's output would be stored (ADR-0049
+/// §3). Metadata only; the output does not exist yet when the sheet is shown.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct StoreOutputFactsView {
+    /// The agent as the audit log names it.
+    pub agent: String,
+    /// The item's title: the new item's, or the existing one's.
+    pub item_title: String,
+    /// The existing item's id; `None` for a new item.
+    pub item_id: Option<String>,
+    /// The new item's category, canonical name; `None` for an existing item.
+    pub new_item_category: Option<String>,
+    /// The vault the item is, or will be, in.
+    pub vault_name: String,
+    /// The field's label.
+    pub field_label: String,
+    /// Whether an existing, empty field is filled rather than a new field added.
+    pub fills_empty_field: bool,
+    /// The command's wall-clock limit, in seconds.
+    pub timeout_seconds: u64,
+    /// Why, as the agent put it: agent-written data.
+    pub reason: Option<String>,
+}
+
+impl From<kagisecure_agent::StoreOutputFacts> for StoreOutputFactsView {
+    fn from(f: kagisecure_agent::StoreOutputFacts) -> Self {
+        Self {
+            agent: f.agent,
+            item_title: f.item_title,
+            item_id: f.item_id,
+            new_item_category: f.new_item_category,
+            vault_name: f.vault_name,
+            field_label: f.field_label,
+            fills_empty_field: f.fills_empty_field,
+            timeout_seconds: f.timeout_seconds,
+            reason: f.reason,
+        }
+    }
 }
 
 /// One website on a test-login sheet (ADR-0048 §3): the registrable domain large above the full
@@ -572,6 +629,7 @@ impl From<ApprovalRequest> for ApprovalRequestView {
             agent_fill: r.agent_fill.map(Into::into),
             test_login: r.agent_test_login.map(Into::into),
             rides_grace: r.rides_grace,
+            store_output: r.store_output.map(Into::into),
             shared_source: r.shared_source,
             changed_since_approval: r.changed_since_approval,
         }
@@ -1878,6 +1936,32 @@ pub(crate) mod tests {
         });
         assert!(run.rides_grace);
         assert!(run.test_login.is_none());
+    }
+
+    #[test]
+    fn a_store_output_request_crosses_with_its_facts_and_mints_nothing() {
+        let view = ApprovalRequestView::from(ApprovalRequest {
+            kind: ApprovalKind::StoreCommandOutput,
+            command: vec!["/usr/bin/jq".to_owned(), "-r".to_owned()],
+            store_output: Some(kagisecure_agent::StoreOutputFacts {
+                agent: "mcp \"Claude Code\" pid 1".to_owned(),
+                item_title: "Chrome Web Store API".to_owned(),
+                item_id: None,
+                new_item_category: Some("api-credential".to_owned()),
+                vault_name: "Personal".to_owned(),
+                field_label: "client_secret".to_owned(),
+                fills_empty_field: false,
+                timeout_seconds: 300,
+                reason: None,
+            }),
+            ..ApprovalRequest::default()
+        });
+        assert_eq!(view.action, ApprovalAction::StoreCommandOutput);
+        assert!(!view.mints_lease);
+        assert!(!view.rides_grace);
+        let facts = view.store_output.expect("facts");
+        assert_eq!(facts.field_label, "client_secret");
+        assert_eq!(facts.item_title, "Chrome Web Store API");
     }
 
     #[test]

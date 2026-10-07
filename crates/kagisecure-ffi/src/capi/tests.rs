@@ -438,6 +438,7 @@ fn every_tag_round_trips_through_its_uniffi_enum() {
     }
     assert_eq!(KgsApprovalAction::AgentFill as u32, 5);
     assert_eq!(KgsApprovalAction::CreateTestLogin as u32, 6);
+    assert_eq!(KgsApprovalAction::StoreCommandOutput as u32, 7);
     assert!(KgsApprovalAction::parse(6).is_err());
 }
 

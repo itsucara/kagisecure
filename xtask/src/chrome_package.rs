@@ -19,8 +19,8 @@
 //! the package; a store upload with a missing icon is an upload the store rejects, and a missing
 //! script is one it accepts.
 //!
-//! Output: `dist/kagisecure-chrome-<version>.zip`. Uploading it is a human step in the developer
-//! dashboard; nothing here talks to the store.
+//! Output: `dist/kagisecure-chrome-<version>.zip`. Uploading it is `chrome-publish`'s job
+//! (`chrome_publish.rs`); nothing here talks to the store.
 
 use std::collections::BTreeSet;
 use std::io::{Seek, Write};
@@ -99,7 +99,7 @@ pub fn chrome_package(root: &Path) -> Result<PathBuf> {
         println!("  {:>8}  {name}", bytes.len());
     }
     println!(
-        "chrome-package: `key` removed, version {version}. Upload it in the developer dashboard; \
+        "chrome-package: `key` removed, version {version}. Upload it with `cargo xtask chrome-publish`; \
          docs/chrome-web-store.md has the steps."
     );
     Ok(target)

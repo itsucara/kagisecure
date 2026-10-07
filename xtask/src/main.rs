@@ -8,7 +8,9 @@
 
 mod bindgen;
 mod bindgen_cs;
+mod chrome_auth;
 mod chrome_package;
+mod chrome_publish;
 mod dist;
 mod dist_windows;
 mod embed;
@@ -90,6 +92,15 @@ fn main() -> Result<()> {
             }
             chrome_package::chrome_package(&root).map(|_| ())
         }
+        Some("chrome-publish") => {
+            chrome_publish::chrome_publish(&root, &chrome_publish::parse_args(&flags)?)
+        }
+        Some("chrome-auth") => {
+            if let Some(flag) = flags.first() {
+                bail!("unknown flag {flag:?}");
+            }
+            chrome_auth::chrome_auth()
+        }
         Some("dist-windows") => {
             if let Some(flag) = flags.first() {
                 bail!("unknown flag {flag:?}");
@@ -157,6 +168,15 @@ fn usage() {
          \x20           dist/kagisecure-chrome-<version>.zip: `key` removed, version from\n\
          \x20           Cargo.toml, no dotfiles or tests, deterministic, every file the manifest\n\
          \x20           names checked. See docs/chrome-web-store.md\n\
+         \x20 chrome-publish [--zip PATH] [--dry-run]\n\
+         \x20           upload the package to the Chrome Web Store item and submit it for\n\
+         \x20           review (API v2). Credentials only from kagisecure's stdin frame:\n\
+         \x20           CWS_CLIENT_ID, CWS_CLIENT_SECRET, CWS_REFRESH_TOKEN\n\
+         \x20 chrome-auth\n\
+         \x20           one-time OAuth consent (loopback + PKCE); reads CWS_CLIENT_ID and\n\
+         \x20           CWS_CLIENT_SECRET from the same frame and writes only the refresh token\n\
+         \x20           to stdout, which must not be a terminal: run it through kagisecure's\n\
+         \x20           store_command_output\n\
          \x20 dist [--host-only] [--skip-notarize]\n\
          \x20           the release: Release build, Developer ID signing, notarization,\n\
          \x20           stapling, DMG, and the verification that proves it worked. Universal\n\

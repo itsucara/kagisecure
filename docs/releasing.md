@@ -299,9 +299,13 @@ anything.
    without asking (ADR-0044). Check afterwards that
    `curl -s https://kagisecure.com/mac/appcast.xml` lists the new version.
 
-6. If the browser extension changed, build `cargo xtask chrome-package` and upload it to the
-   Chrome Web Store item ([chrome-web-store.md](chrome-web-store.md) §7). The extension's version
-   is the app's version, so every app release that bumps it can ship an extension update too.
+6. If the browser extension changed, build `cargo xtask chrome-package` and `cargo build -p
+   xtask`, then upload and submit it for review with
+   `<repo>/target/debug/xtask chrome-publish`, run through kagisecure
+   with stdin delivery from the environment `chrome-web-store` (`run_with_env`, delivery `stdin`).
+   Setup, the API and the fallback are in [chrome-web-store.md](chrome-web-store.md) §7–§8. The
+   extension's version is the app's version, so every app release that bumps it can ship an
+   extension update too.
 
 The DMG's filename has no version in it, on purpose, so that
 `https://github.com/itsucara/kagisecure/releases/latest/download/Kagisecure.dmg` is a permanent

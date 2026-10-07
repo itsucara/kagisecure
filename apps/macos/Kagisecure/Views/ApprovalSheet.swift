@@ -50,6 +50,9 @@ struct ApprovalSheet: View {
                         if request.topOrigin != nil { frameWarning }
                     }
                     if let facts = request.testLogin { TestLoginFactsBlock(facts: facts) }
+                    if request.action == .storeCommandOutput, let facts = request.storeOutput {
+                        StoreCommandOutputFactsBlock(facts: facts)
+                    }
                     if !request.variables.isEmpty { variables }
                     if !request.command.isEmpty { command }
                     location
@@ -113,6 +116,7 @@ struct ApprovalSheet: View {
         case .fillCredential: "key.horizontal"
         case .agentFill: "person.badge.key"
         case .createTestLogin: "person.badge.plus"
+        case .storeCommandOutput: "terminal.fill"
         }
     }
 
@@ -165,6 +169,10 @@ struct ApprovalSheet: View {
         case .createTestLogin:
             let site = request.testLogin.map(TestLoginFactsBlock.leadDomain) ?? String(localized: "an unknown site")
             return String(localized: "\(who) wants to create a test login for \(site)")
+        case .storeCommandOutput:
+            let cmd = safe(request.command.joined(separator: " "), limit: 80)
+            let item = StoreCommandOutputFactsBlock.leadTarget(request.storeOutput)
+            return "\(who) wants to run \(cmd) and store its output in “\(item)”"
         }
     }
 
@@ -482,6 +490,9 @@ struct ApprovalSheet: View {
 
     /// The one-line scope sentence from ui-spec.md §10.2.
     static func summary(for request: ApprovalRequestView, ttlSeconds: UInt64) -> String {
+        if request.action == .storeCommandOutput {
+            return "This runs the command once and stores what it prints as a secret. The agent never receives the output, and each run asks for Touch ID."
+        }
         if request.action == .createTestLogin {
             return String(localized: "This saves a new login in the Agent test logins vault with a password kagisecure generates. The agent never receives the password, and each create here asks for Touch ID.")
         }
@@ -530,7 +541,7 @@ struct ApprovalSheet: View {
             // "Allow for this session" is — it is that button's argument, and a sheet with a
             // long variable list used to scroll it out of sight (ui-spec.md §10.2).
             // A stdin delivery is one run, whatever is picked here (ADR-0047): no lease to size.
-            if (request.mintsLease && !request.stdinDelivery) || isFill {
+            if (request.mintsLease && !request.stdinDelivery && request.action != .storeCommandOutput) || isFill {
                 lease
                 Divider()
             }
@@ -552,7 +563,8 @@ struct ApprovalSheet: View {
                     .accessibilityIdentifier("ks.approval.deny")
                 Button("Allow once") { approve(.allowOnce) }
                     .accessibilityIdentifier("ks.approval.allowOnce")
-                if !request.stdinDelivery && request.action != .createTestLogin {
+                if !request.stdinDelivery && request.action != .createTestLogin
+                    && request.action != .storeCommandOutput {
                     Button("Allow for this session") {
                         approve(.allowSession(ttlSeconds: UInt64(ttlSeconds), uses: request.requestedUses))
                     }

@@ -4047,6 +4047,14 @@ namespace Kagisecure.Interop.Native
         ///  receive it denies it.
         /// </summary>
         CreateTestLogin = 6,
+        /// <summary>
+        ///  An agent asks to run a command and store its output in the vault (ADR-0049).
+        ///
+        ///  Here only because the conversion from [`ApprovalAction`] is exhaustive. The agent refuses
+        ///  `store_command_output` on Windows before anything is asked, so a Windows host never
+        ///  receives this tag in practice. A host that does receive it denies it.
+        /// </summary>
+        StoreCommandOutput = 7,
     }
 
     /// <summary>

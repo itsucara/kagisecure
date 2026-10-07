@@ -1,4 +1,4 @@
-//! The thirteen tools (mcp-server.md §2).
+//! The fourteen tools (mcp-server.md §2).
 //!
 //! # What this file is allowed to do
 //!
@@ -30,8 +30,9 @@ use kagisecure_ipc::client::{Client, self_info};
 use kagisecure_ipc::protocol::{
     AgentFillField, DEFAULT_AGENT_FILL_FIELDS, Delivery, ErrorCode, FieldRef, MAX_RUN_ARGS,
     MAX_TEST_LOGIN_TAGS, MAX_TEST_LOGIN_WEBSITES, MAX_VARIABLES_PER_CALL, OutputMode,
-    RUN_TIMEOUT_DEFAULT_SECONDS, Request, Response, TEST_LOGIN_LENGTHS, TestLoginBind,
-    TestLoginGenerator, VariableRequest, agent_fill_fields_ok, clamp_run_timeout,
+    RUN_TIMEOUT_DEFAULT_SECONDS, Request, Response, STORE_OUTPUT_CATEGORIES, StdinEnvironment,
+    StoreStatus, StoreTarget, TEST_LOGIN_LENGTHS, TestLoginBind, TestLoginGenerator,
+    VariableRequest, agent_fill_fields_ok, clamp_run_timeout,
 };
 use kagisecure_ipc::{ClientError, Endpoint};
 
@@ -408,6 +409,68 @@ pub struct ListTestLoginsArgs {
     pub cursor: Option<String>,
 }
 
+/// `store_command_output` arguments (ADR-0049). **There is no way to pass what is stored, and no
+/// way to get it back.**
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StoreCommandOutputArgs {
+    /// The executable. **Not** a shell string: `;`, `|` and `$(...)` are ordinary characters. Use
+    /// an absolute path.
+    pub command: String,
+    /// Arguments, passed to the operating system verbatim. At most 64.
+    #[serde(default)]
+    pub args: Option<Vec<String>>,
+    /// Absolute working directory for the child.
+    pub cwd: String,
+    /// Wall-clock limit in seconds, 1-3600. Default 300. Allow for a person finishing a browser
+    /// consent if the command waits for one.
+    #[serde(default)]
+    pub timeout_seconds: Option<u64>,
+    /// An existing item to add the field to, by the id `list_items` returned. A field with this
+    /// label that already holds a value is never replaced. Give this or `new_item`, not both.
+    #[serde(default)]
+    pub item_id: Option<String>,
+    /// A new item to create with the field. Give this or `item_id`, not both.
+    #[serde(default)]
+    pub new_item: Option<NewItemArg>,
+    /// The concealed field's label, e.g. `refresh_token`. One line, 1-64 characters.
+    pub field_label: String,
+    /// An environment whose variables are written once to the command's standard input as
+    /// `NAME\0VALUE\0` pairs before it runs, as run_with_env's `stdin` delivery does. Covered by
+    /// the same approval.
+    #[serde(default)]
+    pub stdin_environment: Option<StdinEnvironmentArg>,
+    /// Why, shown to the user on the approval sheet. One line, at most 200 characters.
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+/// `store_command_output`'s `new_item`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct NewItemArg {
+    /// The item's title, e.g. `Chrome Web Store API`. One line, 1-128 characters.
+    pub title: String,
+    /// `api-credential` (default), `password`, `server` or `database`.
+    #[serde(default)]
+    pub category: Option<String>,
+    /// The logical vault, by the id `list_vaults` returned. Defaults to the user's first vault.
+    /// Shared vaults are refused.
+    #[serde(default)]
+    pub vault_id: Option<String>,
+}
+
+/// `store_command_output`'s `stdin_environment`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct StdinEnvironmentArg {
+    /// The environment, from `list_environments`.
+    pub environment_id: String,
+    /// Write only these variable names, in this order. Defaults to all of them.
+    #[serde(default)]
+    pub variables: Option<Vec<String>>,
+}
+
 /// The generator a `create_test_login` call asks for, or the `INVALID_ARGUMENT` it is answered
 /// with. The agent checks the menu too: the sidecar is a convenience, not a boundary.
 fn generator(
@@ -438,7 +501,7 @@ fn generator(
 
 #[tool_router(router = tool_router)]
 impl Kagisecure {
-    /// A server with the thirteen tools registered.
+    /// A server with the fourteen tools registered.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -984,6 +1047,126 @@ impl Kagisecure {
             other => Ok(unexpected(other)),
         }
     }
+
+    #[tool(
+        name = "store_command_output",
+        description = "Run a command and store what it prints on standard output in a concealed \
+                       field of a vault item: a new item (new_item) or a new or empty field of an \
+                       existing one (item_id). The output is not returned to you, in any form, \
+                       not even its length; you get back status \"stored\" with the item id, or \
+                       \"not_stored\" with a reason, the exit code and the command's standard \
+                       error, scrubbed. A field that already holds a value is never replaced. \
+                       One line of output is stored, with one trailing newline removed; empty, \
+                       multi-line, binary or over 16 KiB output, or a non-zero exit, stores \
+                       nothing. The user approves every call in kagisecure with a biometric. \
+                       This keeps the value out of your transcript; it is not a boundary \
+                       against you, since you chose the command. No shell: pass an absolute \
+                       executable and its arguments."
+    )]
+    async fn store_command_output(
+        &self,
+        peer: Peer<RoleServer>,
+        Parameters(args): Parameters<StoreCommandOutputArgs>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let cmd_args = args.args.unwrap_or_default();
+        if cmd_args.len() > MAX_RUN_ARGS {
+            return Ok(err(
+                ErrorCode::InvalidArgument,
+                "At most 64 arguments. Nothing was asked or run. Simplify the command.",
+            ));
+        }
+        let target = match (args.item_id, args.new_item) {
+            (Some(item_id), None) => match parse_req::<ItemId>(&item_id, "item_id") {
+                Ok(item_id) => StoreTarget::Item { item_id },
+                Err(e) => return Ok(e),
+            },
+            (None, Some(new_item)) => {
+                if new_item
+                    .category
+                    .as_deref()
+                    .is_some_and(|c| !STORE_OUTPUT_CATEGORIES.contains(&c))
+                {
+                    return Ok(err(
+                        ErrorCode::InvalidArgument,
+                        "new_item.category must be api-credential, password, server or \
+                         database. Nothing was asked or run.",
+                    ));
+                }
+                let vault_id =
+                    match parse_opt::<VaultId>(new_item.vault_id.as_deref(), "new_item.vault_id") {
+                        Ok(v) => v,
+                        Err(e) => return Ok(e),
+                    };
+                StoreTarget::NewItem {
+                    title: new_item.title,
+                    category: new_item.category,
+                    vault_id,
+                }
+            }
+            _ => {
+                return Ok(err(
+                    ErrorCode::InvalidArgument,
+                    "Give exactly one of item_id and new_item. Nothing was asked or run.",
+                ));
+            }
+        };
+        let stdin_environment = match args.stdin_environment {
+            None => None,
+            Some(env) => match parse_req::<EnvId>(&env.environment_id, "environment_id") {
+                Ok(environment_id) => Some(StdinEnvironment {
+                    environment_id,
+                    variables: env.variables,
+                }),
+                Err(e) => return Ok(e),
+            },
+        };
+        let request = Request::StoreCommandOutput {
+            command: args.command,
+            args: cmd_args,
+            cwd: args.cwd,
+            timeout_seconds: clamp_run_timeout(
+                args.timeout_seconds.unwrap_or(RUN_TIMEOUT_DEFAULT_SECONDS),
+            ),
+            target,
+            field_label: args.field_label,
+            stdin_environment,
+            reason: args.reason,
+        };
+        match ask(&peer, request).await {
+            Ok(Response::StoredCommandOutput {
+                status,
+                reason,
+                item_id,
+                field_label,
+                item_created,
+                exit_code,
+                stderr,
+                stderr_truncated,
+            }) => {
+                let body = match status {
+                    StoreStatus::Stored => json!({
+                        "status": status,
+                        "item_id": item_id,
+                        "field_label": field_label,
+                        "item_created": item_created,
+                        "exit_code": exit_code,
+                        "stderr": stderr,
+                        "stderr_truncated": stderr_truncated,
+                    }),
+                    StoreStatus::NotStored => json!({
+                        "status": status,
+                        "reason": reason,
+                        "field_label": field_label,
+                        "exit_code": exit_code,
+                        "stderr": stderr,
+                        "stderr_truncated": stderr_truncated,
+                    }),
+                };
+                Ok(ok(body))
+            }
+            other => Ok(unexpected(other)),
+        }
+    }
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -1015,7 +1198,9 @@ impl ServerHandler for Kagisecure {
                  for a one-time code too. create_test_login makes a test user for an app you are \
                  testing: kagisecure generates the password; you never see it. Reuse one with \
                  list_test_logins, sign in with request_fill, and clean up with \
-                 trash_test_logins.",
+                 trash_test_logins. store_command_output runs a command and stores what it \
+                 prints in a vault item after the user approves; the output is not returned to \
+                 you.",
             )
     }
 }
@@ -1143,10 +1328,65 @@ mod tests {
                 "request_fill",
                 "revoke_env_file",
                 "run_with_env",
+                "store_command_output",
                 "trash_test_logins",
                 "write_env_file",
             ]
         );
+    }
+
+    #[test]
+    fn store_command_output_takes_a_target_and_a_label_and_nothing_that_could_carry_a_value() {
+        let tool = Kagisecure::tool_router()
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "store_command_output")
+            .expect("registered");
+        let schema = serde_json::to_value(&tool.input_schema).unwrap();
+        let mut top: Vec<String> = schema["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect();
+        top.sort();
+        assert_eq!(
+            top,
+            [
+                "args",
+                "command",
+                "cwd",
+                "field_label",
+                "item_id",
+                "new_item",
+                "reason",
+                "stdin_environment",
+                "timeout_seconds",
+            ]
+        );
+        let description = tool
+            .description
+            .as_deref()
+            .unwrap_or_default()
+            .to_lowercase();
+        assert!(description.contains("not returned to you"));
+        assert!(description.contains("never replaced"));
+        assert!(description.contains("not a boundary against you"));
+        assert!(description.contains("biometric"));
+    }
+
+    #[test]
+    fn store_command_output_arguments_refuse_an_unknown_property() {
+        let bad = serde_json::json!({
+            "command": "/bin/echo", "cwd": "/tmp", "field_label": "token",
+            "new_item": { "title": "T" }, "output": "plain",
+        });
+        assert!(serde_json::from_value::<StoreCommandOutputArgs>(bad).is_err());
+        let nested = serde_json::json!({
+            "command": "/bin/echo", "cwd": "/tmp", "field_label": "token",
+            "new_item": { "title": "T", "websites": ["https://example.com"] },
+        });
+        assert!(serde_json::from_value::<StoreCommandOutputArgs>(nested).is_err());
     }
 
     #[test]

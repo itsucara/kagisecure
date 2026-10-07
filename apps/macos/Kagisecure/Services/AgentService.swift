@@ -214,7 +214,7 @@ final class AgentService {
     /// person learns which site, which item and which agent, and a bare Touch ID prompt for it
     /// would be a fingerprint on a question nobody read.
     static func needsSheet(_ request: ApprovalRequestView) -> Bool {
-        request.action == .agentFill || !request.presenceOnly
+        request.action == .agentFill || request.action == .storeCommandOutput || !request.presenceOnly
     }
 
     /// The presence prompt that is on screen, if one is.
@@ -753,6 +753,8 @@ final class AgentService {
                 : String(localized: "fill \(ApprovalSheet.safe(request.itemTitle ?? String(localized: "a login"))) into \(ApprovalSheet.safe(request.origin ?? String(localized: "this page"), limit: 120))")
         case .agentFill:
             agentFillReason(for: request)
+        case .storeCommandOutput:
+            "store what \(ApprovalSheet.safe(request.command.first.map { ($0 as NSString).lastPathComponent } ?? "a command")) prints as a secret in \(StoreCommandOutputFactsBlock.leadTarget(request.storeOutput)). Continue only if you asked an agent to"
         case .createTestLogin:
             // The site first, as the sheet leads with it; the agent's name is not in it.
             "let an agent create a test login for \(ApprovalSheet.safe(request.testLogin.map(TestLoginFactsBlock.leadDomain) ?? String(localized: "a site"), limit: 120)). Continue only if you asked an agent to"
